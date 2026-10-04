@@ -1,0 +1,7 @@
+models/*.gguf
+release/*.dmg
+.env
+.env.*
+node_modules/
+dist/
+.DS_Store

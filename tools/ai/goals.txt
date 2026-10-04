@@ -1,0 +1,98 @@
+# Labelled savings-goal names used to train the on-device goal-icon picker (Indonesian, Malay, English).
+# One "# icon" header, then comma-separated names. Rebuild with: npm run train-ai
+
+# savings
+tabungan, nabung, tabungan umum, tabungan masa depan, simpanan, celengan, uang simpanan, saving, general savings, tabungan bulanan, nabung rutin, target tabungan, 10 juta pertama, 100 juta pertama, first 100 million, tabungan 2026, tabungan akhir tahun, simpanan duit, duit simpanan, my savings, savings goal, extra cash
+
+# account_balance
+deposito, deposito bank, lunasi hutang, bayar hutang, lunas utang, pelunasan kartu kredit, lunasi cicilan, lunasi kpr, lunasi pinjaman, bayar pinjol, dana pensiun, pensiun, tabungan hari tua, retirement, retirement fund, pay off debt, pay off credit card, student loan payoff, loan repayment, bayar ptptn, langsaikan hutang, simpanan tetap, fixed deposit, tax fund
+
+# shield
+dana darurat, emergency fund, dana cadangan, dana jaga-jaga, uang darurat, safety net, tabung kecemasan, dana kecemasan, rainy day fund, emergency buffer, dana tak terduga, 6 bulan gaji, 3 bulan pengeluaran, dana phk, backup fund, cadangan darurat, proteksi keluarga
+
+# laptop_mac
+laptop baru, macbook air, macbook pro, laptop gaming, imac, mac mini, pc kerja, komputer, ipad, ipad pro, ipad air, tablet, monitor, monitor ultrawide, mac studio, thinkpad, asus zenbook, surface pro, laptop kuliah, laptop kerja, new laptop, work laptop, galaxy tab
+
+# phone_iphone
+iphone, iphone 16, iphone 17 pro, hp baru, ganti hp, handphone baru, samsung s25, samsung galaxy, galaxy z flip, pixel 9, xiaomi, oppo reno, new phone, phone upgrade, telefon baru, tukar phone, hp buat mama, android baru
+
+# headphones
+airpods, airpods pro, airpods max, headphone, headphone sony, sony wh-1000xm5, earbuds, tws, speaker, speaker jbl, soundbar, home theater, marshall speaker, bose headphones, iem, dac amp, sennheiser, noise cancelling headphones, studio monitor
+
+# photo_camera
+kamera, kamera mirrorless, sony a7, sony a6400, fujifilm x100, fuji xt5, canon r6, nikon z, lensa, lensa fix, gopro, drone, dji mini, dji osmo, insta360, kamera analog, camera, new lens, photography gear, tripod kamera
+
+# watch
+jam tangan, apple watch, smartwatch, garmin, g-shock, casio, seiko, rolex, omega, tissot, jam tangan baru, tag heuer, galaxy watch, daniel wellington, watch, luxury watch, jam mahal
+
+# sports_esports
+ps5, playstation 5, ps5 pro, xbox, nintendo switch, switch 2, steam deck, pc gaming, gaming pc, rakit pc gaming, rog ally, vr headset, meta quest, game, konsol game, kursi gaming, gaming setup, rtx 5080, kartu grafis, vga baru, console
+
+# flight
+liburan ke jepang, jepang, tokyo, korea, seoul, eropa, eurotrip, paris, london, turki, dubai, umroh, umrah, haji, tabungan haji, singapore trip, singapura, thailand, bangkok, vietnam, australia, amerika, new york, liburan luar negeri, tiket pesawat, travel abroad, japan trip, europe trip, overseas trip, melancong luar negara, hong kong, china, swiss, new zealand, mekah, cuti ke london
+
+# beach_access
+liburan ke bali, bali, lombok, labuan bajo, raja ampat, gili trawangan, maldives, phuket, krabi, langkawi, pulau tioman, pulau redang, perhentian, pantai, liburan pantai, beach holiday, island trip, hawaii, boracay, belitung, karimunjawa, derawan, snorkeling trip, diving trip, staycation resort
+
+# luggage
+mudik, mudik lebaran, pulang kampung, balik kampung, road trip, liburan keluarga, liburan akhir tahun, jalan-jalan, liburan ke jogja, jogja, bandung, malang, bromo, dieng, puncak, staycation, liburan sekolah, trip bareng teman, backpacking, open trip, cuti-cuti malaysia, cameron highlands, genting, melaka trip, penang trip, weekend getaway, family vacation, camping trip
+
+# home
+rumah, beli rumah, dp rumah, rumah impian, rumah pertama, kpr, uang muka rumah, tanah, beli tanah, kavling, rumah sendiri, down payment rumah, deposit rumah, rumah idaman, house, house down payment, first home, home deposit, buy a house, kulkas, kulkas baru, mesin cuci, ac baru, tv baru, smart tv, water heater, kompor, peralatan rumah, home appliances, vacuum
+
+# apartment
+sewa apartemen, apartemen, kontrakan, uang kontrakan, sewa rumah setahun, pindah kos, kos baru, pindahan, biaya pindah, deposit sewa, sewa studio, moving out, rent deposit, security deposit, first apartment, bilik sewa, deposit rumah sewa, pindah rumah, ngekos sendiri
+
+# chair
+furniture, perabot, sofa, sofa baru, kasur, kasur baru, springbed, tempat tidur, lemari, lemari baju, meja kerja, meja makan, kursi kerja, kursi ergonomis, rak buku, dekorasi rumah, dekor kamar, isi rumah, isi apartemen, standing desk, ikea haul, karpet, gorden, kitchen set, new mattress, couch, bed frame, wardrobe, home decor
+
+# directions_car
+mobil, beli mobil, mobil baru, mobil pertama, dp mobil, mobil bekas, avanza, innova, fortuner, pajero, brio, jazz, hrv, crv, xpander, raize, rocky, calya, wuling, hyundai ioniq, byd, tesla, bmw, mercy, mobil listrik, myvi, axia, bezza, proton saga, x50, x70, honda city, vios, alphard, car, new car, first car, car down payment, kereta baru, deposit kereta
+
+# two_wheeler
+motor, beli motor, motor baru, dp motor, vario, beat, scoopy, pcx, nmax, aerox, xmax, vespa, vespa sprint, vespa matic, ninja, cbr, r15, kawasaki, supra, motor listrik, motor bekas, motor trail, klx, royal enfield, harley, y15, rs150, lagenda, ex5, motorcycle, scooter, motorbike, moge
+
+# school
+kuliah, biaya kuliah, uang kuliah, ukt, s2, s3, kuliah s2, kuliah di luar negeri, study abroad, master degree, mba, sekolah anak, dana pendidikan, dana pendidikan anak, tabungan pendidikan, uang pangkal, masuk sd, masuk tk, masuk sma, pesantren, kursus bahasa inggris, les, bimbel, ielts, toefl, sertifikasi, bootcamp, kursus coding, skripsi, tuition, college fund, university, education fund, school fees, yuran universiti, sambung belajar, course, kelas bahasa jepang
+
+# menu_book
+buku, beli buku, novel, koleksi buku, komik, manga, kindle, e-reader, perpustakaan pribadi, books, book collection, reading list, ensiklopedia, buku pelajaran, langganan buku, harry potter box set, buku anak
+
+# favorite
+nikah, dana nikah, biaya nikah, pernikahan, resepsi, wedding, wedding fund, lamaran, tunangan, mahar, seserahan, hantaran, honeymoon, bulan madu, anniversary, buat pacar, buat istri, buat suami, kahwin, majlis kahwin, duit kahwin, engagement, prewedding, gedung nikah, katering nikah, date night fund, valentine
+
+# diamond
+emas, beli emas, emas antam, logam mulia, perhiasan, cincin, cincin berlian, kalung emas, gelang emas, berlian, tas branded, tas lv, louis vuitton, gucci, hermes, chanel, dior, barang mewah, jewellery, gold, gold bar, diamond ring, luxury bag, designer bag, rantai emas, barang kemas
+
+# celebration
+pesta, pesta ulang tahun, ulang tahun, ultah anak, syukuran, selamatan, aqiqah, akikah, khitanan, sunatan, qurban, kurban, lebaran, idul fitri, idul adha, natal, tahun baru, imlek, wisuda, pesta wisuda, reuni, arisan keluarga, kenduri, hari raya, raya, open house, majlis, birthday party, party, graduation party, new year party, christmas, celebration, baby shower, tasyakuran
+
+# redeem
+kado, hadiah, kado mama, kado ulang tahun, kado buat ibu, hadiah buat ayah, kado nikahan teman, kado natal, thr, thr keluarga, angpao, hampers lebaran, parcel, bingkisan, oleh-oleh, gift, birthday gift, present, christmas gifts, gift for mom, hadiah hari ibu, kado anniversary, duit raya, hadiah untuk mak, surprise gift
+
+# child_care
+bayi, anak, kelahiran anak, biaya lahiran, persalinan, lahiran, perlengkapan bayi, stroller, popok dan susu, dana anak, keperluan anak, mainan anak, tabungan anak, anak pertama, baby, baby fund, newborn, kids, children, family, keluarga, piknik keluarga, family outing, daycare, pengasuh, baby gear, kelengkapan baby, bersalin
+
+# pets
+kucing, anjing, hewan peliharaan, adopsi kucing, kucing ras, persia, maine coon, anjing golden, vaksin kucing, steril kucing, makanan kucing, kandang, akuarium, aquarium, aquascape, ikan koi, kolam koi, ikan cupang, burung, hamster, kelinci, reptil, pet, pet fund, cat, dog, puppy, vet bills, kucing parsi
+
+# fitness_center
+gym, member gym, fitness, alat fitness, alat gym, treadmill, dumbbell, sepeda, sepeda lipat, brompton, road bike, mtb, sepeda gunung, sepatu lari, running shoes, marathon, ikut marathon, raket badminton, raket, sepatu futsal, sepatu bola, golf set, stik golf, papan surfing, alat hiking, sports gear, bicycle, home gym, yoga, pilates, personal trainer, hiking boots, padel
+
+# medical_services
+operasi, biaya operasi, rumah sakit, biaya rumah sakit, berobat, pengobatan, kesehatan, dana kesehatan, behel, pasang behel, kawat gigi, gigi, veneer, implan gigi, lasik, operasi mata, medical check up, mcu, terapi, fisioterapi, psikolog, bayi tabung, program hamil, promil, asuransi kesehatan, medical, surgery, dental, braces, health fund, rawatan, pembedahan, ivf, hearing aid
+
+# checkroom
+baju, baju baru, baju lebaran, baju raya, outfit, fashion, sepatu, sepatu baru, sneakers, jordan, nike dunk, air jordan, new balance, adidas samba, tas, tas baru, jaket, jaket kulit, jas, kebaya, batik, gamis, hijab, wardrobe baru, new wardrobe, clothes, shoes, shopping spree, belanja baju, baju kurung, kasut, handbag, coat, suit
+
+# music_note
+gitar, gitar akustik, gitar listrik, fender, gibson, piano, keyboard yamaha, digital piano, drum, drum set, biola, ukulele, saxophone, bass, ampli, pedal efek, studio musik, alat musik, konser, tiket konser, konser coldplay, taylor swift, festival musik, we the fest, vinyl, turntable, piringan hitam, concert, concert tickets, guitar, les musik, midi controller
+
+# trending_up
+investasi, saham, reksadana, reksa dana, obligasi, sbn, ori, sukuk, crypto, bitcoin, ethereum, p2p lending, modal usaha, modal bisnis, modal dagang, buka usaha, buka warung, buka toko, buka cafe, franchise, bisnis sampingan, usaha, startup, investment, stocks, index fund, etf, s&p 500, business capital, side business, asb, unit trust, pelaburan, modal berniaga, forex, trading, portofolio
+
+# construction
+renovasi, renovasi rumah, renovasi dapur, renovasi kamar mandi, renov, bangun rumah, bangun pagar, perbaiki atap, ganti genteng, cat rumah, pasang kanopi, bikin garasi, bangun kos, tambah lantai, perbaikan rumah, benerin rumah, pasang keramik, plafon, taman rumah, alat tukang, perkakas, bor listrik, renovation, home renovation, kitchen remodel, roof repair, bathroom remodel, ubah suai rumah, baiki bumbung, repairs, home improvement, solar panel
+
+# star
+impian, mimpi, wishlist, keinginan, bucket list, something special, rahasia, lainnya, lain-lain, target, goal, proyek rahasia, hadiah untuk diri sendiri, self reward, treat myself, big dream, dream, impian besar, misc, random, tabungan spesial
