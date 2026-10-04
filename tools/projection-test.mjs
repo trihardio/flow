@@ -68,6 +68,8 @@ console.log("1. by hand: 40.000 every weekday and 100.000 every Saturday and Sun
   near("spent by the 31st", r.endSpend, 1_780_000, 1e-6);
   near("left on the 31st", r.endLeft, 3_220_000, 1e-6);
   near("no spread when every day is the same", r.sd, 0, 1e-6);
+  is("the running total: a figure for every day, today's what is spent, the last the month's end", [r.path.length, r.path[0], r.path[14], Math.round(r.path[31])], [32, 0, 800_000, 1_780_000]);
+  near("… Thursday the 15th adds a weekday, Saturday the 17th a weekend day", r.path[17] - r.path[14], 40_000 + 40_000 + 100_000, 1e-6);
   is("no bills, no big buys", [r.billsDue.length, r.bigN], [0, 0]);
   // the same morning, before anything is logged today: today's 40.000 is still to come
   const morning = { ...data, spending: { ...sp } };
@@ -247,7 +249,8 @@ console.log("5. random data never breaks it");
     const nums = [r.spent, r.income, r.toCome, r.endSpend, r.endIncome, r.endLeft, r.sd, r.everyday, r.todayMore, r.big, r.planned, r.billSum, r.paySum, r.weekday, r.weekend];
     const ok = nums.every(Number.isFinite) && r.toCome >= 0 && r.endSpend >= r.spent - 1e-6 && r.sd >= 0 && r.weekday >= 0 && r.weekend >= 0
       && r.nWd + r.nWe === r.daysLeft && r.openDays <= r.daysLeft && Math.abs(r.endLeft - (r.endIncome - r.endSpend)) < 1e-3
-      && Math.abs(r.toCome - (r.everyday + r.big + r.billSum + r.planned)) < 1e-3 && (r.daysLeft > 0 || Math.abs(r.toCome - r.billSum) < 1e-6);
+      && Math.abs(r.toCome - (r.everyday + r.big + r.billSum + r.planned)) < 1e-3 && (r.daysLeft > 0 || Math.abs(r.toCome - r.billSum) < 1e-6)
+      && r.path.length === r.dim + 1 && r.path.every((v, i) => Number.isFinite(v) && (!i || v >= r.path[i - 1] - 1e-6)) && (r.daysLeft === 0 || Math.abs(r.path[r.dim] - r.endSpend) < 1e-3 * Math.max(1, r.endSpend));
     if (!ok) { bad++; if (bad < 4) console.log("      bad:", JSON.stringify({ y, m, d, r }).slice(0, 400)); }
   }
   report(bad === 0 && runs > 1000, `${runs} random months: every figure a real number, nothing negative, the parts add up`);

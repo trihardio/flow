@@ -1288,8 +1288,9 @@ const TEST_MID = [["Dinner", "food"], ["Sushi Tei", "food"], ["Bensin", "transpo
   ["Pulsa", "bills"], ["Wingstop", "food"], ["Starbucks", "food"], ["Grab", "transport"]];
 const TEST_BIG = [["Electricity", "bills"], ["Lego", "shopping"], ["Groceries", "shopping"], ["Internet", "bills"],
   ["Shoes", "shopping"], ["Water bill", "bills"]];
-// the bills that come back every month: name, share of the monthly total, day of the month
-const TEST_BILLS = [["Rent", 0.62, 1], ["Wifi", 0.14, 5], ["Phone plan", 0.08, 12], ["PLN", 0.16, 20]];
+// the bills that come back every month: name, share of the monthly total, day of the month. Names of their own:
+// one that the app reads as the same thing as a random buy above ("Wifi" is "Internet") would be mixed up with it
+const TEST_BILLS = [["Rent", 0.62, 1], ["IndiHome", 0.14, 5], ["Phone plan", 0.08, 12], ["PLN", 0.16, 20]];
 const TEST_DAYS_ALL = Array.from({ length: 31 }, (_, i) => i + 1);
 const DEFAULT_TEST_CFG = {
   incMin: 1, incMax: 3, incDays: [1],                       // jt per payment, and the days of the month one arrives
@@ -1489,7 +1490,7 @@ const TestCfg = ({ cfg, closing, year, month, fmt, onRun, onClose }) => {
           <div className="tcfg-row"><span className="tcfg-lbl">Spike days<span className="tcfg-note">a day that costs 3 to 6 times as much</span></span><span className="tcfg-ctl">{one("spike", "% of days")}</span></div>
           <div className="tcfg-row"><span className="tcfg-lbl">Months differ by<span className="tcfg-note">a whole month dearer or cheaper than usual</span></span>
             <span className="tcfg-ctl"><span className="tcfg-to">up to ±</span>{one("swing", "%")}</span></div>
-          <div className="tcfg-row"><span className="tcfg-lbl">Monthly bills<span className="tcfg-note">rent on the 1st, wifi 5th, phone 12th, PLN 20th · 0 for none</span></span>
+          <div className="tcfg-row"><span className="tcfg-lbl">Monthly bills<span className="tcfg-note">rent on the 1st, IndiHome 5th, phone 12th, PLN 20th · 0 for none</span></span>
             <span className="tcfg-ctl">{one("bills", "jt a month", set)}</span></div>
         </>)}
 
@@ -1928,12 +1929,13 @@ const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) 
   // 5. this month so far, and what is already written down for later days. A later day that holds anything (a
   //    planned bill, a no-spend mark, generated test data) is taken as written; only the empty ones are projected.
   let spent = 0, todaySoFar = 0, planned = 0, bigNow = 0;
-  const paid = {}, written = {};
+  const paid = {}, written = {}, onDay = {};
   for (let dd = 1; dd <= dim; dd++) {
     const all = itemsOn(y, m, dd);
     if (dd > d && all.length) written[dd] = true;
     all.filter(real).forEach((it) => {
       if (isBill(it)) paid[nameOf(it)] = true;
+      onDay[dd] = (onDay[dd] || 0) + it.amount;
       if (dd > d) planned += it.amount;
       else {
         spent += it.amount;
@@ -1980,16 +1982,129 @@ const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) 
   const payDue = Object.values(pays).filter((x) => !got[x.key] && x.day >= d - PROJ_LATE).sort((p, q) => p.day - q.day);
   const paySum = payDue.reduce((s, x) => s + x.amount, 0);
 
+  // the month's running total day by day: what is written up to today, then what each later day is expected to add
+  // (a written day what it holds; an empty one its day of the week and its share of the big buys; a bill on its
+  // day, a late one tomorrow; the rest of today goes with tomorrow). path[0] is the month's start.
+  const billOn = {};
+  billsDue.forEach((b) => { const dd = Math.min(dim, Math.max(b.day, d + 1)); billOn[dd] = (billOn[dd] || 0) + b.amount; });
+  const path = [0];
+  for (let dd = 1; dd <= dim; dd++) {
+    const add = dd <= d ? onDay[dd] || 0
+      : (written[dd] ? onDay[dd] || 0 : byDow[new Date(y, m, dd).getDay()] + (openDays ? big / openDays : 0)) + (billOn[dd] || 0) + (dd === d + 1 ? todayMore : 0);
+    path.push(path[dd - 1] + add);
+  }
+
   const toCome = everyday + big + billSum + planned;
   const endSpend = spent + toCome, endIncome = income + paySum;
   return {
     dim, daysLeft, openDays, spent, income, toCome, endSpend, endIncome, endLeft: endIncome - endSpend, sd: Math.sqrt(variance),
     everyday, todayMore, big, bigN, bigFrom, bigEach, bigPerMonth: bigRate * 30, bigNow, bigMore, bigMonths: counts.length,
     planned, billsDue, billSum, payDue, paySum,
-    weekday: (byDow[1] + byDow[2] + byDow[3] + byDow[4] + byDow[5]) / 5, weekend: (byDow[0] + byDow[6]) / 2, nWd, nWe, byDow, daysRead: days.length,
+    weekday: (byDow[1] + byDow[2] + byDow[3] + byDow[4] + byDow[5]) / 5, weekend: (byDow[0] + byDow[6]) / 2, nWd, nWe, byDow, daysRead: days.length, path,
   };
 };
 /* ---------- month-end projection: end of the maths ---------- */
+
+/* The projection as a path through the month: what is spent so far (solid), what the days to come are expected to
+   add (dashed), the range the month should end in four times in five (the cone, opening from today), and the
+   month's income as the ceiling, with what is left (or short) marked at the end. Bills that are due sit on their
+   day. Drawn at the size it is given (1 unit = 1px), like the PnL analysis charts; the pointer's day is its own
+   state, so moving over it redraws nothing else. */
+const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
+  const box = useRef(null);
+  const [w, setW] = useState(0);
+  const [hot, setHot] = useState(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const read = () => setW(Math.round(el.clientWidth));
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const H = 208, PT = 16, PB = 26, PR = 16, ih = H - PT - PB;
+  const { path, dim } = p, d = dim - p.daysLeft;
+  const ticks = niceTicks(0, Math.max(p.endSpend + band, hasInc ? p.endIncome : 0, 1), 4);
+  const top = ticks[ticks.length - 1];
+  const PL = Math.max(30, Math.max(...ticks.map((v) => fmt(v).length)) * 6.5 + 15), iw = Math.max(40, w - PL - PR);
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const X = (day) => r1(PL + (day / dim) * iw), Y = (v) => r1(PT + (1 - Math.min(v, top) / top) * ih);
+  // a smooth step from day to day that never overshoots a day's value
+  const curve = (pts) => pts.map(([x, y], i) => { if (!i) return `M${x} ${y}`; const mid = r1((pts[i - 1][0] + x) / 2); return `C${mid} ${pts[i - 1][1]} ${mid} ${y} ${x} ${y}`; }).join("");
+  // so far: from the y-axis, a little under the first day's figure (CHART_LEAD), to today
+  const done = [[X(0), Y(path[1] * CHART_LEAD)]], todo = [], hiEdge = [], loEdge = [];
+  for (let i = 1; i <= d; i++) done.push([X(i), Y(path[i])]);
+  for (let i = d; i <= dim; i++) {
+    const spread = p.daysLeft ? band * Math.sqrt((i - d) / p.daysLeft) : 0;
+    todo.push([X(i), Y(path[i])]);
+    hiEdge.push(`${X(i)} ${Y(path[i] + spread)}`);
+    loEdge.push(`${X(i)} ${Y(Math.max(path[d], path[i] - spread))}`);
+  }
+  const xEnd = X(dim), yEnd = Y(path[dim]), yInc = Y(p.endIncome), xNow = X(d);
+  const bills = p.billsDue.map((b) => { const day = Math.min(dim, Math.max(b.day, d + 1)); return { ...b, x: X(day), y: Y(path[day]) }; });
+  const pays = p.payDue.map((x) => ({ ...x, x: X(Math.min(dim, Math.max(x.day, d + 1))) }));
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const day = Math.max(1, Math.min(dim, Math.round((((e.clientX - r.left) / r.width) * w - PL) / iw * dim)));
+    setHot((h) => (h === day ? h : day));
+  };
+  const gap = Math.abs(yInc - yEnd);
+  return (
+    <div ref={box} className="an-plot proj-plot" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHot(null)}>
+      {w > 0 && (
+        <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`}>
+          <defs><clipPath id="pj-wipe"><rect className="pj-wipe" x={xNow} y="0" width={Math.max(1, w - xNow)} height={H} /></clipPath></defs>
+          {ticks.map((v, i) => (
+            <g key={v} className="axis-fade" style={{ animationDelay: `${40 + i * 30}ms` }}>
+              {/* the x-axis is the one unbroken line; the levels above it are dashed */}
+              {i === 0 ? <line x1={PL} y1={Y(0)} x2={w - PR} y2={Y(0)} stroke="#c7cdd2" strokeWidth="1" />
+                       : <line x1={PL} y1={Y(v)} x2={w - PR} y2={Y(v)} stroke="#3a3f44" strokeWidth="1" strokeDasharray="4 4" />}
+              <text x={PL - 9} y={Y(v) + 4} fill="#8a9299" fontSize="11" textAnchor="end">{fmt(v)}</text>
+            </g>
+          ))}
+          {hasInc && (
+            <g className="axis-fade" style={{ animationDelay: "200ms" }}>
+              <line x1={PL} y1={yInc} x2={w - PR} y2={yInc} stroke="#3ddc97" strokeOpacity="0.75" strokeWidth="1.5" strokeDasharray="2 5" strokeLinecap="round" />
+              <text x={PL + 8} y={yInc - 7} fill="#8fd7a4" fontSize="11" fontWeight="600">Income {fmt(p.endIncome)}</text>
+              {pays.map((x) => <circle key={x.key} cx={x.x} cy={yInc} r="3.5" fill="#1d2024" stroke="#3ddc97" strokeWidth="1.5"><title>{`${prettyName(x.desc || x.key).replace("No description", "Income")} ${fmt(x.amount)}, around the ${nth(x.day)}`}</title></circle>)}
+            </g>
+          )}
+          {/* today */}
+          <line className="axis-fade" x1={xNow} y1={PT} x2={xNow} y2={Y(0)} stroke="#62696f" strokeWidth="1" strokeDasharray="2 4" style={{ animationDelay: "260ms" }} />
+          <g className="axis-fade" style={{ animationDelay: "120ms" }} fill="#8a9299" fontSize="11">
+            {xNow - PL > 64 && <text x={PL} y={H - 8}>1 {monthName}</text>}
+            {xEnd - xNow > 78 && <text x={xNow} y={H - 8} textAnchor={xNow - PL > 64 ? "middle" : "start"} fill="#c7cdd2">Today</text>}
+            <text x={xEnd} y={H - 8} textAnchor="end">{dim} {monthName}</text>
+          </g>
+          {/* what is still to come is uncovered from today towards the month's end, once the line so far is drawn */}
+          {p.daysLeft > 0 && (
+            <g clipPath="url(#pj-wipe)">
+              <path d={`M${hiEdge.join("L")}L${[...loEdge].reverse().join("L")}Z`} fill={tone} fillOpacity="0.10" />
+              <path d={curve(todo)} fill="none" stroke="#e8eaec" strokeOpacity="0.8" strokeWidth="2" strokeDasharray="1 6" strokeLinecap="round" />
+              {bills.map((b) => <circle key={b.key} cx={b.x} cy={b.y} r="3.5" fill="#1d2024" stroke="#ff8d97" strokeWidth="1.5"><title>{`${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around the ${nth(b.day)}`}</title></circle>)}
+            </g>
+          )}
+          {d > 0 && <path className="an-line" pathLength="1" d={curve(done)} fill="none" stroke="#e8eaec" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />}
+          <circle className="pj-now" cx={xNow} cy={Y(path[d])} r="3.5" fill="#e8eaec" />
+          {/* the end: what is left under the income, or how far over it */}
+          <g className="pj-end">
+            {hasInc && gap > 14 && <line x1={xEnd} y1={yInc} x2={xEnd} y2={yEnd} stroke={tone} strokeWidth="2" strokeLinecap="round" />}
+            <circle cx={xEnd} cy={yEnd} r="4.5" fill={tone} stroke="#1d2024" strokeWidth="1.5" />
+            {hasInc && gap > 26 && <text x={xEnd - 9} y={(yInc + yEnd) / 2 + 4} fill={tone} fontSize="11.5" fontWeight="700" textAnchor="end">{fmt(Math.abs(p.endLeft))} {p.endLeft >= 0 ? "left" : "short"}</text>}
+          </g>
+          {hot !== null && (
+            <g pointerEvents="none">
+              <line x1={X(hot)} y1={PT} x2={X(hot)} y2={Y(0)} stroke="#8a9299" strokeWidth="1" />
+              <circle cx={X(hot)} cy={Y(path[hot])} r="4" fill="#e8eaec" stroke="#1d2024" strokeWidth="1.5" />
+            </g>
+          )}
+        </svg>
+      )}
+      {w > 0 && hot !== null && <GlassTip x={X(hot)} y={Y(path[hot])} W={w} H={H} label={`${hot} ${monthName}${hot > d ? " · expected" : ""}`} value={fmt(path[hot])} below={Y(path[hot]) < 70} />}
+    </div>
+  );
+};
 
 const REEL = ["menu", ...CAT_ORDER]; // menu, food, transport, shopping, bills, other
 const SLOT = 22;
@@ -7456,6 +7571,27 @@ export default function PnlCalendar() {
     return projectMonth({ spending, incomes, limits, y: now.getFullYear(), m: now.getMonth(), d: now.getDate(), hour: projHour, catOf });
   }, [spending, incomes, limits, aiCats, view, isCurrentMonth, dayTick, projHour]);
 
+  // how it did at this same point of the three months before: each is worked out again from only what was entered by
+  // that day, and set against how the month's spending really ended
+  const projRecord = useMemo(() => {
+    if (!projection) return [];
+    const catOf = (it) => { const c = it.cat || inferCat(it.desc) || aiCats[it.id] || "other"; return c in CATS ? c : "other"; };
+    const out = [];
+    for (let k = 1; k <= 3; k++) {
+      const first = new Date(now.getFullYear(), now.getMonth() - k, 1), yy = first.getFullYear(), mm = first.getMonth();
+      const dimK = new Date(yy, mm + 1, 0).getDate(), cutD = Math.min(now.getDate(), dimK), last = keyOf(yy, mm, cutD), mk = monthKeyOf(yy, mm);
+      let actual = 0;
+      for (let dd = 1; dd <= dimK; dd++) (spending[keyOf(yy, mm, dd)] || []).forEach((it) => { if (!it.zero && it.amount > 0) actual += it.amount; });
+      if (!actual || cutD >= dimK) continue;
+      const sp = {}, inc = {};
+      Object.keys(spending).forEach((key) => { if (key <= last) sp[key] = spending[key]; });
+      Object.keys(incomes).forEach((key) => { if (key < mk) inc[key] = incomes[key]; else if (key === mk) inc[key] = incomes[key].filter((it) => (it.day || 1) <= cutD); });
+      const r = projectMonth({ spending: sp, incomes: inc, limits, y: yy, m: mm, d: cutD, hour: 24, catOf });
+      if (r) out.push({ name: MONTHS_SHORT[mm], off: Math.abs(r.endSpend - actual) / actual });
+    }
+    return out;
+  }, [projection]);
+
   const renderProjection = () => {
     if (!isCurrentMonth) return null;
     const p = projection;
@@ -7482,24 +7618,22 @@ export default function PnlCalendar() {
     const band = 1.28 * p.sd;
     const lo = hasInc ? p.endLeft - band : p.endSpend - band, hi = hasInc ? p.endLeft + band : p.endSpend + band;
     const names = (list) => list.map((b) => prettyName(b.desc || b.key)).join(", ");
-    // the bar reads like the one in the header: what is left in green on the left, what is spent in red on the
-    // right, and between them (hatched) what the rest of the month is expected to take
-    const whole = Math.max(p.endIncome, p.endSpend, 1);
-    const segs = [
-      { key: "left", v: hasInc ? Math.max(0, p.endLeft) : 0, cls: "left" },
-      { key: "come", v: p.toCome, cls: "come" },
-      { key: "spent", v: p.spent, cls: "spent" },
-    ].filter((g) => g.v > 0);
+    const tone = !hasInc ? "#e8eaec" : good ? "#3ddc97" : "#ff5d6c";
+    // what each empty day could cost and the month still end on zero, once the bills, the big buys and what is
+    // already written are set aside
+    const room = hasInc && p.openDays > 0 ? Math.max(0, (p.endLeft + p.everyday - p.todayMore) / p.openDays) : null;
     const tiles = [
       { label: "WEEKDAYS", value: fmt(p.weekday), unit: "/ day", note: p.nWd ? `${p.nWd} still to come` : "none left this month",
         tip: "What a weekday usually costs you, read from the last 12 weeks. Recent days count more." },
       { label: "WEEKENDS", value: fmt(p.weekend), unit: "/ day", note: p.nWe ? `${p.nWe} still to come` : "none left this month",
         tip: "What a Saturday or Sunday usually costs you, read the same way." },
     ];
+    if (room !== null) tiles.push({ label: "ROOM A DAY", value: fmt(room), unit: "/ day", note: room > 0 ? "and the month ends on zero" : "none: the month is short as it is", color: room > 0 ? undefined : "#ff8d97",
+      tip: "What each of the empty days still to come could cost with the month ending on exactly zero, after the bills due, the big buys expected and what is already entered." });
     if (p.billsDue.length) tiles.push({ label: "BILLS DUE", value: fmt(p.billSum), note: names(p.billsDue),
       tip: "Bills that come back every month and aren't paid yet this month: " + p.billsDue.map((b) => `${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around ${b.day} ${MONTHS_SHORT[month]}`).join(" · ") });
-    if (p.big >= 1000) tiles.push({ label: "BIG BUYS", value: `≈ ${fmt(p.big)}`, note: `about ${p.bigPerMonth >= 1.5 ? Math.round(p.bigPerMonth) : "1"} a month`,
-      tip: `One-off buys of ${fmt(p.bigFrom)} or more follow no weekday. You make about ${p.bigPerMonth.toFixed(1).replace(".0", "")} a month at ${fmt(p.bigEach)} each, so the days left carry this much.` });
+    if (p.big >= 1000) tiles.push({ label: "BIG BUYS", value: `≈ ${fmt(p.big)}`, note: p.bigMonths >= 4 ? `${p.bigNow} made, about ${p.bigMore.toFixed(1).replace(".0", "")} more` : `about ${p.bigPerMonth >= 1.5 ? Math.round(p.bigPerMonth) : "1"} a month`,
+      tip: `One-off buys of ${fmt(p.bigFrom)} or more follow no weekday. You make about ${p.bigPerMonth.toFixed(1).replace(".0", "")} a month at ${fmt(p.bigEach)} each, read from the last year. ${p.bigMonths >= 4 ? `Going by how many each of the last ${p.bigMonths} months had and the ${p.bigNow} made so far this month, about ${p.bigMore.toFixed(1)} more should come.` : "The days left carry this much of them."}` });
     if (p.planned > 0) tiles.push({ label: "ALREADY ENTERED", value: fmt(p.planned), note: `on ${p.daysLeft - p.openDays} later day${p.daysLeft - p.openDays === 1 ? "" : "s"}`,
       tip: "Expenses already written on later days of this month. Those days are taken as written; only the empty days are projected." });
     if (p.paySum > 0) tiles.push({ label: "INCOME DUE", value: `+${fmt(p.paySum)}`, note: names(p.payDue).replace(/No description/g, "Income"), color: "#8fd7a4",
@@ -7519,21 +7653,12 @@ export default function PnlCalendar() {
             </span>
           )}
         </div>
-        <div className="proj-bar">
-          <div className="proj-track">
-            <div className="proj-fill">
-              {segs.map((g) => <span key={g.key} className={`proj-seg ${g.cls}`} style={{ flex: `${Math.max(g.v / whole, 0.006)} 1 0` }} />)}
-            </div>
-          </div>
-          {/* spending passes the month's income here */}
-          {hasInc && !good && <span className="proj-mark" style={{ right: `${(p.endIncome / whole) * 100}%` }} />}
-        </div>
+        <ProjChart p={p} tone={tone} hasInc={hasInc} band={band} fmt={fmt} monthName={MONTHS_SHORT[month]} />
         <div className="proj-legend">
-          {hasInc && (good
-            ? <span><i className="left" />Left <b>{fmt(p.endLeft)}</b></span>
-            : <span><i className="mark" />Income <b>{fmt(p.endIncome)}</b></span>)}
-          <span><i className="come" />Still to come <b>{fmt(p.toCome)}</b></span>
-          <span><i className="spent" />Spent so far <b>{fmt(p.spent)}</b></span>
+          <span><i className="done" />Spent so far <b>{fmt(p.spent)}</b></span>
+          <span><i className="todo" />Still to come <b>{fmt(p.toCome)}</b></span>
+          {band >= 1000 && <span><i className="cone" style={{ background: tone }} />Likely range</span>}
+          {p.billsDue.length > 0 && <span><i className="bill" />Bill due</span>}
         </div>
         <div className="proj-tiles">
           {tiles.map((t, i) => (
@@ -7544,6 +7669,12 @@ export default function PnlCalendar() {
             </div>
           ))}
         </div>
+        {projRecord.length > 0 && (
+          <div className="proj-rec" title="The projection worked out again as it would have stood on this day of each earlier month, from only what was entered by then, against how that month's spending really ended.">
+            <span className="msym">history</span>
+            <span>On the {nth(now.getDate())} of earlier months it landed {projRecord.map((r, i) => <Fragment key={r.name}>{i > 0 && " · "}<b>{Math.round(r.off * 100)}%</b>{i === 0 && " off"} in {r.name}</Fragment>)}</span>
+          </div>
+        )}
       </div>
     );
   };
@@ -10112,23 +10243,22 @@ export default function PnlCalendar() {
         .proj-num { font-size: 27px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.1; }
         .proj-cap { font-size: 13.5px; color: #aeb5bb; }
         .proj-range { font-size: 12.5px; color: #8a9299; font-variant-numeric: tabular-nums; }
-        .proj-bar { position: relative; margin: 12px 2px 0; }
-        .proj-track { height: 11px; border-radius: 99px; overflow: hidden; }
-        .proj-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-right: -1px; border-radius: 2px; background: #e8eaec;
-                     box-shadow: 0 0 0 2px #24272b; animation: fadeIn .3s ease .9s backwards; }
-        .proj-legend i.mark { width: 2px; height: 12px; border-radius: 2px; background: #e8eaec; margin: 0 4px; }
-        .proj-fill { display: flex; gap: 2px; height: 100%; animation: projWipe .7s cubic-bezier(0.32,0.72,0.24,1) .3s backwards; }
         @keyframes projWipe { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-        .proj-seg { min-width: 3px; height: 100%; }
-        .proj-seg.left, .proj-legend i.left { background: #3ddc97; }
-        .proj-seg.spent, .proj-legend i.spent { background: #ff5d6c; }
-        .proj-seg.come, .proj-legend i.come {
-          background: repeating-linear-gradient(125deg, rgba(255,93,108,0.62) 0 3px, rgba(255,93,108,0.22) 3px 6px); }
         .proj-legend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 8px 2px 0;
                        font-size: 12.5px; color: #9aa3ab; font-variant-numeric: tabular-nums; }
         .proj-legend span { display: inline-flex; align-items: center; gap: 6px; }
-        .proj-legend i { width: 10px; height: 10px; border-radius: 3px; }
-        .proj-legend i.come { background: repeating-linear-gradient(125deg, rgba(255,93,108,0.7) 0 2px, rgba(255,93,108,0.25) 2px 4px); }
+        .proj-legend i { width: 14px; height: 10px; border-radius: 3px; }
+        .proj-legend i.done { height: 2px; border-radius: 2px; background: #e8eaec; }
+        .proj-legend i.todo { height: 2px; background: repeating-linear-gradient(90deg, #e8eaec 0 2px, transparent 2px 6px); }
+        .proj-legend i.cone { opacity: 0.22; }
+        .proj-legend i.bill { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #ff8d97; box-sizing: border-box; }
+        .proj-plot { margin: 10px 0 0; }
+        .pj-wipe { transform-box: fill-box; transform-origin: left center; animation: flowWipe .8s cubic-bezier(0.45,0,0.15,1) 1s backwards; }
+        .pj-now { animation: axisIn .3s ease .95s backwards; }
+        .pj-end { animation: flowTagIn .4s cubic-bezier(0.22,1,0.36,1) 1.65s backwards; }
+        .proj-rec { display: flex; align-items: center; gap: 7px; margin: 11px 2px 0; font-size: 12px; color: #8a9299; font-variant-numeric: tabular-nums; }
+        .proj-rec .msym { font-size: 15px; color: #6d757d; }
+        .proj-rec b { color: #c7cdd2; font-weight: 600; }
         .proj-legend b { color: #e8eaec; font-weight: 600; }
         .proj-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-top: 13px; }
         .proj-tile { border-radius: 12px; padding: 10px 13px 11px; min-width: 0; }
