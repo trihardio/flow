@@ -9982,10 +9982,6 @@ export default function PnlCalendar() {
           47% { transform: translateX(-16px); }
           100% { transform: translateX(0); }
         }
-        .flow-wrap.down { animation: flowDown .34s cubic-bezier(0.4,0,0.2,1) both; }
-        .flow-wrap.up { animation: flowUp .34s cubic-bezier(0.4,0,0.2,1) both; }
-        @keyframes flowDown { from { opacity: 0; transform: translateY(-26px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes flowUp { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: translateY(0); } }
         .dot-in { animation: dotIn .26s cubic-bezier(0.34,1.35,0.64,1) both; }
         .dot-out { animation: dotOut .22s ease both; }
         @keyframes dotIn { from { opacity: 0; transform: scale(0.2); } 70% { transform: scale(1.25); } to { opacity: 1; transform: scale(1); } }
@@ -10389,23 +10385,16 @@ export default function PnlCalendar() {
         }
         .flow-label { transition: background .16s ease; }
         .flow-label:hover { background: #33373b; }
-        .score-arc { animation: scoreDraw 1s cubic-bezier(0.3,0,0.2,1) both; transform-origin: center; }
+        .score-arc { animation: scoreDraw 1s cubic-bezier(0.3,0,0.2,1) backwards; transform-origin: center; }
         @keyframes scoreDraw { from { stroke-dasharray: 0 9999; } }
-        .bd-title { animation: bdTitleIn .3s cubic-bezier(0.34,1.15,0.64,1) both; }
+        .bd-title { animation: bdTitleIn .3s cubic-bezier(0.34,1.15,0.64,1) backwards; }
         @keyframes bdTitleIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .bd-icon { display: inline-block; animation: bdIconRoll .4s cubic-bezier(0.55,0,0.35,1) both; }
-        @keyframes bdIconRoll {
-          0% { transform: translateY(0); filter: blur(0px); }
-          42% { transform: translateY(-24px); filter: blur(2.5px); }
-          43% { transform: translateY(24px); filter: blur(2.5px); }
-          100% { transform: translateY(0); filter: blur(0px); }
-        }
-        .score-card { animation: bdItemIn .4s cubic-bezier(0.4,0,0.2,1) .12s both; }
-        .sub-box { animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) both; }
+        .score-card { animation: bdItemIn .4s cubic-bezier(0.4,0,0.2,1) .12s backwards; }
+        .sub-box { animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) backwards; }
         @keyframes subBoxIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-        .bd-item { animation: bdItemIn .34s cubic-bezier(0.4,0,0.2,1) both; }
+        .bd-item { animation: bdItemIn .34s cubic-bezier(0.4,0,0.2,1) backwards; }
         @keyframes bdItemIn { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: translateY(0); } }
-        .bd-fill { display: block; height: 100%; border-radius: 99px; animation: bdGrow .55s cubic-bezier(0.4,0,0.2,1) both; transform-origin: left center; }
+        .bd-fill { display: block; height: 100%; border-radius: 99px; animation: bdGrow .55s cubic-bezier(0.4,0,0.2,1) backwards; transform-origin: left center; }
         @keyframes bdGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
         /* Money flow opening (timings: FLOW_* near the top of the file). The income bar fills from the top; each
            ribbon is uncovered from the left by its own sweep, fading up as it sets off; each expense bar grows out of
