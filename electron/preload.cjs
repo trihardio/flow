@@ -6,6 +6,14 @@ contextBridge.exposeInMainWorld("flowAI", {
   pick: (kind, text, labels) => ipcRenderer.invoke("ai:pick", kind, text, labels),
 });
 
+// The installed app's first launch (or the first after a macOS update): the system's cache of graphics programs is
+// empty, and the page builds them all before its opening plays (warmPrime in App.jsx; how it is told is in main.cjs).
+contextBridge.exposeInMainWorld("flowGfx", {
+  cold: process.argv.includes("--flow-gfx-cold"),
+  settle: () => ipcRenderer.invoke("gfx:settle"),     // resolves once the AI helper's own one-time setup is over
+  primed: () => ipcRenderer.send("gfx:primed"),       // everything is built: not again until the cache is empty again
+});
+
 contextBridge.exposeInMainWorld("flowFX", {
   // Resolves to { IDR, MYR } (what 1 USDT is worth right now), or null when offline.
   rates: () => ipcRenderer.invoke("fx:rates"),

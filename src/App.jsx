@@ -1,4 +1,5 @@
-import { Fragment, memo, useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Fragment, memo, useId, useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 
 const STORE_KEY = "pnl-calendar-idr";
 if (typeof document !== "undefined") {
@@ -15,7 +16,7 @@ const AI_OK = typeof window !== "undefined" && !!window.flowAI;
    - Inside Claude artifacts, window.storage is provided.
    - Running locally (vite/CRA/Electron), fall back to localStorage so the
      data survives reloads, restarts and app packaging. */
-const store = {
+const rawStore = {
   async get(key) {
     if (typeof window !== "undefined" && window.storage?.get) return window.storage.get(key);
     const v = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
@@ -27,12 +28,121 @@ const store = {
     if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
     return { key, value };
   },
+  async del(key) {
+    try {
+      if (typeof window !== "undefined" && window.storage?.set) { const f = window.storage.delete || window.storage.remove; if (f) await f.call(window.storage, key); }
+      else if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+    } catch (e) {}
+  },
+};
+/* ---------- accounts (7 October 2026: he asked for a first-time screen that takes a name and a picture, and for a
+   "select acc panel" like Netflix's to change between people) ----------
+   The list is kept under USERS_KEY: { list: [{ id, first, last, pic }], last: id }. It is nobody's data and is never
+   in a backup. Every other key is an account's own: the first account ("main") keeps the keys the app always had, so
+   what was saved before there were accounts is simply its data and nothing had to be moved; any other account's keys
+   start with "u:<id>:". The pictures on trades sit in a store per account for the same reason (shotOpen): each side
+   sweeps away the pictures none of its trades point to, and would have swept away another account's.
+   One account per page load: USER is set once, when an account is chosen, and changing account loads the page again
+   (PICK_FLAG says to show the select acc panel then). Until one is chosen nothing can be read or written: `store`
+   refuses, so no empty state can ever be saved over somebody's entries. */
+const USERS_KEY = "flow-users", PICK_FLAG = "flow-pick-acc", USERS_MAX = 6;
+const NAME_MAX = { first: 14, last: 18 };
+const USER = { pre: null, id: null, first: "", aside: false };
+let ASIDE = {};        // the accounts whose entries are put aside ("Reset account", below), read before an account is chosen
+const userChoose = (u) => { USER.id = u.id; USER.first = u.first; USER.pre = u.id === "main" ? "" : `u:${u.id}:`; USER.aside = !!ASIDE[u.id]; };
+const noUser = () => Promise.reject(new Error("no account chosen yet"));
+const store = {
+  get: (key) => (USER.pre === null ? noUser() : rawStore.get(USER.pre + key)),
+  set: (key, value) => (USER.pre === null ? noUser() : rawStore.set(USER.pre + key, value)),
+};
+const nameClean = (v, max) => String(v ?? "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trimStart().slice(0, max);
+const cleanUsers = (raw) => {
+  const seen = new Set();
+  const list = (raw && Array.isArray(raw.list) ? raw.list : [])
+    .filter((u) => u && typeof u.id === "string" && /^[a-z0-9]{1,24}$/.test(u.id) && !seen.has(u.id) && seen.add(u.id) && nameClean(u.first, NAME_MAX.first).trim())
+    .map((u) => ({ id: u.id, first: nameClean(u.first, NAME_MAX.first).trim(), last: nameClean(u.last, NAME_MAX.last).trim(), pic: typeof u.pic === "string" ? u.pic.slice(0, 60) : "",
+                   ...(typeof u.img === "string" && /^data:image\/(webp|png|jpeg);base64,/.test(u.img) && u.img.length < 400000 && { img: u.img }),
+                   ...(typeof u.bg === "string" && u.bg && { bg: u.bg.slice(0, 20) }),
+                   ...(typeof u.bgImg === "string" && /^data:image\/(webp|png|jpeg);base64,/.test(u.bgImg) && u.bgImg.length < 400000 && { bgImg: u.bgImg }),
+                   ...(u.fresh && { fresh: 1 }) }));        // (fresh: added and never been in yet: the introduction is still to come)
+  return list.length ? { list, last: list.some((u) => u.id === raw.last) ? raw.last : list[0].id } : null;
+};
+// every export begins with the account's first name (11 October 2026, his example: "rassam-pnl-export-11-10-2026"), so
+// two people exporting on one day don't replace each other's file. Letters and digits only: electron/main.cjs reads
+// the side from what comes after it. Until then only an account other than the first had its name, at the end
+const userFilePre = () => `${(USER.first || "").toLowerCase().replace(/[^a-z0-9]+/g, "") || USER.id || "flow"}-`;
+// an account deleted: everything saved under its keys, and its pictures. Never the first account: its keys are the plain ones
+const userErase = async (id) => {
+  if (id === "main") return;
+  for (const k of [STORE_KEY, TEST_CFG_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])]) await rawStore.del(`u:${id}:${k}`);
+  try { indexedDB.deleteDatabase(`flow-shots-${id}`); } catch (e) {}
+  // the filed screens for the warm-up may show its figures: they all go (each screen is filed again once opened)
+  try { const db = await warmOpen(); if (db) db.transaction("screens", "readwrite").objectStore("screens").clear(); } catch (e) {}
+};
+/* "Reset account" (a test tool; 11 October 2026: "so i can reset my account fully and become new to the app"): the
+   account starts over as somebody new: the first launch's preparation, the login, the introduction, and nothing
+   entered. What it had saved is not erased: every key of it is moved aside (ASIDE_PRE in front), and its name and
+   picture are noted under ASIDE_KEY, until "Restore my entries" moves them back. While something is aside the pictures
+   on its trades are never swept (USER.aside, shotSweep): to the emptied account they belong to no trade. */
+const ASIDE_KEY = "flow-aside", ASIDE_PRE = "aside:";
+const PRIME_AGAIN = "flow-prime-again";      // the first launch's preparation is to be gone through once more (see gfxCold)
+const userKeys = (id) => [STORE_KEY, TEST_CFG_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])].map((k) => (id === "main" ? k : `u:${id}:${k}`));
+const asideRead = async () => { try { const v = JSON.parse((await rawStore.get(ASIDE_KEY)).value); return v && typeof v === "object" ? v : {}; } catch (e) { return {}; } };
+// the filed screens for the warm-up show an account's figures: they all go (each is filed again once opened)
+const warmClear = async () => {
+  try {
+    const db = await warmOpen();
+    if (db) await new Promise((done) => { const tx = db.transaction("screens", "readwrite"); tx.objectStore("screens").clear(); tx.oncomplete = tx.onerror = tx.onabort = done; });
+  } catch (e) {}
+};
+// Resolves true once the account is empty. The first time its keys are moved aside, one at a time (a copy, then the
+// original goes, so there is never more than one key twice); if there is no room for that, all is put back and nothing
+// is reset. A reset while something is aside already only drops what was entered since.
+const userAside = async (u) => {
+  const all = await asideRead(), keys = userKeys(u.id);
+  if (!all[u.id]) {
+    await rawStore.set(ASIDE_KEY, JSON.stringify({ ...all, [u.id]: { user: u } }));
+    try {
+      for (const k of keys) {
+        let v = null;
+        try { v = (await rawStore.get(k)).value; } catch (e) { continue; }       // nothing under that key
+        await rawStore.set(ASIDE_PRE + k, v);
+        await rawStore.del(k);
+      }
+      await rawStore.set(ASIDE_KEY, JSON.stringify({ ...all, [u.id]: { user: u, done: true } }));
+    } catch (e) { await userBack(u.id); return false; }
+  } else for (const k of keys) await rawStore.del(k);
+  await warmClear();
+  return true;
+};
+// What was put aside is moved back over whatever was entered since. Resolves to the account as it was, or null.
+// (A move that never finished is only undone: the keys it had not reached still hold what they held.)
+const userBack = async (id) => {
+  const all = await asideRead(), was = all[id];
+  if (!was) return null;
+  for (const k of userKeys(id)) {
+    let v = null;
+    try { v = (await rawStore.get(ASIDE_PRE + k)).value; } catch (e) { if (was.done) await rawStore.del(k); continue; }
+    await rawStore.del(k);
+    await rawStore.set(k, v);
+    await rawStore.del(ASIDE_PRE + k);
+  }
+  delete all[id];
+  if (Object.keys(all).length) await rawStore.set(ASIDE_KEY, JSON.stringify(all)); else await rawStore.del(ASIDE_KEY);
+  await warmClear();
+  return was.user || null;
 };
 // A backup holds only what he entered himself: generated test entries (test: true) are left out, and a day or month
 // left with nothing is dropped. In the Mac app the file goes straight into his "exports" folder, in a folder of its
-// side that electron/main.cjs picks from the file's name (pnl-export-…, crypto-export-…, idx-export-…).
+// side that electron/main.cjs picks from the file's name (rassam-pnl-export-…, rassam-crypto-export-…, rassam-idx-export-…).
 const ownEntries = (byKey) => Object.fromEntries(Object.entries(byKey).map(([k, list]) => [k, list.filter((it) => !it.test)]).filter(([, list]) => list.length));
 const BACKUP_DONE = AI_OK ? "Saved to exports" : "Backup downloaded";
+// a finance backup with no entry, income, goal or debt in it (limits and the currency alone are not worth a file)
+const EMPTY_BACKUP = (d) => !Object.keys(d.spending || {}).length && !Object.keys(d.incomes || {}).length && !(d.goals || []).length && !(d.debts || []).length && !(d.plans || []).length;
+/* What a footer symbol does, said in a small note above it while the pointer is on it (11 October 2026: "have info when
+   hovering over them. not too big ui"): its name, and one short line. Always there, only shown; it takes the place of
+   the system's own tooltip, so the button has no title. */
+const BkTip = ({ name, say }) => <span className="bk-tip"><b>{name}</b>{say}</span>;
 
 /* ---------- warm-up: the screens he has opened before are drawn once more, all but invisibly, under the opening screen ----------
    The first time a screen is shown after a launch it pays for things its second showing doesn't: its text is shaped in
@@ -53,7 +163,10 @@ const WARM_SETTLE_MS = 1400, WARM_AGAIN_MS = [7000, 25000];
 const WARM_MAX_CHARS = 700000;         // a screen bigger than this is not filed
 const WARM_KEEP_MS = 30 * 86400000;    // a screen not opened for a month is no longer warmed
 const WARM_MAX_SLICES = 3;             // a long page is drawn a window-height at a time, this many at most
-const warm = { page: null, db: null, all: null, pending: null };
+// a filed screen shorter than this holds nothing to draw: the trading pop-ups were filed as the page's two hidden font
+// spans and nothing else for as long as they were not found inside their wrapper (see warmFile)
+const WARM_STUB = 1500;
+const warm = { page: null, db: null, all: null, pending: null, at: "", seen: new Set(), hold: true, until: 0, rest: false, moved: 0, tour: null };
 const warmOpen = () => (warm.db ||= new Promise((done) => {
   try {
     const rq = indexedDB.open("flow-warm", 1);
@@ -101,7 +214,13 @@ const warmFile = (key, rank) => {
   let html = "";
   for (const el of page.children) {
     if (el.tagName === "STYLE" || el.classList.contains("open-panel")) continue;
-    if (rank === 2 && getComputedStyle(el).position !== "fixed") continue;
+    if (rank === 2 && getComputedStyle(el).position !== "fixed") {
+      // the trading side's pop-ups are inside its wrapper (.term): they are filed in an empty copy of it, so that its
+      // styles still reach them. (From the day the wrapper went in until 8 October 2026 they were not filed at all.)
+      const inner = [...el.children].filter((kid) => getComputedStyle(kid).position === "fixed").map(markup).join("");
+      if (inner) { const shell = el.cloneNode(false).outerHTML, cut = shell.lastIndexOf("</"); html += shell.slice(0, cut) + inner + shell.slice(cut); }
+      continue;
+    }
     html += markup(el);
   }
   if (!html || html.length > WARM_MAX_CHARS) return;
@@ -113,6 +232,7 @@ const warmFile = (key, rank) => {
 // the screen named `key` is filed once it has stood for a moment (null: nothing to file, e.g. in the middle of a transition)
 const useWarmScreen = (key, rank = key && key.includes("+") ? 2 : 1) => {
   useEffect(() => {
+    if (key) { warm.at = key; warm.seen.add(key); }       // (warmRest: where he is, and what needs no drawing any more)
     if (!key || typeof indexedDB === "undefined" || !window.requestIdleCallback) return;
     let cancel = () => {};
     // the first copy is taken within four seconds whatever happens; the later ones only if the page falls idle
@@ -146,22 +266,461 @@ const warmOne = async (host, sc, go) => {
   for (let i = 1; i < tall && go(); i++) { box.style.top = `${-i * window.innerHeight}px`; await warmFrame(); }
   box.remove();
 };
-// App start: draw as many filed screens as fit before `deadline` (performance.now()), under the opening screen
+// the filed screens worth drawing, soonest needed first
+const warmQueue = async () => {
+  const all = await (warm.all || warmAll());
+  warm.all = null;
+  return all.filter((sc) => sc && typeof sc.key === "string" && typeof sc.html === "string" && sc.html.length > WARM_STUB && Date.now() - sc.at < WARM_KEEP_MS)
+    .sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1) || b.at - a.at);
+};
+/* ---------- after the opening: the screens there was no time for under it ----------
+   Under the opening only some of the filed screens fit: 8 to 14 of 24 when measured on 9 October 2026. With four sides
+   and their pop-ups there are more than the still second can hold, and the pop-ups, which come last, never had their
+   turn: a chart, a calculator or a wrapped was drawn for the first time when he pressed it. The rest are drawn
+   afterwards in the same all but invisible box, but only while he is doing nothing, and never a whole screen at a go
+   (an idle-time version that did that, 20 to 170ms at a time, was dropped: it could land on a press):
+   - nothing until the pointer, the wheel and the keys have been still for WARM_QUIET_MS, and longer after a press or a
+     key (what it started is still moving); nothing while the app says something is on its way in or out (warm.hold)
+     or a number is counting (warm.moved), nor while the window is hidden; and to begin, the page has to be at rest
+     (a long idle gap, which there is only while it is making no frames at all);
+   - a piece at a time: a screen is put in WARM_PIECE elements at a go and laid out there and then, WARM_SLOT_MS of
+     work at most, then a frame (on his 120Hz display what is left of each frame, a few ms). A press that does arrive
+     meanwhile waits for one piece, never for a screen;
+   - the first movement of the pointer makes the box draw nothing at once (opacity 0, one style on one element), and
+     the work stops where it is until he is still again.
+   The screens of the side he is on go first, and a screen he has opened himself meanwhile is left out. */
+const WARM_QUIET_MS = 700, WARM_PRESS_MS = 2400;
+const WARM_PIECE = 120;        // elements put in at a go
+const WARM_SLOT_MS = 5;        // work done in one idle gap
+const WARM_GAP_MS = 12;        // an idle gap shorter than this means frames are being made: not the moment to begin
+const warmSide = (key) => (key.includes("-") ? key.slice(0, key.indexOf("-")) : "finance");
+const warmRest = (queue) => {
+  if (warm.rest || !queue.length || typeof window === "undefined" || !window.requestIdleCallback) return;
+  warm.rest = true;
+  let calm = performance.now() + WARM_PRESS_MS, host = null, run = null, cur = null, timer = 0, idle = 0, raf = 0, over = false, last = 0, tight = 0;
+  const hide = () => { if (host && host.style.opacity !== "0") host.style.opacity = "0"; };
+  const moved = () => { calm = Math.max(calm, performance.now() + WARM_QUIET_MS); hide(); };
+  const pressed = () => { calm = performance.now() + WARM_PRESS_MS; hide(); };
+  // a window of another size lays out whatever is in the page again: a half-built screen is given up and begun again later
+  const resized = () => { if (cur) { queue.unshift(cur); cur = run = null; host.replaceChildren(); } moved(); };
+  const opts = { capture: true, passive: true };
+  const ears = [["pointermove", moved], ["wheel", moved], ["pointerdown", pressed], ["keydown", pressed], ["resize", resized]];
+  ears.forEach(([name, fn]) => window.addEventListener(name, fn, opts));
+  const end = () => {
+    over = true;
+    ears.forEach(([name, fn]) => window.removeEventListener(name, fn, opts));
+    clearTimeout(timer); window.cancelIdleCallback(idle); cancelAnimationFrame(raf);
+    if (host) host.remove();
+  };
+  // the next screen: one of the side he is on if there is one, else the next in line; never one he has opened himself
+  const pick = () => {
+    for (let i = queue.length - 1; i >= 0; i--) if (warm.seen.has(queue[i].key)) queue.splice(i, 1);
+    if (!queue.length) return null;
+    const side = warmSide(warm.at);
+    return queue.splice(Math.max(0, queue.findIndex((sc) => warmSide(sc.key) === side)), 1)[0];
+  };
+  // One screen as a run of small steps. Each `yield` ends a piece of work; `yield true` asks for a frame first (the
+  // work loop gives one after every slot anyway, so it only ends the slot early).
+  // As warmOne: built, drawn, every second element repainted in place, then on down a long page.
+  function* draw(sc) {
+    const tpl = document.createElement("template");
+    tpl.innerHTML = sc.html;                       // read into a document of its own: nothing is laid out or loaded yet
+    yield;
+    const box = document.createElement("div");
+    box.className = "warm-screen";
+    host.appendChild(box);
+    const sets = [];
+    function* into(src, dst) {
+      let batch = [], n = 0;
+      const put = () => { for (const nd of batch) dst.appendChild(nd); sets.push(batch); batch = []; n = 0; void box.offsetHeight; };
+      for (const kid of [...src.childNodes]) {
+        const size = kid.nodeType === 1 ? 1 + kid.getElementsByTagName("*").length : 0;
+        if (size > WARM_PIECE) {
+          if (batch.length) { put(); yield; }
+          const shell = kid.cloneNode(false);
+          dst.appendChild(shell);
+          yield* into(kid, shell);
+        } else {
+          if (n + size > WARM_PIECE && batch.length) { put(); yield; }
+          batch.push(kid); n += size;
+        }
+      }
+      if (batch.length) { put(); yield; }
+    }
+    yield* into(tpl.content, box);
+    yield true;
+    for (const nodes of sets) {
+      let any = false;
+      for (const nd of nodes) if (nd.nodeType === 1) { nd.classList.add("wt"); any = true; }
+      if (any) { void box.offsetHeight; yield; }
+    }
+    yield true;
+    const tall = Math.min(WARM_MAX_SLICES, Math.ceil(box.scrollHeight / window.innerHeight));
+    for (let i = 1; i < tall; i++) { box.style.top = `${-i * window.innerHeight}px`; yield true; }
+    box.remove();
+    yield true;
+  }
+  const later = (ms) => { timer = setTimeout(() => { idle = window.requestIdleCallback(work); }, ms); };
+  const next = () => { raf = requestAnimationFrame(() => { idle = window.requestIdleCallback(work); }); };
+  const work = (gap) => {
+    if (over) return;
+    const now = performance.now();
+    if (warm.hold) { later(200); return; }
+    if (now - warm.moved < 250) calm = Math.max(calm, now + WARM_QUIET_MS);
+    const wait = Math.max(calm, warm.until);       // (warm.until: what has just come in is still settling)
+    if (now < wait || document.visibilityState !== "visible") { later(Math.max(200, wait - now)); return; }
+    // To begin, the page has to be at rest. Once at it, the frames are this work's own and the gaps between them
+    // are short (the rest of a frame): each takes what fits, and a few frames with no room at all mean something
+    // else has begun to move, so it waits for rest again.
+    const room = gap.timeRemaining(), going = now - last < 150;
+    if (!going && room < WARM_GAP_MS) { later(120); return; }
+    if (going && room < 2.5) { if (++tight > 8) { tight = 0; later(300); } else next(); return; }
+    tight = 0;
+    if (!host) host = warmHost();
+    if (host.style.opacity) host.style.opacity = "";
+    const until = now + Math.min(WARM_SLOT_MS, room - 1);
+    try {
+      for (let frame = false; !frame && performance.now() < until;) {
+        if (!run) { cur = pick(); if (!cur) { end(); return; } run = draw(cur); }
+        const step = run.next();
+        if (step.done) cur = run = null; else frame = step.value === true;
+      }
+    } catch (e) { cur = run = null; host.replaceChildren(); /* a screen that can't be put back is left out */ }
+    last = performance.now();
+    next();
+  };
+  later(WARM_PRESS_MS);
+};
+// App start: draw as many filed screens as fit before `deadline` (performance.now()), under the opening screen;
+// what does not fit is drawn afterwards, while he is doing nothing (warmRest)
 const warmReplay = (deadline) => (warm.pending = (async () => {
   if (typeof document === "undefined" || typeof indexedDB === "undefined") return;
-  const queue = (await (warm.all || warmAll())).filter((sc) => sc && typeof sc.html === "string" && Date.now() - sc.at < WARM_KEEP_MS)
-    .sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1) || b.at - a.at);
+  const queue = await warmQueue();
   const left = () => deadline - performance.now();
-  if (!queue.length || left() < 140) return;
-  const host = warmHost();
-  const guard = setTimeout(() => host.remove(), Math.max(0, left()));      // gone on time even if no frame comes (window hidden)
-  try {
-    while (queue.length && left() > 90) await warmOne(host, queue.shift(), () => left() > 60);
-    await warmFrame();
-  } catch (e) { /* a screen that can't be put back is skipped, with the rest */ }
-  clearTimeout(guard);
-  host.remove();
+  if (queue.length && left() >= 140) {
+    const host = warmHost();
+    const guard = setTimeout(() => host.remove(), Math.max(0, left()));      // gone on time even if no frame comes (window hidden)
+    try {
+      while (queue.length && left() > 90) await warmOne(host, queue.shift(), () => left() > 60);
+      await warmFrame();
+    } catch (e) { /* a screen that can't be put back is skipped, with the rest */ }
+    clearTimeout(guard);
+    host.remove();
+    // What was drawn and thrown away is cleared now, while the opening still stands: left to the engine it was
+    // cleared during the first presses (measured: 17ms as the wallet came back into focus, 33ms as the first month
+    // opened). window.gc is there because the shell asks for it.
+    try { if (typeof window.gc === "function") window.gc(); } catch (e) { /* cleared later, as before */ }
+  }
+  warmRest(queue);
 })());
+/* ---------- first launch: the graphics programs are built before anything moves ----------
+   macOS keeps the graphics programs the warm-up is about in a cache of the app's own. To it, "npm run app" and the
+   installed app are two apps, so that cache is empty the first time an installed app is opened, on any other Mac, and
+   again after a macOS update. A program then takes 20 to 400ms to build instead of one, and the graphics process can
+   show no frame meanwhile: measured with an empty cache, it was stuck for 3.8 of the opening's 4.2 seconds (65ms
+   with a full one), and again on every screen opened for the first time. Rassam, 8 October 2026, on the installed
+   app: the intro "just freezes", and the lag is in "all the ui in all the panels".
+   Nothing can fill that cache but drawing. So when the shell finds it empty (window.flowGfx.cold, electron/main.cjs)
+   the opening does not start yet. On the still backdrop, under one line of text and a bar that moves in steps (nothing
+   that could stutter), every screen filed by the warm-up is drawn to its full length with no deadline, and after them
+   the screens shipped in warm-seed.json that he has none of his own for (all of them, for somebody new); the first
+   panel is built underneath meanwhile. Then the shell is told, the opening plays as always, and none of this happens
+   again until that cache is empty again. */
+const GFX = typeof window !== "undefined" ? window.flowGfx : null;
+const PRIME_KEY = "flow-primed";       // kept for the session: changing account loads the page again, which must not do it twice
+const PRIME_MAX_MS = 45000;            // whatever happens, the app opens after this long
+const PRIME_FRAME_MS = 5000;           // a frame that never comes is waited for this long at most
+const PRIME_SLICES = 10;               // window-heights of a long page that are drawn
+const PRIME_LAYERS = 600;              // elements with a layer of their own that are drawn faded and turned, per screen
+const PRIME_AT = [0.08, 0.35, 0.65, 0.92];     // the points of its animations at which a screen is drawn
+const PRIME_FADE_MS = 260;             // the line of text leaves before the logo comes in
+// (PRIME_AGAIN: "Reset account" asks for it once more, so that somebody new is met by all of the first launch)
+const gfxCold = () => { try { return (!!(GFX && GFX.cold) || localStorage.getItem(PRIME_AGAIN) === "1") && !sessionStorage.getItem(PRIME_KEY); } catch (e) { return false; } };
+// One screen on a first launch: as warmOne, then what there is no time for under the opening screen. The other half
+// of its elements is repainted in place as well; what has a layer of its own, every picture and whatever is blended
+// into what is under it is drawn once a little see-through and once a little turned, as it will be while it fades
+// or moves; every drawing is drawn once cut off at one side, as a chart is while it is uncovered (each of these has
+// programs of its own); and a long page is drawn to its end, every window-height of it repainted in place too.
+// And its animations are stepped through (PRIME_AT), held still at each point: a line half drawn, a card half faded
+// in. Measured on the finance journey: 179 programs were built after the opening without any of this, 50 with the
+// screens drawn as warmOne draws them, 15 with the additions of the first paragraph.
+const primeOne = async (host, sc, frame, go) => {
+  const box = document.createElement("div");
+  box.className = "warm-screen";
+  box.innerHTML = sc.html;
+  host.appendChild(box);
+  const tall = Math.min(PRIME_SLICES, Math.ceil(box.scrollHeight / window.innerHeight));
+  const live = async () => {
+    box.classList.add("live");
+    for (const at of PRIME_AT) { box.style.setProperty("--at", `${-at}s`); await frame(); }
+    box.classList.remove("live");
+  };
+  await frame();
+  await live();
+  await frame();
+  box.classList.add("touch");
+  await frame();
+  box.classList.replace("touch", "touch2");
+  await frame();
+  const own = [...box.children, ...[...box.querySelectorAll("*")].filter((el) => {
+    if (el.tagName === "IMG" || el.tagName === "svg") return true;
+    const cs = getComputedStyle(el);
+    return cs.willChange !== "auto" || cs.mixBlendMode !== "normal";
+  })].slice(0, PRIME_LAYERS);
+  own.forEach((el) => el.style.setProperty("opacity", "0.97", "important"));
+  await frame();
+  own.forEach((el) => { el.style.removeProperty("opacity"); el.style.setProperty("rotate", "0.4deg"); });
+  await frame();
+  own.forEach((el) => el.style.removeProperty("rotate"));
+  const drawn = [...box.querySelectorAll("svg")];
+  drawn.forEach((el) => el.style.setProperty("clip-path", "inset(0.5px 22.5% 0.5px 0 round 4px)"));
+  await frame();
+  drawn.forEach((el) => el.style.removeProperty("clip-path"));
+  for (let i = 1; i < tall && go(); i++) {
+    box.style.top = `${-i * window.innerHeight}px`;
+    await frame();
+    await live();
+    box.classList.toggle("touch"); box.classList.toggle("touch2");
+    await frame();
+  }
+  box.remove();
+};
+// `tell(0…1)` after every screen. Resolves false when it had to give up (the window is hidden: tried again at the next launch).
+const warmPrime = async (tell) => {
+  const end = performance.now() + PRIME_MAX_MS;
+  const frame = () => new Promise((next) => { const late = setTimeout(next, PRIME_FRAME_MS); requestAnimationFrame(() => { clearTimeout(late); next(); }); });
+  const ok = (sc) => sc && typeof sc.key === "string" && typeof sc.html === "string" && sc.html.length > WARM_STUB;
+  const own = (await Promise.resolve(warm.all || warmAll()).catch(() => [])).filter(ok);
+  const have = new Set(own.map((sc) => sc.key));
+  const shipped = await fetch("./warm-seed.json").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  const lack = (Array.isArray(shipped) ? shipped : []).filter((sc) => ok(sc) && !have.has(sc.key));
+  const queue = [...own, ...lack].sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1) || (b.at || 0) - (a.at || 0));
+  const host = warmHost();
+  let shown = true;
+  await frame(); await frame();          // the backdrop and the first panel under it
+  for (let i = 0; i < queue.length && performance.now() < end; i++) {
+    if (document.visibilityState === "hidden") { shown = false; break; }
+    try { await primeOne(host, queue[i], frame, () => performance.now() < end); } catch (e) { /* a screen that can't be put back is skipped */ }
+    tell((i + 1) / queue.length);
+  }
+  await frame();
+  host.remove();
+  // the shipped screens he had none of his own for are filed for him (a day old, so his own go first): the timed
+  // warm-up of the launches to come draws them too, until he opens the real thing and that files itself over them
+  if (shown && lack.length) {
+    const db = await warmOpen();
+    try {
+      const st = db.transaction("screens", "readwrite").objectStore("screens"), at = Date.now() - 86400000;
+      for (const sc of lack) st.put({ key: sc.key, rank: sc.rank ?? 1, html: sc.html, at });
+    } catch (e) { /* not filed: they are only not warmed */ }
+  }
+  return shown;
+};
+/* ---------- first launch: the panels before an app are gone through once, behind the backdrop ----------
+   (11 October 2026: on the installed app, after the preparation above, "all the 3d animations on the selections panel,
+   trading and finance ones lag when first open".) The preparation draws every filed screen, and the panels before an
+   app are in none of them as they move: the coin and the die are left out of a filed screen, and what a press, the
+   pointer or a toss draws is in no markup at all. Measured on an empty cache (tools/perf, journey "stage"): 22
+   programs were still built there, the graphics process stuck 120 to 220ms for each: the trading panel opening, the
+   globe and the die coming into the middle, the roll, the toss, the next wallet, the card under the pointer.
+   So the real stage is taken through all of it once, by presses and a pointer of this code's own making, while the
+   backdrop still covers it: wallet ⇄ coin, the trading panel, each of its three in the middle, under the pointer and
+   on its way in (played, and then the trading panel is back: nothing is entered, see warm.tour in enterTrade and
+   enterApp), the wallets, the next wallet, a card out, under the pointer and on its way in.
+   - What a press sets moving first runs by itself until it has run evenly for a moment, and is then held and stepped
+     through to its end, a frame a step, however long that frame takes. Both are needed (measured): something that
+     runs by itself is drawn another way than something held (a layer of its own, at another size), with programs of
+     its own, 7 of the 22; and left to run all the way, the states that pass while the graphics process is building a
+     program would never be drawn at all. For the same reason a late frame while it runs by itself (the graphics
+     process building something) gives the run its time back: held after a fixed 70ms, two programs were still left
+     for the first real press, because the first one's building had used the 70ms up. (And with 85ms and fewer
+     steps one came back, half a second of standstill on the first step to the next wallet: don't trim these.)
+     What runs on keyframes (the toss, the roll) is stepped finely, and more so at both ends, where its blur is
+     weakest: every strength of blur is a program.
+   - The covers are made a shade see-through meanwhile (0.4%, which rounds to nothing): what is wholly covered is not
+     drawn. The stage itself is drawn exactly as it will be.
+   - The pointer is a hand's (see `point`): it rests, it leaves one thing as it arrives on the next, it stays on what
+     it pressed. Three of the programs were only ever built with a pointer where a hand would have it.
+   - At the end the stage is back as it began: the selections panel, the wallet in the middle, nothing under a pointer. */
+const TOUR_MAX_MS = 30000;             // whatever happens, it gives up after this long and puts the stage back
+const TOUR_GOES = 2;                   // once through, and once more if a frame came late on the way
+const TOUR_LATE_MS = 60;               // a frame this long after the one before is late
+const TOUR_LATE_FEW = 5;               // so many late frames in a go are the page's own; more, and the cache was being filled
+const TOUR_LIVE_MS = 120;              // what a press sets moving runs by itself until it has run evenly for this long, then it is held
+const TOUR_ENDS = [8, 16, 24, 32];     // keyframes: drawn this many ms after their start and before their end as well
+const stageTour = async (tell = () => {}) => {
+  const veil = typeof document !== "undefined" ? document.querySelector(".launch-veil") : null;
+  if (!veil || warm.tour || !veil.querySelector(".launch-wrap.pick:not(.pick-coin)")) return;
+  const end = performance.now() + TOUR_MAX_MS;
+  const ok = () => performance.now() < end && document.visibilityState !== "hidden" && veil.isConnected;
+  // a frame; one that comes late is counted (the graphics process was building something: see the second go below)
+  let seen = 0, late = 0;
+  const frame = () => new Promise((next) => { const never = setTimeout(next, PRIME_FRAME_MS); requestAnimationFrame(() => { clearTimeout(never); next(); }); })
+    .then(() => { const now = performance.now(); if (seen && now - seen > TOUR_LATE_MS) late++; seen = now; });
+  const q = (sel) => veil.querySelector(sel);
+  const covers = [...document.querySelectorAll(".open-panel, .acc")];
+  const tour = (warm.tour = { undo: null });
+  covers.forEach((el) => { el.style.opacity = "0.996"; });
+  // what is moving on the stage and will come to an end (the idle floats go on by themselves)
+  const moving = () => document.getAnimations().filter((a) => {
+    const t = a.effect && a.effect.target;
+    return t && veil.contains(t) && a.playState !== "finished" && Number.isFinite(a.effect.getComputedTiming().endTime);
+  });
+  const still = () => moving().forEach((a) => { try { a.finish(); } catch (e) {} });
+  // What a press has set moving: by itself until it has run evenly for TOUR_LIVE_MS, then held and stepped through to
+  // its end. `each(0…1)` is called every frame of it (the pointer on its way); what the pointer itself sets off then
+  // runs by itself beside it. Without a pointer, a second and third look take what only began once the first lot was
+  // over. Every other run is stepped half a step off, so that two runs of the same animation (the coin's toss, the
+  // die's roll) are not drawn at the same moments.
+  let runs = 0;
+  const play = async (each) => {
+    let tick = 0;
+    const move = () => { if (each) each((tick++ % 24) / 24); };
+    for (let round = 0; round < (each ? 1 : 3) && ok(); round++) {
+      let list = moving();
+      if (!list.length && (round || !each)) break;
+      if (list.length) {
+        let last = performance.now(), even = 0;
+        const till = last + 2500;
+        while (ok() && even < TOUR_LIVE_MS && performance.now() < till && list.some((a) => a.playState === "running")) {
+          move();
+          await frame();
+          const now = performance.now(), gap = now - last;
+          last = now;
+          if (gap > 40) { even = 0; list.forEach((a) => { try { if (a.playState === "running") a.currentTime = Math.max(0, a.currentTime - gap + 16); } catch (e) {} }); }
+          else even += gap;
+        }
+        list = moving();
+        if (!list.length && !each) continue;
+      }
+      const keyed = typeof CSSAnimation !== "undefined" && list.some((a) => a instanceof CSSAnimation);
+      const ends = list.map((a) => a.effect.getComputedTiming().endTime), long = Math.max(0, ...ends);
+      const n = keyed ? Math.max(8, Math.min(30, Math.ceil(long / 40))) : Math.max(5, Math.min(10, Math.ceil(long / 90))), off = runs++ % 2 ? 0.5 : 0;
+      const times = Array.from({ length: n }, (_, i) => (long * (i + 1 - off)) / n);
+      if (keyed) for (const ms of TOUR_ENDS) if (ms * 2 < long) times.push(ms, long - ms);
+      times.sort((a, b) => a - b);
+      list.forEach((a) => { try { a.pause(); } catch (e) {} });
+      for (let i = 0; i < times.length && ok(); i++) {
+        list.forEach((a, j) => { try { a.currentTime = Math.min(ends[j], times[i]); } catch (e) {} });
+        move();
+        await frame();
+      }
+      list.forEach((a) => { try { a.finish(); } catch (e) {} });
+      await frame();
+    }
+  };
+  // The pointer, as a hand moves it: it rests where it was last put and leaves that only as it arrives on the next
+  // thing, two frames before a press there; and once it has pressed something it stays on it, wherever that goes
+  // (the wallet pressed at the side is leant and lit by it while it slides into the middle). So what is drawn only
+  // while two things happen at once is drawn here too: a wallet's shine still fading while the next press moves it
+  // away, a thing leaning under the pointer while it is on its way. Each of those was a program of its own.
+  // What the style sheet shows under a pointer (:hover) it also shows under the class th: a pointer of script's making
+  // is no pointer to it. (The app writes a thing's classes afresh when a press changes them, so th is put on again
+  // with every move.)
+  const at = (el, type, k) => {
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, relatedTarget: null,
+      clientX: r.left + r.width * (0.2 + 0.6 * k), clientY: r.top + r.height * (0.3 + 0.4 * Math.sin(k * Math.PI)) }));
+  };
+  let cur = null;
+  const leave = () => { if (!cur) return; cur.classList.remove("th"); if (cur.isConnected) at(cur, "mouseout", 0.5); cur = null; };
+  const point = (el, k = 0.5) => { if (cur !== el) { leave(); cur = el; at(el, "mouseover", k); } el.classList.add("th"); at(el, "mousemove", k); };
+  // the pointer drawn across something (the lean after it is script's, a frame at a time)
+  const over = async (sel) => {
+    const el = q(sel);
+    if (!el || !ok()) return;
+    point(el, 0);
+    await frame();
+    await play((k) => point(el, k));
+    for (let i = 0; i < 3 && ok(); i++) await frame();
+  };
+  const press = async (sel) => {
+    const el = q(sel);
+    if (!el || !ok()) return false;
+    point(el);
+    await frame(); await frame();
+    el.click();
+    await frame();
+    await play((k) => { if (el.isConnected) point(el, k); });
+    return true;
+  };
+  // a way in, played and taken back
+  const enter = async (sel) => {
+    if (!(await press(sel)) || !tour.undo) return;
+    tour.undo(); tour.undo = null;
+    for (let i = 0; i < 4 && ok(); i++) await frame();
+    still();
+    await frame();
+  };
+  // Back to the selections panel with the wallet in the middle, however far it got. A press only counts once the app
+  // has drawn what the press before it changed, so each is given a moment (no frame is needed: the window may be hidden).
+  const beat = () => new Promise((next) => setTimeout(next, 40));
+  const home = async () => {
+    try {
+      leave();
+      if (tour.undo) { tour.undo(); tour.undo = null; await beat(); }
+      for (let i = 0; i < 5 && !q(".launch-wrap.pick"); i++) { const b = q(".pick-back"); if (!b) break; b.click(); await beat(); }
+      if (q(".launch-wrap.pick-coin")) { const w = q(".wallet-unit.active"); if (w) w.click(); await beat(); }
+      veil.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, view: window, clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 }));
+      await beat();
+      still();
+      if (ok()) { await frame(); await frame(); }
+      still();
+    } catch (e) {}
+  };
+  const coin = ".coin-unit:not(.fx)", die = ".coin-unit.fx", globe = ".idx-unit", wallet = ".wallet-unit.active";
+  const go = async (say) => {
+    await over(".who-btn");
+    await over(wallet);
+    await press(coin); await over(coin);
+    say(0.12);
+    await press(coin);                    // the trading panel
+    const opened = performance.now();
+    await over(coin);
+    // (the globe's own picture is set up 0.9s after the panel has opened, and the die is first drawn then)
+    while (ok() && performance.now() - opened < 1100) await frame();
+    await play();
+    say(0.3);
+    await press(globe); await over(globe);
+    await press(die); await over(die);
+    say(0.45);
+    await enter(die);
+    await press(globe); await enter(globe);
+    await press(coin); await enter(coin);
+    say(0.7);
+    await press(".pick-back");            // the selections panel, the coin in the middle
+    await press(wallet);                  // the wallet in the middle
+    await press(wallet);                  // the wallets panel
+    await over(wallet);
+    // the next wallet and back (the one before, from the last wallet)
+    if (await press(".wallet-unit.side-right:not(.far)")) await press(".wallet-unit.side-left:not(.far)");
+    else if (await press(".wallet-unit.side-left:not(.far)")) await press(".wallet-unit.side-right:not(.far)");
+    say(0.85);
+    const card = q(`${wallet} .slot-card.sel`) ? `${wallet} .slot-card.sel` : `${wallet} .slot-card`;
+    if (await press(card)) {
+      const out = performance.now();
+      while (ok() && performance.now() - out < CARD_OUT_MS + 60) await frame();      // (the pointer is not taken while the card is on its way)
+      await over(".big-card");
+      await enter(".big-card");
+    }
+  };
+  // Once through; and if the graphics process was held up on the way (late frames: on an empty cache, dozens), once
+  // more. What script moves a frame at a time (the lean easing back) has no time to give back: its states behind a
+  // standstill were never drawn, and on a second go, with everything of the first one built, they are. With a
+  // second go no program at all was left for the journey (22 without any of this). A go with next to no late frame
+  // is not repeated: a cache that was full after all (a late frame or two come from the page's own work).
+  for (let n = 0; n < TOUR_GOES && ok(); n++) {
+    const from = performance.now();
+    late = 0;
+    try { await go((p) => tell((n + p) / TOUR_GOES)); } catch (e) { /* whatever went wrong, the stage is put back */ }
+    await home();
+    try { performance.mark(`flow-tour ${n + 1}: ${late} late, ${Math.round(performance.now() - from)}ms`); } catch (e) {}      // (read by tools/perf)
+    if (late <= TOUR_LATE_FEW) break;
+  }
+  covers.forEach((el) => el.style.removeProperty("opacity"));
+  warm.tour = null;
+  tell(1);
+};
 // Everything the opening screen and the first panels are drawn with: resolves once the bundled fonts are loaded and
 // unpacked (the icon font alone takes ~55ms, which used to land in the middle of the logo coming in) and the logo decoded.
 const warmFonts = () => {
@@ -216,6 +775,9 @@ const DOTS_PER_ROW = 12;
 // A chart line's first stretch runs from the y-axis to its first point. It sets off at this share of that point's
 // value, so it comes in with a slight rise. From zero it was a wall from the corner up to January, which he found weird.
 const CHART_LEAD = 0.9;
+// the card leaving its wallet and going back in (see the styles): how long each way takes, and its speed curve
+const CARD_OUT_MS = 500, CARD_IN_MS = 420;
+const CARD_OUT_EASE = "cubic-bezier(0.3,0,0.15,1)", CARD_IN_EASE = "cubic-bezier(0.4,0,0.2,1)";
 /* Money flow, as it opens: the income bar fills from the top (FLOW_SRC_MS, easing out); each ribbon sets off at the
    moment the fill reaches its top edge and sweeps across in FLOW_RIB_MS; its expense bar lands as the ribbon's front
    gets there (FLOW_LAND of the sweep), and its label just after. One clock for all of it, so nothing arrives before
@@ -253,6 +815,19 @@ const YEAR_PEEK = 120;
 const QADD_H = 46;          // the height the quick-add row takes from the finance year stack
 // the app's name as it stands on the opening screen (pixel wordmark, one falling piece per letter)
 const APP_WORD = "FLOW";
+// the side titles on the wallets panel and the trading panel: the word, and the shades of its thickness from the back
+// (dark) to just behind the white face. Green for the finance side, the coin's gold for trading, both muted
+// It faces forward (he asked): each copy also sits a little lower than the one before, one font pixel in all, so the
+// thickness shows as a lip under the letters even head-on; the sides only come into view as it sways or leans
+const SIDE_DEPTH = 10, SIDE_STEP = 2, SIDE_DROP = 0.3;
+const sideShades = (a, b) => Array.from({ length: SIDE_DEPTH }, (_, i) => {
+  const t = i / (SIDE_DEPTH - 1);
+  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * t)).join(",")})`;
+});
+const SIDE_WORDS = [
+  { text: "FINANCE", shades: sideShades([38, 84, 64], [112, 190, 152]) },
+  { text: "TRADING", shades: sideShades([92, 68, 22], [214, 174, 88]) },
+];
 // opening screen timing: how long the logo and the wordmark stay up, how fast the background fades once the outro starts,
 // how long the outro is given before the splash is removed, and (when it is replayed from the footer logo) how long
 // it takes to cover the app
@@ -277,6 +852,7 @@ const TRADE_FLIP_MS = 900;
 // the IDX globe: how long its turn and the wordmark under it are shown before the stage starts to fade
 const IDX_REVEAL_MS = 1900;
 const IDX_SPIN_MS = 1500;          // one full turn of the globe when it is pressed
+const MARKET_ROW = ["crypto", "idx", "fx"];      // the trading panel from left to right: the coin, the IDX globe, the forex coin
 const IDX_TILT = 16;               // how far its axis leans from upright, degrees
 
 // Month title, pixel font: "t" is drawn one font pixel (3px) further right in its box than the other letters, which
@@ -315,6 +891,11 @@ const parseNum = (s) => {
 const cleanAmount = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(n, MAX_AMOUNT)) : 0; };
 const digitsOf = (s) => String(s).replace(/[^\d]/g, "");
 
+// the items of an expense that was added up from several: [{ id, amount, desc }]
+const cleanParts = (list) => (Array.isArray(list) ? list : [])
+  .filter((p) => p && typeof p === "object")
+  .map((p) => ({ id: p.id || uid(), amount: cleanAmount(p.amount), desc: typeof p.desc === "string" ? p.desc : "" }))
+  .filter((p) => p.amount > 0);
 // loading/importing: keep only well-formed day keys and entries, so one bad item can't turn totals into NaN
 const migrateSpending = (sp) => {
   const out = {};
@@ -324,10 +905,48 @@ const migrateSpending = (sp) => {
     const v = sp[k];
     if (typeof v === "number") { out[k] = [{ id: uid(), amount: cleanAmount(v), desc: "" }]; continue; }
     if (!Array.isArray(v)) continue;
-    const items = v.filter((it) => it && typeof it === "object").map((it) => ({
-      ...it, id: it.id || uid(), amount: cleanAmount(it.amount), desc: typeof it.desc === "string" ? it.desc : "",
-    }));
-    if (items.length) out[k] = items;
+    const items = v.filter((it) => it && typeof it === "object").map((it) => {
+      const { cat, icon, parts, ...rest } = it;
+      const ps = cleanParts(parts);
+      return {
+        // an expense with items is worth what they come to
+        ...rest, id: it.id || uid(), amount: ps.length ? cleanAmount(ps.reduce((a, p) => a + p.amount, 0)) : cleanAmount(it.amount), desc: typeof it.desc === "string" ? it.desc : "",
+        ...(ps.length ? { parts: ps } : {}),
+        // a category only if it is one of ours, a custom symbol only as a short name
+        ...(typeof cat === "string" && Object.hasOwn(CATS, cat) ? { cat } : {}),
+        ...(typeof icon === "string" ? { icon: icon.slice(0, 40) } : {}),
+      };
+    });
+    // a day that was spent on is no no-spend day: a mark saved beside an expense is dropped
+    const spent = items.some((it) => !it.zero && it.amount > 0);
+    if (items.length) out[k] = spent ? items.filter((it) => !it.zero) : items;
+  }
+  return out;
+};
+// a goal: { id, name, target, icon?, deposits: [{ id, amount (negative = taken out), date "YYYY-MM-DD", test? }], test? }
+const cleanGoals = (list) => (Array.isArray(list) ? list : [])
+  .filter((g) => g && typeof g === "object" && !Array.isArray(g) && g.id && typeof g.name === "string")
+  .map((g) => {
+    const { icon, ...rest } = g;
+    return {
+      ...rest, target: cleanAmount(g.target),
+      ...(typeof icon === "string" && icon ? { icon: icon.slice(0, 40) } : {}),
+      deposits: (Array.isArray(g.deposits) ? g.deposits : [])
+        .filter((d) => d && typeof d === "object" && typeof d.amount === "number" && Number.isFinite(d.amount))
+        .map((d) => {
+          const { date, ...dr } = d;
+          return { ...dr, amount: Math.max(-MAX_AMOUNT, Math.min(Number(d.amount), MAX_AMOUNT)), ...(typeof date === "string" ? { date } : {}) };
+        }),
+    };
+  });
+// daily limits by month ("YYYY-MM" → rupiah a day)
+const cleanLimits = (obj) => {
+  const out = {};
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return out;
+  for (const k in obj) {
+    if (!/^\d{4}-\d{2}$/.test(k)) continue;
+    const n = Number(obj[k]);
+    if (typeof obj[k] === "number" && Number.isFinite(n) && n > 0) out[k] = Math.min(n, MAX_AMOUNT);
   }
   return out;
 };
@@ -396,6 +1015,7 @@ const useCountUp = (value, duration, still) => {      // still: it starts on its
       const v = start + delta * e;
       cur.current = v;
       setN(v);
+      warm.moved = t;        // (a number is counting: nothing is drawn behind his back meanwhile, see warmRest)
       if (p < 1) raf = requestAnimationFrame(step);
       else { cur.current = value; setN(value); setBusy(false); }
     };
@@ -624,6 +1244,232 @@ const CROC_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAACzCAMAAAD
 const CrocLogo = ({ className, style }) => (
   <img className={className} style={style} src={CROC_LOGO} alt="" draggable={false} />
 );
+/* Profile pictures (7 October 2026, after his picture of a default profile picture in pixel art, and six he sent as
+   ideas). Seven to choose from, and an eighth that is a picture of his own from the computer.
+   Each of the seven is the same person on the same pale grey disc: a white head and shoulders on a 16 x 16 grid,
+   drawn as whole squares with hard edges, while the disc's own edge stays a smooth circle that cuts off whatever
+   reaches past it. The person is never changed from one to the next; what differs sits on it (a duck, glasses, a
+   beanie, a cap, a straw hat) or, once, takes the head's place (the 8-ball). Depth, as he asked ("i dont want this to
+   look bland and flat"): the shoulders, the head and what is worn each throw a soft shadow down and to the left, so
+   the head stands off the shoulders and a hat off the head. The shadow is the one thing not on the grid.
+   A shape is written row by row: "row:from-to". */
+const pxRuns = (text) => text.split(" ").map((t) => { const [r, c] = t.split(":"), [from, to = from] = c.split("-"); return [+r, +from, +to]; });
+const PX_HEAD = pxRuns("4:6-9 5:5-10 6:5-10 7:5-10 8:5-10 9:6-9");
+const PX_BODY = pxRuns("10:6-9 11:5-10 12:4-11 13:3-12 14:3-12 15:3-12");
+const PX_DISC = "#cdd0d5", PX_SKIN = "#ffffff";
+const AVATARS = [
+  { id: "p1", name: "Plain" },
+  { id: "p2", name: "Duck", on: [["#f8df74", "0:7-9 1:7-9 2:5-9"], ["#efc655", "3:5-9"], ["#f08a3c", "1:10"], ["#141416", "1:8"]] },
+  { id: "p3", name: "Glasses", on: [["#0c0c0e", "6:4-11 7:5-7 7:9-11"], ["#ffffff", "6:5 7:6 6:9 7:10"]] },
+  { id: "p4", name: "Beanie", on: [["#262d4a", "2:6-9 3:5-10 4:5-10"], ["#343d61", "5:4-11"], ["#ffffff", "3:8 4:6-7"]] },
+  { id: "p5", name: "Cap", on: [["#d92532", "2:6-9 3:5-10"], ["#ae1924", "4:3-10"], ["#ffffff", "3:7-8"]] },
+  { id: "p6", name: "Straw hat", on: [["#cba562", "1:6-9 2:5-10"], ["#8c6b3b", "3:5-10"], ["#b88e4f", "4:2-13"], ["#17181a", "5:5 6:5 7:6 8:7 5:10 6:10 7:9 8:8 9:8"]] },
+  { id: "p8", name: "Moustache", on: [["#101012", "7:3 7:6-9 7:12 8:4-11"]] },
+  { id: "p9", name: "Star", on: [["#ffd83a", "1:11 2:9-13 3:10-12"], ["#e5b422", "4:10 4:12"], ["#17140a", "2:10 2:12"]] },
+  // the flower takes the head's place: twelve petals round a yellow face, two squares wider than a head
+  { id: "p10", name: "Flower", head: "none", on: [["#ff5aa8", "3:6-7 4:6-7"], ["#f0483a", "3:8-9 4:8-9"], ["#a04bd8", "4:5 5:4-5"], ["#ff8a2a", "4:10 5:10-11"], ["#5a55e0", "6:4-5"],
+      ["#ffb52a", "6:10-11"], ["#2a8cf0", "7:4-5"], ["#f4dd2a", "7:10-11"], ["#22b8e6", "8:4-5 9:5"], ["#a8dc3a", "8:10-11 9:10"], ["#22c7a0", "9:6-7 10:6-7"], ["#3dc45a", "9:8-9 10:8-9"],
+      ["#ffe23a", "5:6-9 6:6-9 7:6-9 8:6-9"], ["#c2185b", "6:6 6:9"], ["#e5352b", "7:7-8 8:7-8"]] },
+  // the bear is the one whose person is not white: it is the bear
+  { id: "p11", name: "Teddy", head: "#9b6b3d", body: "#9b6b3d", on: [["#9b6b3d", "3:4-5 4:4-5 3:10-11 4:10-11"], ["#c89b6c", "4:5 4:10"], ["#111113", "6:6 6:9 7:7-8 8:7-8"], ["#ffffff", "7:7"]] },
+  // 11 October 2026, from six more pictures of his: a black beanie with its white box logo, ski goggles pushed up and
+  // tilted, a banana peel, a Santa hat, and two whose person is the suit itself, as the bear's is the bear
+  { id: "p12", name: "Supreme", on: [["#25272a", "1:6-9 2:5-10 3:4-11"], ["#35383c", "4:4-11 5:4-11"], ["#f4f4f4", "4:6-9"]] },
+  { id: "p13", name: "Goggles", on: [["#0e0f11", "1:8-11 2:4-7 2:11 3:4 3:11 4:4 4:8-11 5:4-7"], ["#8fb6ea", "2:8-10 3:5-10 4:5-7"], ["#ffffff", "3:6 4:6 2:9 3:9"], ["#59626d", "4:3 5:3"]] },
+  { id: "p14", name: "Banana peel", on: [["#4a3a18", "0:6 1:7"], ["#f4d95f", "2:7-8 3:6-10 4:4-12 5:3-5 5:11-13 6:3 6:13"], ["#9a6b34", "5:7-8 6:7"], ["#3a2c12", "3:9 4:11"]] },
+  { id: "p15", name: "Santa hat", on: [["#d62a34", "0:8-9 1:7-10 2:6-11 3:5-11"], ["#a91b25", "1:11 2:12 3:12-13"], ["#ffffff", "4:4-11 5:4-11 4:13-14 5:13-14"]] },
+  { id: "p16", name: "Spider-Man", head: "#d3222e", body: "#d3222e", on: [["#27409b", "14:3 15:3-4 14:12 15:11-12"], ["#111113", "5:5-6 5:9-10"], ["#ffffff", "6:5-6 6:9-10 7:6 7:9"], ["#151a4a", "13:6 13:9 14:7-8 15:6 15:9"]] },
+  { id: "p17", name: "Batman", head: "#131316", body: "#1b1c20", on: [["#131316", "2:5 3:5 4:5 2:10 3:10 4:10"], ["#ffffff", "6:6 6:9"], ["#e4e5e8", "12:5 12:7-8 12:10 13:5-10 14:6 14:9"]] },
+].map((a) => ({ ...a, on: (a.on || []).map(([fill, text]) => [fill, pxRuns(text)]) }));
+const pxRects = (runs, fill, key) => runs.map(([r, from, to], i) => <rect key={`${key}${i}`} x={from} y={r} width={to - from + 1} height="1" fill={fill} />);
+/* What is behind the person (7 October 2026: "an option to change the background of their profile pics behind the
+   person, this is not pixel art", after his picture of a white figure before a sky of clouds over grass). The plain
+   grey disc, seven drawn sceneries, or a picture of his own from the computer (bg "own" with bgImg). None of it is on
+   the grid: it is drawn smooth, and only the person in front of it is squares.
+   11 October 2026: six sceneries after six pictures of his (a hill with one tree under a deep blue sky, a sunset seen
+   from high up, a ridge at dusk, pines round a camp fire, open sea, a beach), and the four that were only a wash of
+   colour taken out as ugly (Dusk, Mint, Lilac, Night): an account that still names one of those gets the grey disc.
+   A background is a scene, never a plain gradient. Four more the same evening, after four more pictures: a snow slope
+   under a deep blue sky (his picture was the sky alone; the slope makes it a scene), a lake at night under green
+   cloud with lights across the water, a clear sky with a wisp of cloud and a stump, a bay under a low sun. */
+const AV_BACKS = [{ id: "", name: "Grey" }, { id: "sky", name: "Sky" }, { id: "meadow", name: "Meadow" }, { id: "glow", name: "Afterglow" }, { id: "summit", name: "Summit" }, { id: "forest", name: "Forest" }, { id: "sea", name: "Sea" }, { id: "beach", name: "Beach" },
+  { id: "slope", name: "Slope" }, { id: "lake", name: "Night lake" }, { id: "clear", name: "Clear sky" }, { id: "bay", name: "Bay" }];
+const avBack = (id) => (id === "sky" ? (
+  <>
+    <defs><linearGradient id="avSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4a82c6" /><stop offset="1" stopColor="#a9caeb" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avSky)" />
+    <g fill="#eadfce"><circle cx="3.1" cy="8.9" r="1.8" /><circle cx="5.2" cy="7.5" r="2.5" /><circle cx="8.2" cy="6.1" r="3.2" /><circle cx="11.4" cy="7.3" r="2.6" /><circle cx="13.6" cy="8.8" r="1.8" /><rect x="2" y="8.2" width="12.8" height="2.6" rx="1.3" /></g>
+    <g fill="#fffaf1"><circle cx="4.9" cy="7" r="1.8" /><circle cx="7.9" cy="5.5" r="2.5" /><circle cx="11" cy="6.7" r="1.9" /><circle cx="13.2" cy="8.3" r="1.2" /></g>
+    <ellipse cx="2.5" cy="16.6" rx="9.5" ry="4" fill="#4f8f42" /><ellipse cx="13.6" cy="16.9" rx="8.6" ry="3.8" fill="#6aaa50" />
+  </>
+) : id === "meadow" ? (
+  <>
+    <defs><linearGradient id="avMeadow" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1d5cc4" /><stop offset="0.45" stopColor="#4d90e2" /><stop offset="0.78" stopColor="#cfe2f6" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avMeadow)" />
+    <g fill="#ffffff"><ellipse cx="2.4" cy="6.6" rx="3.8" ry="0.7" opacity="0.4" transform="rotate(-20 2.4 6.6)" /><ellipse cx="3.4" cy="5.4" rx="2.6" ry="0.4" opacity="0.3" transform="rotate(-24 3.4 5.4)" /><ellipse cx="13" cy="5.8" rx="3.2" ry="0.55" opacity="0.42" transform="rotate(-34 13 5.8)" /><ellipse cx="14" cy="7.6" rx="2.6" ry="0.4" opacity="0.3" transform="rotate(-26 14 7.6)" /><ellipse cx="8" cy="9.8" rx="8.4" ry="1.9" opacity="0.55" /></g>
+    <rect x="3.42" y="8.9" width="0.26" height="3" fill="#5f6a66" /><ellipse cx="3.55" cy="8.7" rx="1.25" ry="1.05" fill="#74857e" opacity="0.85" />
+    <path d="M0 11.4 Q7 11.2 16 13.2 V16 H0 Z" fill="#7da345" /><path d="M0 13.4 Q8 12.6 16 14.8 V16 H0 Z" fill="#5d8433" />
+  </>
+) : id === "glow" ? (
+  <>
+    <defs><linearGradient id="avGlow" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#2f3f86" /><stop offset="0.38" stopColor="#6079bd" /><stop offset="0.56" stopColor="#c58aa8" /><stop offset="0.66" stopColor="#f3a868" /><stop offset="0.73" stopColor="#a8806f" /><stop offset="1" stopColor="#4a4048" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avGlow)" />
+    <ellipse cx="11.6" cy="10.5" rx="6" ry="0.8" fill="#ffd596" opacity="0.7" />
+    <g opacity="0.8"><ellipse cx="3.4" cy="8.7" rx="5.6" ry="0.6" fill="#ee8799" transform="rotate(5 3.4 8.7)" /><ellipse cx="12.4" cy="8" rx="4.6" ry="0.42" fill="#f3a2a4" transform="rotate(-4 12.4 8)" /><ellipse cx="7.4" cy="9.5" rx="3.6" ry="0.3" fill="#f6b3a0" /><ellipse cx="5.6" cy="7.1" rx="5.2" ry="0.38" fill="#4a5a9a" transform="rotate(3 5.6 7.1)" /><ellipse cx="12.6" cy="6.2" rx="3" ry="0.26" fill="#5567a8" /></g>
+    <path d="M0 11.6 Q5 11.2 9 11.6 T16 11.4 V16 H0 Z" fill="#5a4a50" opacity="0.55" />
+  </>
+) : id === "summit" ? (
+  <>
+    <defs><linearGradient id="avSummit" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#3f7fd2" /><stop offset="0.42" stopColor="#8db6e6" /><stop offset="0.62" stopColor="#f1ddd6" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avSummit)" />
+    <path d="M0 10.5 Q4 9.6 8 10.3 T16 9.8 V16 H0 Z" fill="#7a86b8" /><path d="M0 11.5 Q3 11 6 12.2 L9 16 H0 Z" fill="#3d4a7a" />
+    <path d="M4.6 14 L8.6 10.7 Q9.3 10.3 10 10.9 L13.4 14 Z" fill="#c9764e" />
+    <path d="M1.5 16 L8.5 13.4 L12.4 11.3 L16 8.4 V16 Z" fill="#77747a" /><path d="M6.5 16 L12.4 11.3 L16 12.4 V16 Z" fill="#57555c" />
+  </>
+) : id === "forest" ? (
+  <>
+    <defs><linearGradient id="avForest" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#8fbfe6" /><stop offset="0.6" stopColor="#cfe3f0" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avForest)" />
+    <g fill="#4c7059"><polygon points="4.6,11.8 5.5,6.6 6.4,11.8" /><polygon points="6.2,11.8 7.1,5 8,11.8" /><polygon points="8.1,11.8 9.1,6 10.1,11.8" /><polygon points="9.8,11.8 10.7,7 11.6,11.8" /></g>
+    <g fill="#2e523c"><polygon points="2.2,12.5 4,3.2 5.8,12.5" /><polygon points="10.4,12.5 12,4 13.6,12.5" /></g>
+    <g fill="#22402f"><polygon points="-0.6,12.5 1.8,0.5 4.2,12.5" /><polygon points="11.6,12.5 14.2,-0.5 16.8,12.5" /></g>
+    <path d="M0 11.7 Q8 10.9 16 11.7 V16 H0 Z" fill="#6f9f45" /><ellipse cx="8" cy="13.4" rx="6" ry="1.4" fill="#93bf58" opacity="0.8" />
+    <g fill="#e3eaec" opacity="0.6"><ellipse cx="8" cy="11" rx="0.6" ry="0.9" /><ellipse cx="8.3" cy="9.5" rx="0.85" ry="1.1" /><ellipse cx="8" cy="7.9" rx="1" ry="1.1" /></g>
+    <rect x="7.25" y="13" width="1.5" height="0.28" rx="0.14" fill="#3b2a1d" /><path d="M8 11.5 Q8.75 12.4 8.45 12.95 Q8 13.3 7.55 12.95 Q7.25 12.4 8 11.5 Z" fill="#f59a2c" /><ellipse cx="8" cy="12.8" rx="0.2" ry="0.3" fill="#ffd66b" />
+  </>
+) : id === "sea" ? (
+  <>
+    <defs><linearGradient id="avSea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#2c6f93" /><stop offset="1" stopColor="#38a9b6" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avSea)" />
+    <g fill="none" stroke="#1f587a" strokeWidth="0.3" strokeLinecap="round" opacity="0.6"><path d="M1.5 2.6 q1 -0.5 2 0" /><path d="M7 1.8 q1.2 -0.5 2.4 0" /><path d="M11.5 3.2 q1 -0.4 2 0" /><path d="M3.5 5 q1.3 -0.6 2.6 0" /><path d="M9.5 5.4 q1.4 -0.6 2.8 0" /><path d="M0.8 7.6 q1.4 -0.6 2.8 0" /><path d="M12.4 8 q1.4 -0.6 2.8 0" /><path d="M1.6 10.6 q1.6 -0.7 3.2 0" /><path d="M11.2 11 q1.6 -0.7 3.2 0" /><path d="M5.5 13.6 q1.8 -0.8 3.6 0" /></g>
+    <g fill="none" stroke="#a6e4e4" strokeWidth="0.26" strokeLinecap="round" opacity="0.6"><path d="M4.4 3.6 q1 -0.4 2 0" /><path d="M12.6 5.9 q0.9 -0.4 1.8 0" /><path d="M1.2 6 q1 -0.4 2 0" /><path d="M2.6 9 q1.3 -0.5 2.6 0" /><path d="M11 9.4 q1.3 -0.5 2.6 0" /><path d="M3.2 12.4 q1.5 -0.6 3 0" /><path d="M9.6 12.8 q1.5 -0.6 3 0" /></g>
+  </>
+) : id === "beach" ? (
+  <>
+    <defs><linearGradient id="avBeachSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#3f7cc4" /><stop offset="0.42" stopColor="#b9d3ee" /></linearGradient><linearGradient id="avBeachSea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#2a5596" /><stop offset="1" stopColor="#4f86bd" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avBeachSky)" />
+    <g fill="#ffffff"><circle cx="3" cy="3.4" r="1.2" /><circle cx="4.6" cy="2.8" r="1.6" /><circle cx="6.2" cy="3.5" r="1.1" /><rect x="2.2" y="3.4" width="4.8" height="1.1" rx="0.55" /><circle cx="11.4" cy="4.6" r="0.9" /><circle cx="12.7" cy="4.1" r="1.3" /><circle cx="14" cy="4.7" r="0.9" /><rect x="10.8" y="4.6" width="3.8" height="0.9" rx="0.45" /></g>
+    <rect y="6.8" width="16" height="9.2" fill="url(#avBeachSea)" />
+    <path d="M0 9.8 Q4 9.2 8 9.8 T16 9.8 V10.3 Q12 9.7 8 10.3 T0 10.3 Z" fill="#234a86" opacity="0.6" />
+    <path d="M0 11.7 Q2 11 4 11.7 T8 11.7 T12 11.7 T16 11.7 V12.9 H0 Z" fill="#eaf2f8" />
+    <path d="M0 12.9 Q8 12.4 16 13.1 V16 H0 Z" fill="#b9a78f" /><path d="M0 12.9 Q8 12.4 16 13.1 V13.7 Q8 13 0 13.5 Z" fill="#8f8474" opacity="0.6" />
+  </>
+) : id === "slope" ? (
+  <>
+    <defs><linearGradient id="avSlope" x1="0" y1="0" x2="0.25" y2="1"><stop offset="0" stopColor="#173a7e" /><stop offset="0.55" stopColor="#2f66b8" /><stop offset="1" stopColor="#5a93d8" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avSlope)" />
+    <path d="M0 14.6 Q5 14.2 9.5 12.4 T16 9.2 V16 H0 Z" fill="#f4f8fc" /><path d="M0 15.4 Q6 15.2 11 13.6 T16 11.4 V16 H0 Z" fill="#d5e3f1" />
+    <g fill="#ffffff" opacity="0.85"><circle cx="11.6" cy="10.5" r="0.22" /><circle cx="12.5" cy="9.6" r="0.16" /><circle cx="10.6" cy="11.4" r="0.14" /><circle cx="13.5" cy="9.7" r="0.12" /></g>
+  </>
+) : id === "lake" ? (
+  <>
+    <defs><linearGradient id="avLake" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#16242f" /><stop offset="0.72" stopColor="#3a566b" /></linearGradient><radialGradient id="avLakeG"><stop offset="0" stopColor="#5f927a" stopOpacity="0.6" /><stop offset="1" stopColor="#5f927a" stopOpacity="0" /></radialGradient></defs>
+    <rect width="16" height="16" fill="url(#avLake)" />
+    <ellipse cx="5" cy="4" rx="6.5" ry="2.6" fill="url(#avLakeG)" transform="rotate(-12 5 4)" /><ellipse cx="12" cy="6.4" rx="6" ry="2.2" fill="url(#avLakeG)" transform="rotate(-8 12 6.4)" /><ellipse cx="9" cy="1.6" rx="5" ry="1.6" fill="url(#avLakeG)" />
+    <g fill="#e8f0f4"><circle cx="1.6" cy="1.9" r="0.11" /><circle cx="12.9" cy="5.6" r="0.1" /><circle cx="14.4" cy="2.2" r="0.09" /><circle cx="6.8" cy="6.9" r="0.08" /></g>
+    <rect y="11.6" width="16" height="4.4" fill="#22384a" />
+    <path d="M0 11.9 V10.6 Q1.2 9.9 2.4 10.5 Q3.6 9.6 5 10.4 Q6.4 9.9 7.6 10.7 Q9 10.3 10.4 11.2 L16 11.5 V11.9 Z" fill="#0b1116" />
+    <g fill="#ffb169"><circle cx="11.6" cy="11.45" r="0.14" /><circle cx="12.5" cy="11.45" r="0.14" /><circle cx="13.4" cy="11.45" r="0.14" /><circle cx="14.3" cy="11.45" r="0.14" /><circle cx="15.2" cy="11.45" r="0.14" /></g>
+    <g fill="#ffb169" opacity="0.5"><rect x="11.52" y="12" width="0.16" height="1.5" /><rect x="12.42" y="12" width="0.16" height="1.8" /><rect x="13.32" y="12" width="0.16" height="1.4" /><rect x="14.22" y="12" width="0.16" height="1.7" /><rect x="15.12" y="12" width="0.16" height="1.3" /></g>
+  </>
+) : id === "clear" ? (
+  <>
+    <defs><linearGradient id="avClear" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stopColor="#1763d6" /><stop offset="1" stopColor="#4a95ee" /></linearGradient><radialGradient id="avClearG"><stop offset="0" stopColor="#ffffff" stopOpacity="0.75" /><stop offset="1" stopColor="#ffffff" stopOpacity="0" /></radialGradient></defs>
+    <rect width="16" height="16" fill="url(#avClear)" />
+    <ellipse cx="13" cy="8.6" rx="3.4" ry="1.3" fill="url(#avClearG)" transform="rotate(-18 13 8.6)" /><ellipse cx="14.6" cy="10.4" rx="2.6" ry="1" fill="url(#avClearG)" transform="rotate(-10 14.6 10.4)" /><ellipse cx="2.4" cy="4.4" rx="3" ry="0.9" fill="url(#avClearG)" transform="rotate(14 2.4 4.4)" />
+    <path d="M9.4 16 L9.9 13.4 L10.8 12.6 L11.5 13.2 L12.3 12.2 L13.1 13 L13.9 12.7 L14.5 16 Z" fill="#6f6250" /><path d="M12.3 12.2 L13.1 13 L13.9 12.7 L14.5 16 H12.6 Z" fill="#4f4538" />
+    <path d="M10.6 14 L10.9 16 M11.7 13.8 L11.9 16" stroke="#4f4538" strokeWidth="0.18" fill="none" />
+  </>
+) : id === "bay" ? (
+  <>
+    <defs><linearGradient id="avBay" x1="1" y1="0" x2="0.4" y2="1"><stop offset="0" stopColor="#143f93" /><stop offset="0.5" stopColor="#5c8fd2" /><stop offset="0.72" stopColor="#dbe8f5" /></linearGradient><radialGradient id="avBayG"><stop offset="0" stopColor="#ffffff" stopOpacity="1" /><stop offset="0.35" stopColor="#ffffff" stopOpacity="0.85" /><stop offset="1" stopColor="#ffffff" stopOpacity="0" /></radialGradient><linearGradient id="avBaySea" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#c9dbec" /><stop offset="0.45" stopColor="#5d86b4" /><stop offset="1" stopColor="#34557f" /></linearGradient></defs>
+    <rect width="16" height="16" fill="url(#avBay)" />
+    <circle cx="1.6" cy="2.4" r="5.6" fill="url(#avBayG)" /><path d="M2.6 3.4 L7.4 7.2 L7 7.5 Z" fill="#ffffff" opacity="0.5" />
+    <g fill="#ffffff" opacity="0.9"><ellipse cx="9.6" cy="8.5" rx="2.2" ry="0.4" /><ellipse cx="12.6" cy="8.3" rx="2.6" ry="0.5" /><ellipse cx="14.8" cy="8.6" rx="1.6" ry="0.35" /></g>
+    <path d="M4 9.5 Q7 8.5 9.5 9 Q12 8.4 16 9.1 V9.7 H4 Z" fill="#5e7896" />
+    <rect y="9.5" width="16" height="6.5" fill="url(#avBaySea)" />
+    <path d="M0 12.2 L6.5 11.2 L7 11.6 L1 13.2 Z M8 11.9 L15.5 10.9 L16 11.2 L8.4 12.4 Z" fill="#9aa5b0" /><path d="M0 12.8 L5 12 L8.5 14.2 L6 16 H0 Z" fill="#7d858d" />
+    <g fill="#2c3e57"><rect x="6.2" y="10.3" width="1.5" height="0.22" /><rect x="10.4" y="10.5" width="1.1" height="0.2" /><rect x="12.8" y="13" width="1" height="0.2" /></g>
+    <path d="M0 14 L4.6 15 L5.4 16 H0 Z" fill="#b9b3a3" />
+  </>
+) : <rect width="16" height="16" fill={PX_DISC} />);
+// a background on its own, for the row of choices
+const AvBack = ({ id }) => <svg className="av" viewBox="0 0 16 16" aria-hidden="true">{avBack(id)}</svg>;
+/* pic: one of the figures, or "own" with img, the picture he chose in place of a figure (already cut to the circle and
+   kept with the account). bg / bgImg: what is behind a figure. bare: the figure alone, nothing behind it (the form
+   lays it over a background picture that is still being moved about). */
+const Avatar = memo(({ pic, img, bg, bgImg, bare }) => {
+  const fid = `pxSh${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;      // each picture its own shadow (the same id twice in a page is one filter for all)
+  if (pic === "own" && img) return <img className="av" src={img} alt="" draggable={false} />;
+  const a = AVATARS.find((x) => x.id === pic) || AVATARS[0];
+  return (
+    <svg className="av" viewBox="0 0 16 16" shapeRendering="crispEdges" aria-hidden="true">
+      <defs>
+        <filter id={fid} x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="-0.16" dy="0.27" stdDeviation="0.27" floodColor="#4b5060" floodOpacity="0.46" /></filter>
+      </defs>
+      {!bare && <g shapeRendering="geometricPrecision">{bg === "own" && bgImg ? <image href={bgImg} width="16" height="16" preserveAspectRatio="xMidYMid slice" /> : avBack(bg)}</g>}
+      <g filter={`url(#${fid})`}>{pxRects(PX_BODY, a.body || PX_SKIN, "b")}</g>
+      {a.head !== "none" && <g filter={`url(#${fid})`}>{pxRects(PX_HEAD, a.head || PX_SKIN, "h")}</g>}
+      {a.on.length > 0 && <g filter={`url(#${fid})`}>{a.on.map(([fill, runs], i) => pxRects(runs, fill, `o${i}-`))}</g>}
+    </svg>
+  );
+});
+/* A picture of his own: chosen from the computer, shown in the circle so that its shorter side fills it, made bigger
+   with the slider and moved by dragging it. { src, w, h, z: how many times bigger (1 to 3), x, y: how far it is moved,
+   in circle widths }. It can never be moved or shrunk so far that the circle shows a gap (ownClamp). When the account
+   is saved it is cut to a square of OWN_PX as it stands and kept with the account as text (ownBake); the file itself
+   is not kept. */
+const OWN_PX = 288, OWN_VIEW = 96;
+const ownClamp = (o) => {
+  const m = Math.min(o.w, o.h), mx = Math.max(0, ((o.w / m) * o.z - 1) / 2), my = Math.max(0, ((o.h / m) * o.z - 1) / 2);
+  return { ...o, x: Math.max(-mx, Math.min(mx, o.x)), y: Math.max(-my, Math.min(my, o.y)) };
+};
+const ownBake = (o) => new Promise((done) => {
+  const im = new Image();
+  im.onload = () => {
+    try {
+      const cv = document.createElement("canvas"), g = cv.getContext("2d"), k = (OWN_PX / Math.min(o.w, o.h)) * o.z, w = o.w * k, h = o.h * k;
+      cv.width = cv.height = OWN_PX;
+      g.fillStyle = PX_DISC; g.fillRect(0, 0, OWN_PX, OWN_PX);
+      g.imageSmoothingQuality = "high";
+      g.drawImage(im, (OWN_PX - w) / 2 + o.x * OWN_PX, (OWN_PX - h) / 2 + o.y * OWN_PX, w, h);
+      done(cv.toDataURL("image/webp", 0.86));
+    } catch (e) { done(null); }
+  };
+  im.onerror = () => done(null);
+  im.src = o.src;
+});
+
+/* The information symbol (7 October 2026: he asked for one beside "PnL this month" that says shortly how the PnL
+   works). The note shows while the pointer is on the symbol, and stays when it is pressed until something else is
+   (it has the focus then). No state: the style sheet does it, on opacity and transform only. The note is solid, with
+   no blur behind it, since it is there all the time, just not shown. */
+const InfoTip = ({ title, children }) => (
+  <button type="button" className="info-btn" aria-label={title}>
+    <span className="msym">info</span>
+    <span className="info-tip" role="tooltip"><b>{title}</b>{children}</span>
+  </button>
+);
+
+/* A name on a card always fits: how wide it would run in its own font (in ems, the letter-spacing counted in) against
+   the room it has, as a factor for its font size (--fit; 1 while it fits). Measured on a canvas once per name, and
+   not kept while the font is still loading. */
+const fitCache = new Map();
+let fitCtx = null;
+const fitText = (text, font, spacing, room) => {
+  if (!text) return 1;
+  const key = `${font}|${text}`;
+  if (fitCache.has(key)) return fitCache.get(key);
+  if (typeof document === "undefined") return 1;
+  let ready = true;
+  try { ready = document.fonts.check(font); } catch (e) {}
+  fitCtx ||= document.createElement("canvas").getContext("2d");
+  fitCtx.font = font;
+  const em = fitCtx.measureText(text).width / 100 + spacing * text.length, fit = em > room ? +(room / em).toFixed(3) : 1;
+  if (ready) fitCache.set(key, fit);
+  return fit;
+};
+
 /* engraved versions for the cards: the original's shading translated into each metal's own tones
    (every original colour keeps its own step from dark to light; eye whites are the polished highlight) */
 const CROC_ENGRAVED = {
@@ -635,7 +1481,8 @@ const CROC_ENGRAVED = {
   obsidian: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAACzCAMAAADotONaAAAAeFBMVEURIRdclnJFgmcjSTkaOStQfV0/emEQJRo0ZE8rV0S018k6cVoULiMyUz0gOSkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACkhe9iAAAAKHRSTlMA//////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGUXE9QAACldJREFUeNrtnYua46YOgBtBtKbQ8/6P29ggDAIM2GBnTof228tMkuW3biAJ5q+/5g8ppGDjrx81RDp+AX4B/lMA8lcCj0tA0vgmAKncEPZXoaQxZp0lvWJJhpKF8QSA0rAOjYv+jGXRCz1l416h4cUGcEk8qVNK4zpAJ4/XA7wCghV2B+AE8iEJVADKEvgFGAEAP14CCOt/KYDsB/gKI164TzwC4AwPACzWjYJWRQm8GAGAKIw7VUi/7MTdlF7LPgs34OVeAOWBVnwqlMfnlztAuFqoBMA/cHSTpem637c/2m8oc/8aowOAPXT75IG4NgBmEPKbARxB9IUvB8jMmBE9DwCHAIh8zhzAPAuw+poEQBCat93deJ1MUiN2CA9IABQXgCQPC7HPeVoCagu5aqHIuwXiz07AAyjtBnP2n2Ct+CAm+4ZFqxt2OApdwKUJr39Wyv9dLrAbL4ZjF5IfXCjLDXtOpVOA+O+0cvCGWwfwrzAxwV0SKAEghawyAIbLiltsoQvATr4R4KZ4oJYqQOD/0S6BoBXAfB1AsHzLAwRR7iYJcBWitBD3QvuT1R9Xu/5f80KbBFYZmJkAbsKCb7NAo/XmflLk7JdkVbcweJdbCiLFRADS0tffbLx43KKYrP5OXkrzJI1RbMGHEwFkEWDfsNhxACASgJgdH5EAsvXyCQC/dZMPAUQMvwCPAAQIXQD4BQB8u3hFAhNXoybarnxGZMSYA3glL81IIPBgqwSu7wdKWUsC+EMjiQMcwL90KQL4wEYBjd5yHkREOyehLgCYPIBoAjhtC1KdkQB2AYgWgLMSOAGAjKACoDoAxBkVOmkDmMQB02cDmAKc8UbnVAh8MMOTAPiwCoUb3LMAOMQLFatXjQDnVWjbAgXz31JlHXWLtVT92WFo5hPXrcbmW+nfygEgWws59nYA77yXxaa6zB9jXOG/URJIFaOkrkUg7QCiH4AGfQqLBw3G7HclHIBSDEcALJCdB1C0sTGxLTQBOE+WSOBWABKjCbzR55PaJGB9yLMA9BxjgBYVgiIA3A4AJwHyNgBuv3IMgCNVKJZAoxEDeSFgJSSeYk4BdBDE7Fpom34RQBwDYB+AWpuVFr35ebXm11wfE6WaFohqEXoNFtvX/bS139A4BdabL1f0wkXp4DPWogjSZyU5uxMAaEsqmh4XtUAoenxeFDzPFlQwjitJB7Um3eCFagD208EDuGUVAUhuFDrI3JLGxpt6+sioTpNib8WnEQD23ywBmBTAL58xTKTDUTUv961t+TwBwKn0UpZAMAH/TN1qsm8MAdAXAMJnCZhW4g9swr20DiBrcUAXVIgA/hyokH/oWNSTg6efBaDKeA8AZiUQeCE4ACh0QdQmXvNCHatRAlBuE+c3dzx35qvYyPXgwkBW2BBr8FiDzab6ci//1wAihc778KjwBbsPHTKwtC9o2ImFviRw2HjQ6IDDpu6iYKJKgoJj4z7gWFGbNfo0Rg7Afqd1H9A7LxynPFcBdOEjj5iw+9njKQlgIwB2SwBTRd57C3oBCjZg33XWBg49JEbRd4whnwfQWW9T8/Gh19XslIZuEIG2kcUHFy3icOBL+fWEEL1Dx9PveHp7ro5WTwXm/aGkyScVty97I66XnGIAXnCsrI8xD4A8yiF7LM0APsvXCICYibtBqzNiJjDnALK2HmjdLIATZlkAyNhQ8IVWAMReAMwJoTKyKhQ0A2HkbAsAywAAl7/6c3VIwGjWmfVTD0BtP8AkoMcABAS5RWAVQJ6xAZZO6ZgxGxCUrqP5ryl86/xrNiBJP0VzdpraQkX3/P95vf0c3/B+AyCUVuGF4gMkEuDpSel0SVZ7+voB5KuYRYkUH3MAb8fNbSAFEOIYwB9FGgjg2xbLEng7hLoE3BazCkAf8b+apvuhcgDWjtkmryiBRoAWCSi9q+ercUD4exrQQ7QLALIfIP9v1nkOCLIA7/d7hgROD8gvpwoAjmCABFxj7ggAHY9jgHcMIERU92gH8CCvO4fv2OVS+ykAS9TscVBna2+qfgwA9wxxsEf+QQD5VON/EID86TtZi00xYp5WLwP0npSTq3MLB8yVQB1A9gH8820AvX2YkwHYkQ4FpX4LI7e2J9PfejYNYAu8yp5rVEWAy0cT50lgXfwsKj5R9H8AgKMBEhV611Jc7SpUB0Ax/nRr3BrzcWocsN8GIoA4gTEd4BNX3nBOxYoA/sD3LQBCnLERenEBwKfH15Qi9b7+GIAoty+/UwJAaldWIadHsrvx9SYA99oSgDeEWwBOuNEDAJdOcqX7KQDR3UBS8jvYLMMhSF0C4FLbEwAyeW2WoXu3DjgEwPsA4sCgoHX6hxIAeARg6yxqFkFlMfcBMLdLoA3AlwM4AHIJbGfU96sCblGhFvXxCS12QD8+DLQvi5wk5GSA9SE1AbyaAIKS8k0AzRJoBNjLDPcAeDcKQwGCJvCp9w7RoStJ2ehrAPG+4A4AQwB08VCbEavwbp8QAO4G2CXQUWHgN2UE7vQ5gKW/RJK0mkVXQCGAuXw08WaAuOUMOcDMKz/GA2BGAvIOIz6RGy0A3COBaQCwB7LJAGYWAPhuqhkAazV1PVOV2EDHHhOWJR/RqFvEfV2JCQC28we0MPlABm3xwJa6+TkC3mc6A4B2fwkA2OJ1V6KoAIDs0qXBANZRrADGnJRABYAfcx8OsH222W6N/wV4EkBuB/j1WIDotONcADtGAGQuosOwYjNyc6+SG6nYhqYvXU09hwSwn5S1AGbYWgg1v6WPX1V4BuDtmjbZPYgLP+o54CpA1NE9iTAIwI06wGVbmCQB+5YMAI4GWKYBQAkAhwIojVNsIFYhFapQCHDdncbXx+AkgKINyG+1AbjNiHXyMwSGudHgrtI9O0FGbHrv68lPPIiQ6wUX4Y3fS8k1HtSa0pSdGz7XxM49kiRMPwgWe5LmAUip2dF9cQUgvgZpMoChoygYdfWLByQAVwA0e2wzVEjMlIBm+fYLEtCl1s6fAzDRiKFsA/ljg/MBYAyAdscCL0ggjomQHP21E8+lscpVVigaODAAEQU0oLMJqM4DqLg2JqRuXesfVGzKAPs5vejyk9MAGP3MjV0CNwBEP0moA0CVJDAXQKYSwBEAkQTEBADWchap0GAA17w42AbsqSzIqVBwnvy0DcQ/DcF2Po0FcM4qD4CXAWIvZCn0FBViAFj6QWbHnQTrBxC04tk/H8BGnPAI3ON6EaAqlV/9sefqvc7u8mCloPDkKaNoFhjQHU4ioQ8tlZ48QPXCCbr9WGV0359N2HZNAwHgTTuxcQCipPtzAIzr1LoFQM6QgLHVngOA2Jl/HUBdhRoBpIp+aA9+D0CjChFA2Qs9BMBmU2+V5u6fH03YAc7Eg3iDUAdIolHdBlLnY6IkmQc4c1qIv7UK0P6jpQ8AChJwUuhTpQRg80G3AsgrAJABMPI5AGhuMTiQgDGPqZBbzHdJAL4JYIARk4MYCMBAlEhV6MLJafbWt99Kqqbpq4aLh4pu1C+n3+FBlHff4OdYasvpZPwLReVdJzZS07MAAAAASUVORK5CYII=",
 };
 
-const CardFace = ({ variant, exp = "12-26" }) => (
+// who: the account in use. Its first name is the engraving, first and last name the card's name
+const CardFace = ({ variant, exp = "12-26", who }) => { const first = who ? who.first : "", full = who ? `${who.first} ${who.last}`.trim().toUpperCase() : ""; return (
   <div className={`cardface ${variant}`}>
     <div className="cf-metal" />
     <div className="cf-grain" />
@@ -644,14 +1491,14 @@ const CardFace = ({ variant, exp = "12-26" }) => (
     <div className="cf-sheen-fixed" />
     <div className="cf-content">
       <SimChip />
-      <div className="cf-script">Rassam</div>
+      <div className="cf-script" style={{ "--fit": fitText(first, "400 100px 'Mrs Saint Delafield'", 0, 6.4) }}>{first}</div>
       <div className="cf-foot">
-        <span className="cf-name">RASSAM MAWARDI</span>
+        <span className="cf-name" style={{ "--fit": fitText(full, "600 100px 'Inter'", 0.18, 21) }}>{full}</span>
         <span className="cf-exp"><span className="cf-exp-lbl">EXPIRES<br />END</span>{exp}</span>
       </div>
     </div>
   </div>
-);
+); };
 
 const PuzzleBody = ({ shine }) => (
   <>
@@ -763,13 +1610,18 @@ const PythonBody = ({ shine }) => (
 const COIN_D = 320, COIN_T = 40;            // diameter and thickness, px
 const COIN_SIDES = 96;                      // flat strips round the edge
 const COIN_REST = { rx: 6, ry: -24 };       // resting pose, degrees: turned aside so the edge shows
+// the coin under the pointer: its tilt, the light on its face (gx, gy), how far it lifts, and its shadow's shift
+const COIN_STILL = { rx: 0, ry: 0, gx: 0, gy: 0, lift: 0, sx: 0, sy: 0 };
 // each strip is half a pixel wider than the exact fit, so neighbours overlap and no gap can open between them
 const COIN_STRIP_W = +(COIN_D * Math.tan(Math.PI / COIN_SIDES) + 0.5).toFixed(2);
 
 // The edge is lit once, for the resting pose: a key light from the upper left and a softer one from the right, run
 // through a gold ramp from deep shadow to highlight. Each strip fades from the shade at one side to the shade at
 // the other, so the ring of flat strips reads as one round, smooth edge.
-const COIN_STRIPS = (() => {
+// the two metals a coin's edge is lit in, from deep shadow to highlight: the Bitcoin coin's gold, the forex coin's platinum
+const COIN_GOLD = [[0, [34, 22, 6]], [0.18, [86, 60, 18]], [0.4, [156, 114, 38]], [0.62, [214, 172, 76]], [0.82, [246, 218, 132]], [1, [255, 246, 206]]];
+// sides: how many strips make the edge (fewer on a coin that is only ever seen small; each is then made wider to fit)
+const coinStrips = (RAMP, sides = COIN_SIDES) => {
   const rad = (d) => (d * Math.PI) / 180;
   const unit = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -782,7 +1634,6 @@ const COIN_STRIPS = (() => {
     const v = [nx * Math.cos(ry), ny * Math.cos(rx) - z * Math.sin(rx), ny * Math.sin(rx) + z * Math.cos(rx)];
     return 0.17 + 0.56 * (Math.max(0, dot(v, KEY)) * 0.9 + Math.max(0, dot(v, RIM)) * 0.46) + Math.pow(Math.max(0, dot(v, RIM_H)), 6) * 0.12;
   };
-  const RAMP = [[0, [34, 22, 6]], [0.18, [86, 60, 18]], [0.4, [156, 114, 38]], [0.62, [214, 172, 76]], [0.82, [246, 218, 132]], [1, [255, 246, 206]]];
   const gold = (v) => {
     const t = Math.max(0, Math.min(1, v));
     let i = 1;
@@ -790,14 +1641,16 @@ const COIN_STRIPS = (() => {
     const [t0, c0] = RAMP[i - 1], [t1, c1] = RAMP[i];
     return rgb(c0.map((c, j) => lerp(c, c1[j], (t - t0) / (t1 - t0))));
   };
-  const step = 360 / COIN_SIDES;
-  return Array.from({ length: COIN_SIDES }, (_, i) => (
+  const step = 360 / sides, w = +(COIN_D * Math.tan(Math.PI / sides) + 0.5).toFixed(2);
+  return Array.from({ length: sides }, (_, i) => (
     <i key={i} className="cn-strip" style={{
+      ...(sides !== COIN_SIDES && { width: w, marginLeft: -w / 2 }),
       transform: `rotateZ(${(i * step).toFixed(2)}deg) translateY(${-(COIN_D / 2 - 0.3)}px) rotateX(90deg)`,
       "--a": gold(light((i - 0.5) * step)), "--b": gold(light((i + 0.5) * step)),
     }} />
   ));
-})();
+};
+const COIN_STRIPS = coinStrips(COIN_GOLD);
 
 /* the faces are drawn in a 400-unit square. BTC_PATH is the Bitcoin symbol in its own large units. */
 const BTC_PATH = "M2947.77 1754.38c40.72,-272.26 -166.56,-418.61 -450,-516.24l91.95 -368.8 -224.5 -55.94 -89.51 359.09c-59.02,-14.72 -119.63,-28.59 -179.87,-42.34l90.16 -361.46 -224.36 -55.94 -92 368.68c-48.84,-11.12 -96.81,-22.11 -143.35,-33.69l0.26 -1.16 -309.59 -77.31 -59.72 239.78c0,0 166.56,38.18 163.05,40.53 90.91,22.69 107.35,82.87 104.62,130.57l-104.74 420.15c6.26,1.59 14.38,3.89 23.34,7.49 -7.49,-1.86 -15.46,-3.89 -23.73,-5.87l-146.81 588.57c-11.11,27.62 -39.31,69.07 -102.87,53.33 2.25,3.26 -163.17,-40.72 -163.17,-40.72l-111.46 256.98 292.15 72.83c54.35,13.63 107.61,27.89 160.06,41.3l-92.9 373.03 224.24 55.94 92 -369.07c61.26,16.63 120.71,31.97 178.91,46.43l-91.69 367.33 224.51 55.94 92.89 -372.33c382.82,72.45 670.67,43.24 791.83,-303.02 97.63,-278.78 -4.86,-439.58 -206.26,-544.44 146.69,-33.83 257.18,-130.31 286.64,-329.61l-0.07 -0.05zm-512.93 719.26c-69.38,278.78 -538.76,128.08 -690.94,90.29l123.28 -494.2c152.17,37.99 640.17,113.17 567.67,403.91zm69.43 -723.3c-63.29,253.58 -453.96,124.75 -580.69,93.16l111.77 -448.21c126.73,31.59 534.85,90.55 468.94,355.05l-0.02 0z";
@@ -849,55 +1702,82 @@ const COIN_DEFS = (
 );
 // field: the sunken part of a face (the metal and one thin ring) with the shadow and shine at the foot of the rim
 // and the symbol
-const COIN_FIELD = (
+// (p says which metal's gradients and shading to use: cn the gold, fx the platinum; sym which symbol; cast the colour
+// of the symbol's shadow on the field)
+const coinField = (p, sym, cast) => (
   <svg className="cn-layer" viewBox="0 0 400 400" aria-hidden="true">
     <g clipPath="url(#cnClip)">
-      <circle cx="200" cy="200" r="200" fill="url(#cnBase)" />
-      <circle cx="200" cy="200" r="180" fill="url(#cnDish)" />
-      <circle cx="200" cy="200" r="200" fill="url(#cnGlow)" />
-      <use href="#cnSymbol" transform="translate(6 8)" fill="#2a1700" opacity="0.3" filter="url(#cnCast)" />
-      <g filter="url(#cnEmboss)" fill="#fff">
+      <circle cx="200" cy="200" r="200" fill={`url(#${p}Base)`} />
+      <circle cx="200" cy="200" r="180" fill={`url(#${p}Dish)`} />
+      <circle cx="200" cy="200" r="200" fill={`url(#${p}Glow)`} />
+      <use href={`#${sym}`} transform="translate(6 8)" fill={cast} opacity="0.3" filter="url(#cnCast)" />
+      <g filter={`url(#${p}Emboss)`} fill="#fff">
         <circle cx="200" cy="200" r="200" fillOpacity="0.34" />
         <use href="#cnRimShape" />
         <circle cx="200" cy="200" r="160" fill="none" stroke="#fff" strokeWidth="2.6" strokeOpacity="0.5" />
-        <use href="#cnSymbol" />
+        <use href={`#${sym}`} />
       </g>
     </g>
   </svg>
 );
 // devices: what is raised (the rim and the symbol). They sit above the lustre, so the sheen sweeps the field only.
 // The symbol stands on a few darker copies of itself, stepped down and to the right: its side walls.
-const COIN_DEVICES = (
+const coinDevices = (p, sym, wall) => (
   <svg className="cn-layer" viewBox="0 0 400 400" aria-hidden="true">
     <g clipPath="url(#cnClip)">
-      <use href="#cnRimShape" fill="url(#cnRim)" />
-      <g fill="#7d5714">
-        <use href="#cnSymbol" transform="translate(4.2 5.6)" />
-        <use href="#cnSymbol" transform="translate(2.8 3.7)" />
-        <use href="#cnSymbol" transform="translate(1.4 1.9)" />
+      <use href="#cnRimShape" fill={`url(#${p}Rim)`} />
+      <g fill={wall}>
+        <use href={`#${sym}`} transform="translate(4.2 5.6)" />
+        <use href={`#${sym}`} transform="translate(2.8 3.7)" />
+        <use href={`#${sym}`} transform="translate(1.4 1.9)" />
       </g>
-      <use href="#cnSymbol" fill="url(#cnGlyph)" />
-      <g filter="url(#cnEmboss)" fill="#fff">
+      <use href={`#${sym}`} fill={`url(#${p}Glyph)`} />
+      <g filter={`url(#${p}Emboss)`} fill="#fff">
         <use href="#cnRimShape" />
-        <use href="#cnSymbol" />
+        <use href={`#${sym}`} />
       </g>
     </g>
   </svg>
 );
-const CoinFace = ({ side, lustreRef }) => (
+const COIN_FIELD = coinField("cn", "cnSymbol", "#2a1700"), COIN_DEVICES = coinDevices("cn", "cnSymbol", "#7d5714");
+const CoinFace = ({ side, lustreRef, glareRef, field = COIN_FIELD, devices = COIN_DEVICES }) => (
   <div className={`coin-face ${side}`}>
-    {COIN_FIELD}
+    {field}
     <div ref={lustreRef} className={lustreRef ? "cn-lustre live" : "cn-lustre"} />
-    {COIN_DEVICES}
+    {devices}
+    {glareRef && <div className="cn-glare"><i ref={glareRef} /></div>}
   </div>
 );
 // memo: nothing in it ever changes, so re-renders of the app skip the coin entirely
-const BtcCoin = memo(({ lustreRef }) => (
+const BtcCoin = memo(({ lustreRef, glareRef }) => (
   <div className="coin-3d">
-    {COIN_DEFS}
-    <CoinFace side="front" lustreRef={lustreRef} />
-    <CoinFace side="back" />
-    {COIN_STRIPS}
+    {/* .coin-s2 and .coin-s3 do nothing but make the toss's second and third turn (see coinSpin in the styles) */}
+    <div className="coin-s2"><div className="coin-s3">
+      {COIN_DEFS}
+      <CoinFace side="front" lustreRef={lustreRef} glareRef={glareRef} />
+      <CoinFace side="back" />
+      {COIN_STRIPS}
+    </div></div>
+  </div>
+));
+
+/* ---------- forex: the currency die ----------
+   (11 October 2026: "change the forex symbol, get creative, dont reuse coins. showcase the 3 big currencies for the
+   symbol". Until then it was three coins, a platinum dollar, a gold euro and a copper yen, each the Bitcoin coin's
+   own build.) A cube seen corner on, so three of its faces show at once: the dollar on top, the euro on the left, the
+   yen on the right, each pressed into ivory in an ink of its own. The faces behind carry the same three, so however
+   it is turned it shows those. With the coin (a disc) and the globe (a ball) it makes three plain solids in a row.
+   It stands in the coin's own 3D boxes, so it tilts, floats and is tossed like the coin: a die rolled. Twelve flat
+   pieces (six faces, and six of a core that shows where the faces' round corners leave off); see .fx-die. */
+const FX_DIE = [["top", "$"], ["front", "€"], ["right", "¥"], ["bottom", "$"], ["back", "€"], ["left", "¥"]];
+const FxDie = memo(() => (
+  <div className="coin-3d">
+    <div className="coin-s2"><div className="coin-s3">
+      <div className="fx-die">
+        {FX_DIE.map(([side]) => <i key={side} className={`fxd-core ${side}`} />)}
+        {FX_DIE.map(([side, ch]) => <div key={side} className={`fxd-f ${side}`}><b>{ch}</b></div>)}
+      </div>
+    </div></div>
   </div>
 ));
 
@@ -936,13 +1816,16 @@ const idxGlobeGL = (canvas) => {
   const at = gl.getAttribLocation(prog, "a");
   gl.enableVertexAttribArray(at);
   gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
-  // the bands as a picture, painted from the same outline the flat logo uses
-  const pic = document.createElement("canvas");
-  pic.width = pic.height = 1024;
-  const c = pic.getContext("2d");
-  c.scale(2.56, 2.56);
-  c.fillStyle = "#fff";
-  c.fill(new Path2D(IDX_BANDS), "evenodd");
+  // the bands as a picture, painted from the same outline the flat logo uses (once: kept for the next set-up)
+  let pic = idxGlobeGL.pic;
+  if (!pic) {
+    pic = idxGlobeGL.pic = document.createElement("canvas");
+    pic.width = pic.height = 1024;
+    const c = pic.getContext("2d");
+    c.scale(2.56, 2.56);
+    c.fillStyle = "#fff";
+    c.fill(new Path2D(IDX_BANDS), "evenodd");
+  }
   gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, pic);
   gl.generateMipmap(gl.TEXTURE_2D);
@@ -964,6 +1847,19 @@ const idxGlobeGL = (canvas) => {
     },
     lose() { gl.getExtension("WEBGL_lose_context")?.loseContext(); },
   };
+};
+/* The first WebGL set-up of a launch is not "a few milliseconds": the graphics process builds its whole WebGL side and
+   the globe's program, and the page stands waiting for both. Measured, the page was held up for 37 to 134ms in one go,
+   0.9s after the trading panel first opened, with the coin floating on it. So a throwaway set-up is done at app
+   start, while the opening screen's pieces are still held back and nothing moves; the globe's own, later, finds it
+   all in place. */
+const warmGL = () => {
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 600;
+    const g = idxGlobeGL(cv);
+    if (g) { g.draw(0); g.lose(); }
+  } catch (e) { /* no WebGL: the flat logo stands in, as always */ }
 };
 const IdxGlobe = memo(({ canvasRef, live, still }) => (
   <>
@@ -996,15 +1892,15 @@ const TrashIcon = () => (
 
 /* Defined outside the main component so React keeps the same DOM node
    across renders — otherwise the input loses focus while typing. */
-const sanitizeAmount = (raw, allowDecimal) => {
+const sanitizeAmount = (raw, allowDecimal, places = 2) => {
   if (!allowDecimal) {
     const n = parseInt(String(raw).replace(/[^\d]/g, ""), 10);
     return isNaN(n) ? "" : n.toLocaleString("id-ID");
   }
-  // MYR: digits with a single "." decimal, up to two places
+  // MYR: digits with a single "." decimal, up to two places (`places`: three in the journal's Full TP % and Risk % boxes)
   let v = String(raw).replace(/,/g, ".").replace(/[^\d.]/g, "");
   const parts = v.split(".");
-  v = parts.shift() + (parts.length ? "." + parts.join("").slice(0, 2) : "");
+  v = parts.shift() + (parts.length ? "." + parts.join("").slice(0, places) : "");
   return v;
 };
 
@@ -1026,11 +1922,353 @@ const AmountField = ({ value, setValue, onSubmit, accent, cur, ghost, width, all
     {ghost && (
       <span style={S.ghostOverlay} aria-hidden="true">
         <span style={{ visibility: "hidden" }}>{value}</span>
-        <span style={{ color: "#6d757d" }}>.000</span>
+        <span style={{ color: "#8e969e" }}>.000</span>
       </span>
     )}
   </span>
 );
+
+/* A logged row is moved to another day by its bar (11 October 2026: "drag and drop (mac style)", by "the gray bar
+   inbetween expense rp text and description"; "all the transitions … very smooth and seamless. no lag"). Held and moved
+   a few px, the row dims where it is and a small copy of it (amount, bar, name) comes out of the bar and stays under the
+   pointer, its own bar on the spot that was taken hold of. A ring glides to the day it is over. Let go there, the copy
+   flies into that day and the page is told (o.drop(day)); let go anywhere else, or Esc, and it goes back to its row.
+   None of it is React state: the copy and the ring move by transform, written once a frame at most, and the row's and
+   the bar's looks are classes put on by hand. The days' places are read once, as the drag begins, and kept as places
+   on the page, so scrolling needs no reading; near the top or the bottom edge of the window the page scrolls by itself.
+   o: { grid: the calendar's grid, kind: "exp" | "inc", day: the day the row is on, drop(day) } */
+const DND_START = 4, DND_EDGE = 70, DND_SCROLL = 900, DND_FLY_MS = 280;
+const stopDown = (e) => e.preventDefault();          // a press on the bar starts no marking of text and takes no cursor away
+const rowDrag = (e, o) => {
+  if (e.button !== 0 || rowDrag.on || !o.grid) return;
+  const grip = e.currentTarget, row = grip.closest(".row-wrap"), ring = o.grid.querySelector(".cal-ring");
+  if (!row || !ring) return;
+  const pid = e.pointerId, x0 = e.clientX, y0 = e.clientY;
+  try { grip.setPointerCapture(pid); } catch (err) { /* it still works: the events are heard at the window */ }
+  rowDrag.on = true;
+  let st = null, px = x0, py = y0, raf = 0, last = 0, done = false;
+  const place = () => { st.chip.style.transform = `translate3d(${px - st.ax}px, ${py - st.ay}px, 0)`; };
+  // the day under the pointer: the one it is in, or within half a gap of; never the row's own
+  const aim = () => {
+    const x = px + window.scrollX, y = py + window.scrollY;
+    let best = null, near = 6;
+    for (const d of st.days) { const far = Math.max(d.l - x, x - d.r, d.t - y, y - d.b, 0); if (far < near) { near = far; best = d; } }
+    if (best && best.day === o.day) best = null;
+    if (best === st.over) return;
+    const was = st.over;
+    st.over = best;
+    if (!best) { ring.classList.remove("on"); return; }
+    // coming from no day it is put there; from another day it glides
+    if (!was) ring.style.transition = "none";
+    ring.style.width = `${best.r - best.l}px`; ring.style.height = `${best.b - best.t}px`;
+    ring.style.transform = `translate3d(${best.l - st.gx}px, ${best.t - st.gy}px, 0)`;
+    if (!was) { void ring.offsetWidth; ring.style.transition = ""; }
+    ring.classList.add("on");
+  };
+  const tick = (now) => {
+    raf = 0;
+    if (!st || done) return;
+    const dt = last ? Math.min(50, now - last) : 0;
+    const v = py < DND_EDGE ? -(1 - Math.max(0, py) / DND_EDGE) : py > window.innerHeight - DND_EDGE ? 1 - Math.max(0, window.innerHeight - py) / DND_EDGE : 0;
+    if (v) { last = now; if (dt) window.scrollBy({ top: (v * DND_SCROLL * dt) / 1000, behavior: "instant" }); need(); } else last = 0;
+    place(); aim();
+  };
+  const need = () => { if (!raf) raf = requestAnimationFrame(tick); };
+  const begin = () => {
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();          // a box being typed in is finished first (it saves on leaving)
+    const sx = window.scrollX, sy = window.scrollY, g = o.grid.getBoundingClientRect();
+    const days = [...o.grid.querySelectorAll(".cell[data-day]")].map((el) => { const r = el.getBoundingClientRect(); return { day: Number(el.dataset.day), l: r.left + sx, t: r.top + sy, r: r.right + sx, b: r.bottom + sy }; });
+    const boxes = row.querySelectorAll(".entry-row input");
+    const chip = document.createElement("div"), body = document.createElement("div"), amt = document.createElement("b"), bar = document.createElement("i"), name = document.createElement("span");
+    chip.className = "dnd-chip"; body.className = `dnd-chip-in ${o.kind}`;
+    amt.textContent = (boxes[0] && boxes[0].value) || "";
+    name.textContent = (boxes[1] && boxes[1].value.trim()) || (o.kind === "inc" ? "Income" : "Expense");
+    body.append(amt, bar, name); chip.append(body); document.body.append(chip);
+    const ax = bar.offsetLeft + bar.offsetWidth / 2, ay = body.offsetHeight / 2;
+    body.style.transformOrigin = `${ax}px 50%`;                // it grows out of the bar
+    st = { days, gx: g.left + sx, gy: g.top + sy, chip, body, ax, ay, w: body.offsetWidth, over: null };
+    row.classList.add("dnd-src"); grip.classList.add("held"); o.grid.classList.add("cal-dnd");
+    place();
+    chip.classList.add("on");
+  };
+  const end = (ok) => {
+    if (done) return;
+    done = true; rowDrag.on = false;
+    cancelAnimationFrame(raf);
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("keydown", key, true); window.removeEventListener("blur", cancel); window.removeEventListener("scroll", need);
+    grip.removeEventListener("lostpointercapture", cancel);
+    try { grip.releasePointerCapture(pid); } catch (err) { /* already let go */ }
+    if (!st) return;
+    const to = ok ? st.over : null, { chip, body } = st;
+    grip.classList.remove("held"); o.grid.classList.remove("cal-dnd"); ring.classList.remove("on");
+    chip.style.transition = `transform ${DND_FLY_MS}ms cubic-bezier(0.3, 0.7, 0.2, 1)`;
+    if (to) {
+      // into the middle of its day, shrinking; the page hears of it two frames on, so its own work can't hold up the take-off
+      body.style.transformOrigin = "50% 50%";
+      chip.style.transform = `translate3d(${(to.l + to.r) / 2 - window.scrollX - st.w / 2}px, ${(to.t + to.b) / 2 - window.scrollY - st.ay}px, 0)`;
+      chip.classList.add("in");
+      requestAnimationFrame(() => requestAnimationFrame(() => o.drop(to.day)));
+      setTimeout(() => row.classList.remove("dnd-src"), 800);  // (the row is gone by then; only if the page did not take it)
+    } else {
+      const r = grip.getBoundingClientRect();
+      chip.style.transform = `translate3d(${r.left + r.width / 2 - st.ax}px, ${r.top + r.height / 2 - st.ay}px, 0)`;
+      chip.classList.remove("on");
+      row.classList.remove("dnd-src");
+    }
+    setTimeout(() => chip.remove(), DND_FLY_MS + 80);
+  };
+  const move = (ev) => {
+    if (ev.pointerId !== pid || done) return;
+    px = ev.clientX; py = ev.clientY;
+    if (!st) { if (Math.hypot(px - x0, py - y0) < DND_START) return; begin(); }
+    need();
+  };
+  const up = (ev) => { if (ev.pointerId !== pid) return; px = ev.clientX; py = ev.clientY; if (st) aim(); end(true); };
+  const cancel = () => end(false);
+  const key = (ev) => { if (ev.key !== "Escape" || !st) return; ev.preventDefault(); ev.stopPropagation(); end(false); };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancel);
+  window.addEventListener("keydown", key, true); window.addEventListener("blur", cancel); window.addEventListener("scroll", need, { passive: true });
+  grip.addEventListener("lostpointercapture", cancel);
+};
+
+/* Several items added up into one expense (11 October 2026: "pizza 20k, drinks 10k, sides 15k", to be "one expense which
+   is lunch"). One line per item, the amount and then what it was; an empty line always waits at the end. What the lines
+   come to is the expense's amount. `id` is the logged expense they belong to, null for the one being added. It keeps
+   what is typed to itself and reports through `api` (a ref), so typing a name redraws nothing behind it. */
+const PART_OUT_MS = 240;
+const PartLines = memo(({ api, id, start, cur, isMYR, auto }) => {
+  const [rows, setRows] = useState(() => [...(start || []).map((p) => ({ id: p.id, amt: api.current.disp(p.amount), name: p.desc })), { id: uid(), amt: "", name: "" }]);
+  const box = useRef(null);
+  useEffect(() => { if (auto) box.current?.querySelector("input")?.focus({ preventScroll: true }); }, []);
+  // a line on its way out no longer counts
+  const tell = (list, save) => api.current.change(id,
+    list.filter((r) => !r.out).map((r) => ({ id: r.id, amount: api.current.toIDR(r.amt), desc: r.name.trim() })).filter((p) => p.amount > 0), save);
+  const edit = (rid, field, v) => {
+    let next = rows.map((r) => (r.id === rid ? { ...r, [field]: v } : r));
+    const last = next[next.length - 1];
+    if (last.amt || last.name) next = [...next, { id: uid(), amt: "", name: "" }];
+    setRows(next); tell(next);
+  };
+  const drop = (rid) => {
+    const next = rows.map((r) => (r.id === rid ? { ...r, out: true } : r));
+    setRows(next); tell(next, true);
+    setTimeout(() => setRows((rs) => rs.filter((r) => r.id !== rid)), PART_OUT_MS);
+  };
+  const go = (i, name) => box.current?.querySelectorAll("input")[i * 2 + (name ? 1 : 0)]?.focus();
+  return (
+    <div className="parts" ref={box} style={{ "--pw": id === null ? "116px" : "126px" }} onBlur={() => api.current.commit(id)}>
+      {rows.map((r, i) => {
+        const ghost = !r.out && api.current.ghost(r.amt);
+        const empty = !r.amt && !r.name;
+        return (
+          <div key={r.id} className={`pt-wrap${r.out ? " out" : ""}`}>
+            <div>
+              <div className="pt-line glass-soft">
+                <span className="pt-amt">
+                  <input inputMode={isMYR ? "decimal" : "numeric"} placeholder={`${cur} 0`} value={r.amt}
+                         onChange={(e) => edit(r.id, "amt", sanitizeAmount(e.target.value, isMYR))}
+                         onKeyDown={(e) => {
+                           if (e.key !== "Enter") return;
+                           // Enter takes the grey .000 and goes on to the name; on the empty line it is "that was all"
+                           if (ghost) edit(r.id, "amt", parseNum(digitsOf(r.amt) + "000").toLocaleString("id-ID"));
+                           else if (empty) { api.current.done(id); return; }
+                           go(i, true);
+                         }} />
+                  {ghost && <span className="pt-ghost" aria-hidden="true"><span style={{ visibility: "hidden" }}>{r.amt}</span>.000</span>}
+                </span>
+                <span className="pt-div" />
+                <input className="pt-name" placeholder="Item — e.g. pizza, drinks" value={r.name} maxLength={60}
+                       onChange={(e) => edit(r.id, "name", e.target.value)}
+                       onKeyDown={(e) => {
+                         if (e.key !== "Enter") return;
+                         if (empty) { api.current.done(id); return; }
+                         let j = i + 1;
+                         while (rows[j] && rows[j].out) j++;
+                         go(j);
+                       }} />
+                <button className="pt-x chip-x" tabIndex={-1} title="Remove item" style={i === rows.length - 1 ? { visibility: "hidden" } : undefined}
+                        onClick={() => drop(r.id)}>✕</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+/* A figure in the pixel font, set by its ink (11 October 2026: he sent the score dial with "81" in it, the two far apart
+   and off the middle). Every character of that font advances 8 font pixels and is drawn in the first 7, but "1" and
+   "-" begin one pixel in (measured: the pxink journey in tools/perf), so a 1 stood two pixels from the figure before it
+   where every other pair is one apart, and the empty last column pushed the whole figure half a pixel off the middle.
+   Each "1" and "-" is pulled back by its empty column, and the last column is left out of the width, so what is centred
+   is the ink. Not for a figure that counts: its width would change with its digits. */
+const PxFig = ({ text }) => {
+  const t = String(text);
+  if (!/^[-\d]+$/.test(t)) return t;
+  return (
+    // (the page-wide rule gives every element Inter, so each piece has to take the face of what it stands in)
+    <span style={{ display: "inline-block", marginRight: "-0.125em", fontFamily: "inherit" }}>
+      {[...t].map((ch, i) => (ch === "1" || ch === "-" ? <span key={i} style={{ marginLeft: "-0.125em", fontFamily: "inherit" }}>{ch}</span> : ch))}
+    </span>
+  );
+};
+
+/* Split bill (11 October 2026: "a calculator for calculating split bill with people", then "an option for my bill to be
+   input for expenses", with its Rp, description and category his to change). What somebody had on their own stays with
+   them, the rest of the bill is shared evenly, and service and tax are put on everybody's part alike: service on the
+   bill, tax on the bill with service, as a restaurant charges them. Whole rupiah. */
+const splitBill = (bill, own, svc, tax) => {
+  const alone = own.reduce((a, b) => a + b, 0);
+  if (!bill) return null;
+  if (alone > bill) return { over: alone - bill };
+  const k = (1 + svc / 100) * (1 + tax / 100), each = (bill - alone) / own.length;
+  return { total: Math.round(bill * k), shares: own.map((o) => Math.round((o + each) * k)) };
+};
+const BILL_MAX = 20;
+const BillSplit = memo(({ api, cur, isMYR, onClose }) => {
+  const [bill, setBill] = useState("");
+  const [svc, setSvc] = useState("");
+  const [tax, setTax] = useState("");
+  // the first one is him. `own` is what a person had on their own as one typed amount; `parts` is the same thing item
+  // by item (PartLines), which then stands for it; `had` says the list was opened at least once (it stays in the page)
+  const person = (name) => ({ id: uid(), name, own: "", parts: [], open: false, had: false });
+  const [people, setPeople] = useState(() => [person("Me"), person("")]);
+  // his share as an expense. A figure of his own stands for as long as the share it replaced does
+  const [mine, setMine] = useState(null);
+  const [desc, setDesc] = useState("");
+  const [cat, setCat] = useState(null);              // null: read from the description
+  const [added, setAdded] = useState(null);          // what was last added, so the same thing isn't added twice
+  const [closing, setClosing] = useState(false);
+  const boxRef = useRef(null);
+  const shut = useRef(null);
+  shut.current = () => { if (closing) return; setClosing(true); setTimeout(onClose, 190); };
+  useEffect(() => {
+    boxRef.current?.querySelector("input")?.focus();
+    // while it is open no key and no wheel reaches the panels behind
+    const onKey = (e) => { if (boxRef.current?.contains(e.target)) return; e.stopImmediatePropagation(); if (e.key === "Escape") shut.current(); };
+    const onWheel = (e) => e.stopImmediatePropagation();
+    window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
+  }, []);
+  const { toIDR, disp, ghost } = api.current;
+  const pct = (v) => Math.min(100, parseFloat(v) || 0);
+  const owns = people.map((p) => (p.parts.length ? p.parts.reduce((a, x) => a + x.amount, 0) : toIDR(p.own)));
+  const ownSum = owns.reduce((a, b) => a + b, 0);
+  // no bill typed: the bill is what everybody's own things come to (each then pays for exactly what they had)
+  const billNow = toIDR(bill) || ownSum;
+  const k = (1 + pct(svc) / 100) * (1 + pct(tax) / 100);
+  const res = splitBill(billNow, owns, pct(svc), pct(tax));
+  const ok = !!res && !res.over;
+  const share = ok ? res.shares[0] : 0;
+  const even = !ok || res.shares.every((v) => v === share);
+  const money = (v) => `${cur} ${disp(v) || "0"}`;
+  const own = !!mine && mine.of === share;
+  const mineText = own ? mine.text : share ? disp(share) : "";
+  const autoCat = inferCat(desc), day = api.current.day();
+  const sig = `${mineText}|${desc}|${cat}|${day}`;
+  const setP = (id, field, v) => setPeople((ps) => ps.map((p) => (p.id === id ? { ...p, [field]: v } : p)));
+  // a person's list of items: PartLines, the day panel's own, reporting to this pop-up
+  const linesApi = useRef(null);
+  linesApi.current = { toIDR, disp, ghost, change: (pid, parts) => setP(pid, "parts", parts), commit: () => {}, done: (pid) => setP(pid, "open", false) };
+  const add = () => {
+    const amount = toIDR(mineText);
+    if (!amount || added === sig) return;
+    api.current.add(amount, desc.trim() || "Split bill", cat);
+    setAdded(sig);
+  };
+  const text = (extra) => ({ className: "desc-field", style: { ...S.darkInput, width: "100%", ...extra } });
+  return (
+    <div style={{ ...S.backdrop, animation: closing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={() => shut.current()}>
+      <div ref={boxRef} className="glass set-modal sb" style={{ animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }}
+           onClick={(e) => e.stopPropagation()} onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") shut.current(); }}>
+        <div style={S.modalHead}>
+          <span style={S.panelTitle}>Split bill</span>
+          <button className="x-btn" style={S.closeBtn} onClick={() => shut.current()}>✕</button>
+        </div>
+        <div>
+          <div className="sb-top">
+            <label className="sb-f grow"><span>{!toIDR(bill) && ownSum ? "Bill · empty: what everybody had, added up" : "Bill"}</span>
+              <AmountField value={bill} setValue={setBill} accent="red" cur={cur} ghost={ghost(bill)} allowDecimal={isMYR} onSubmit={() => {}} width="100%" /></label>
+            <label className="sb-f"><span>Service %</span>
+              <input {...text({ width: 96 })} inputMode="decimal" placeholder="0" value={svc} onChange={(e) => setSvc(numIn(e.target.value, 2))} /></label>
+            <label className="sb-f"><span>Tax %</span>
+              <input {...text({ width: 96 })} inputMode="decimal" placeholder="0" value={tax} onChange={(e) => setTax(numIn(e.target.value, 2))} /></label>
+          </div>
+
+          <div className="sb-head">
+            <span>People</span>
+            <span className="sb-step">
+              <button title="One person fewer" disabled={people.length <= 2} onClick={() => setPeople((ps) => ps.slice(0, -1))}><span className="msym">remove</span></button>
+              <b>{people.length}</b>
+              <button title="One person more" disabled={people.length >= BILL_MAX} onClick={() => setPeople((ps) => [...ps, person("")])}><span className="msym">add</span></button>
+            </span>
+          </div>
+          <div className="sb-cols"><span>Who</span><span title="What only that person had. The rest of the bill is shared evenly.">Had on their own</span><span /><span>Pays</span></div>
+          {people.map((p, i) => (
+            <div key={p.id} className="sb-person">
+              <div className="sb-row">
+                <input {...text()} placeholder={`Person ${i + 1}`} value={p.name} maxLength={24} onChange={(e) => setP(p.id, "name", e.target.value)} />
+                {/* with items listed, the amount is what they come to (as on the day panel's Expenses row) */}
+                {p.parts.length ? (
+                  <span style={{ position: "relative", display: "inline-block", width: 150 }}>
+                    <input className="amt-field split-sum" style={{ ...S.darkInput, width: "100%" }} readOnly tabIndex={-1} value={disp(owns[i])} />
+                    {disp(owns[i]).length < 11 && <span className="split-tag">total</span>}
+                  </span>
+                ) : (
+                  <AmountField value={p.own} setValue={(v) => setP(p.id, "own", v)} accent="red" cur={cur} ghost={ghost(p.own)} allowDecimal={isMYR} onSubmit={() => {}} width={150} />
+                )}
+                <button className={`split-btn${p.open ? " on" : ""}`} title="List what this person had, item by item"
+                        onClick={() => setPeople((ps) => ps.map((x) => (x.id === p.id ? { ...x, open: !x.open, had: true } : x)))}>
+                  <span className="msym" style={{ fontSize: 19 }}>receipt_long</span>
+                </button>
+                <b className={`sb-pay${i === 0 ? " me" : ""}`}
+                   title={ok ? `${money(owns[i])} of their own + ${money(Math.round((billNow - ownSum) / people.length))} of what is shared${k > 1 ? `, with service and tax (× ${+k.toFixed(4)})` : ""}` : undefined}>
+                  {ok ? money(res.shares[i]) : "–"}
+                </b>
+              </div>
+              {p.had && (
+                <div className={`parts-fold${p.open ? " open" : ""}`} ref={(el) => { if (el) el.inert = !p.open; }}>
+                  <div><PartLines api={linesApi} id={p.id} cur={cur} isMYR={isMYR} auto /></div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {res && res.over ? (
+            <div className="sb-note">What people had on their own comes to {money(res.over)} more than the bill.</div>
+          ) : (
+            <div className="sb-tiles">
+              <div className="sb-tile glass-soft"><span>{pct(svc) || pct(tax) ? "Total with service and tax" : "Total"}</span><b>{ok ? money(res.total) : "–"}</b></div>
+              <div className="sb-tile glass-soft key"><span>{even ? "Each pays" : "My share"}</span><b>{ok ? money(share) : "–"}</b></div>
+            </div>
+          )}
+
+          <div className="sb-head"><span>My share as an expense</span></div>
+          <div className="sb-exp">
+            <AmountField value={mineText} setValue={(v) => setMine({ of: share, text: v })} accent="red" cur={cur} ghost={own && ghost(mine.text)} allowDecimal={isMYR} onSubmit={add} width={150} />
+            <input {...text()} placeholder="Description — e.g. dinner" value={desc} maxLength={60} onChange={(e) => setDesc(e.target.value)}
+                   onKeyDown={(e) => e.key === "Enter" && add()} />
+          </div>
+          {/* one quiet field: the category read from the description is lit faintly until he picks one himself */}
+          <div className="sb-cats">
+            {CAT_ORDER.map((c) => (
+              <button key={c} className={`sb-cat${cat === c ? " on" : !cat && autoCat === c ? " auto" : ""}`}
+                      title={!cat && autoCat === c ? `${CATS[c].label}, read from the description` : CATS[c].label} onClick={() => setCat(cat === c ? null : c)}>
+                <span className="msym">{CATS[c].icon}</span>{CATS[c].label}
+              </button>
+            ))}
+          </div>
+          <button className={`sb-add${added === sig ? " done" : ""}`} disabled={!toIDR(mineText) || added === sig} onClick={add}>
+            {added === sig ? `Added to ${day}` : `Add to ${day}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 /* A word that rolls over to the next one letter by letter. First the old word leaves, each letter just after the one
    before it, all of it gone within about RW_OUT_MS + RW_OUT_SPREAD_MS; only then does the new word arrive, each letter
@@ -1057,8 +2295,13 @@ const RollWord = ({ text, up, step = 24 }) => {
    anything added is edited on its date, as before. It keeps what is typed to itself, so a keystroke re-renders this
    box and nothing behind it. api.current.add(kind, amount as typed, description) files it and gives back the amount
    as the app writes it, or null when there is no amount. */
-const QuickAdd = memo(({ api, cur, isMYR, boxRef }) => {
-  const [kind, setKind] = useState("exp");
+// its words: [the chip, the chip's tip, the grey hint in the second box, the button's tip] for each of the two kinds. The
+// trading sides hand over their own (a win or a loss and its coin, stock or symbol), and start on the green one
+const QADD_FIN = { first: "exp", desc: "Description",
+                   exp: ["Expense", "Expense · click (or press +) for income", "Today · lunch, fuel, coffee", "Add to today's expenses"],
+                   inc: ["Income", "Income · click (or press −) for an expense", "Today · salary, bonus", "Add to today's income"] };
+const QuickAdd = memo(({ api, cur, isMYR, boxRef, w = QADD_FIN }) => {
+  const [kind, setKind] = useState(w.first);
   const [amt, setAmt] = useState("");
   const [desc, setDesc] = useState("");
   const [done, setDone] = useState(null);          // the last thing added, shown for a moment: { id, kind, text }
@@ -1089,8 +2332,8 @@ const QuickAdd = memo(({ api, cur, isMYR, boxRef }) => {
   return (
     <div ref={boxRef} className={`qadd glass-soft${inc ? " inc" : ""}`}>
       <button className="qadd-kind" onMouseDown={(e) => e.preventDefault()} onClick={() => setKind(inc ? "exp" : "inc")}
-              title={inc ? "Income · click (or press −) for an expense" : "Expense · click (or press +) for income"}>
-        <i /><RollWord text={inc ? "Income" : "Expense"} up={inc} />
+              title={w[kind][1]}>
+        <i /><RollWord text={w[kind][0]} up={inc} />
       </button>
       <span className="qadd-amt">
         <input ref={amtRef} className={`amt-field ${inc ? "green" : "red"}`} style={S.darkInput} placeholder={`${cur} 0`} value={amt}
@@ -1099,21 +2342,21 @@ const QuickAdd = memo(({ api, cur, isMYR, boxRef }) => {
         {ghost && (
           <span style={S.ghostOverlay} aria-hidden="true">
             <span style={{ visibility: "hidden" }}>{amt}</span>
-            <span style={{ color: "#6d757d" }}>.000</span>
+            <span style={{ color: "#8e969e" }}>.000</span>
           </span>
         )}
       </span>
       {/* the grey hint is drawn over the empty box instead of being the box's own placeholder, so it can roll over
           with the rest when expense and income are switched */}
       <span className="qadd-descbox">
-        <input className="desc-field qadd-desc" style={S.darkInput} value={desc} aria-label="Description"
-               onChange={(e) => setDesc(e.target.value)} onKeyDown={(e) => onKey(e, false)} />
-        {!desc && <span className="qadd-ph" aria-hidden="true"><RollWord text={inc ? "Today · salary, bonus" : "Today · lunch, fuel, coffee"} up={inc} step={9} /></span>}
+        <input className="desc-field qadd-desc" style={S.darkInput} value={desc} aria-label={w.desc}
+               onChange={(e) => setDesc(w.caps ? e.target.value.toUpperCase() : e.target.value)} onKeyDown={(e) => onKey(e, false)} />
+        {!desc && <span className="qadd-ph" aria-hidden="true"><RollWord text={w[kind][2]} up={inc} step={9} /></span>}
       </span>
       {/* one button for both: red and green are two layers that cross-fade, and the upright of the + shrinks into the
           middle to leave the −, or grows back out of it */}
       <button className="draw-btn qadd-go" onMouseDown={(e) => e.preventDefault()} onClick={submit}
-              title={inc ? "Add to today's income" : "Add to today's expenses"}>
+              title={w[kind][3]}>
         <i className="qg-red" /><i className="qg-green" />
         <svg width="16" height="16" viewBox="0 0 16 16">
           <rect className="pi-h" x="2.5" y="7" width="11" height="2" rx="1" fill="currentColor" />
@@ -1124,6 +2367,607 @@ const QuickAdd = memo(({ api, cur, isMYR, boxRef }) => {
     </div>
   );
 });
+
+/* The login screen and the select acc panel (his names; 7 October 2026). One cover over the launch stage, on the
+   opening screen's own backdrop, so the opening's fade uncovers it without a seam and its own fade uncovers the
+   selections panel.
+   - The login: the very first time, on an app with nothing saved. A picture, first name, last name, Continue. No
+     password. It makes the first account and goes straight on to the selections panel.
+   - The select acc panel: only when he asks to change account from the sidebar (the page is loaded again and comes
+     here after the opening, before the selections panel), after his picture of Netflix's: "Who's using Flow?", a
+     round picture and a name per account, Add account, and Manage accounts, which turns a press on an account into
+     editing it (picture, names; any account but the first can be deleted with all its entries).
+   api.current: { save(next list state), enter(account, next list state), erase(id) }. shown: the opening has begun to
+   leave, so its pieces come in; leaving: an account is chosen and the cover fades.
+   Keys are taken at the window while it is up, so nothing reaches the stage behind; typing still lands in the boxes. */
+/* The introduction (11 October 2026: "a short intro/tutorial to the app for first timers"): four cards on the login's
+   own cover, after the login's Continue and the first time an added account goes in (`fresh` on the account). They
+   stand side by side on a track that slides, on a transition, so a press half-way turns it round. Skip, or Esc,
+   leaves at once. Each card: a mark, a title, one line, three rows. */
+const INTRO = [
+  { logo: true, tint: "#3ddc97", title: "This is Flow", sub: "It keeps your money in view: what you spend, and what you trade.",
+    rows: [["account_balance_wallet", "The wallet is your spending."], ["currency_bitcoin", "The coin is your trading."], ["lock", "Everything stays on this Mac. Export makes a backup file."]] },
+  { icon: "account_balance_wallet", tint: "#3ddc97", title: "Finance", sub: "Every day against a daily limit you set: green under it, red over it.",
+    rows: [["credit_card", "Press the wallet, pull out a card, and you are in your year."], ["calendar_today", "Open a month, then press a day to log what you spent."], ["bolt", "⌘N logs an expense in one line: “kopi 25”."]] },
+  { icon: "currency_bitcoin", tint: "#e6c877", title: "Trading", sub: "Crypto, Indonesian stocks and forex, each with a journal of its own.",
+    rows: [["touch_app", "Press the coin, then choose the coin, the globe or the die."], ["edit_note", "Log a trade with its setup, your review and pictures."], ["calculate", "The calculator sizes a position from what you risk."]] },
+  { icon: "explore", tint: "#8fa3b8", title: "Getting around", sub: "A few things work the same everywhere.",
+    rows: [["menu", "The three lines, top left, open the menu."], ["swap_vert", "Scroll, or use the arrows, to step through wallets, years and months."], ["arrow_back", "Esc goes back a step. The crocodile takes you home."]] },
+];
+const AccountGate = memo(({ api, state, first, shown, leaving }) => {
+  const [step, setStep] = useState(0);                                // the introduction's card on show
+  const pend = useRef(null);                                          // who goes in once the introduction is over: { u, next }
+  const blank = () => ({ id: null, first: "", last: "", pic: (AVATARS.find((a) => !state.list.some((u) => u.pic === a.id)) || AVATARS[0]).id });
+  const [screen, setScreen] = useState(first ? "new" : "pick");      // "new" | "pick" | "add" | "edit"
+  const [fading, setFading] = useState(false);                        // the screen on show is leaving for the next one
+  const [manage, setManage] = useState(false);
+  const [form, setForm] = useState(() => ({ ...blank(), id: typeof first === "string" ? first : null }));     // first can be the id of an account to name again
+  const [sure, setSure] = useState(false);                            // "Delete account" pressed once
+  const [chosen, setChosen] = useState(null);
+  const [own, setOwn] = useState(null);                               // a picture of his own in place of a figure, while it is being set (see ownClamp)
+  const [back, setBack] = useState(null);                             // the same, for a picture of his own behind a figure
+  const root = useRef(null), keys = useRef(null), fileRef = useRef(null), fileFor = useRef("pic"), drag = useRef(null), busy = useRef(false);
+  const go = (next, f, o, b) => { setFading(true); setTimeout(() => { if (f) { setForm(f); setOwn(o || null); setBack(b || null); } setSure(false); setScreen(next); setFading(false); }, 200); };
+  const name = form.first.trim(), mine = form.pic === "own" && own, behind = !mine && form.bg === "own" && back;
+  // the picture the slider and the dragging work on: his own one, or else the one behind the figure
+  const adj = mine ? own : behind ? back : null, setAdj = mine ? setOwn : setBack;
+  const choose = (what) => { fileFor.current = what; fileRef.current.click(); };
+  const onFile = (e) => {
+    const file = e.target.files && e.target.files[0], what = fileFor.current;
+    e.target.value = "";
+    if (!file || !/^image\//.test(file.type)) return;
+    const src = URL.createObjectURL(file), im = new Image();
+    im.onload = () => {
+      const got = { src, w: im.naturalWidth, h: im.naturalHeight, z: 1, x: 0, y: 0 };
+      if (what === "bg") { setBack(got); setForm((f) => ({ ...f, bg: "own", pic: f.pic === "own" ? AVATARS[0].id : f.pic })); }
+      else { setOwn(got); setForm((f) => ({ ...f, pic: "own" })); }
+    };
+    im.onerror = () => URL.revokeObjectURL(src);
+    im.src = src;
+  };
+  // dragging the big picture moves it inside the circle: written straight onto the picture while it moves, and kept
+  // (one render) when it is let go
+  const onGrab = (e) => { if (!adj) return; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} drag.current = { x: e.clientX, y: e.clientY, o: adj, next: null, el: e.currentTarget.querySelector(".acc-own") }; };
+  const onDrag = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    d.next = ownClamp({ ...d.o, x: d.o.x + (e.clientX - d.x) / OWN_VIEW, y: d.o.y + (e.clientY - d.y) / OWN_VIEW });
+    if (d.el) d.el.style.transform = ownStyle(d.next).transform;
+  };
+  const onDrop = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (d && d.next) { const { x, y } = d.next; setAdj((o) => (o ? ownClamp({ ...o, x, y }) : o)); }
+  };
+  // a picture read from a file is shown from a blob: address, given back once it is replaced or the panel goes
+  useEffect(() => { const s = own && own.src; return () => { if (s && s.startsWith("blob:")) URL.revokeObjectURL(s); }; }, [own && own.src]);
+  useEffect(() => { const s = back && back.src; return () => { if (s && s.startsWith("blob:")) URL.revokeObjectURL(s); }; }, [back && back.src]);
+  const ownStyle = (o) => ({ width: `${(o.w / Math.min(o.w, o.h)) * 100}%`, height: `${(o.h / Math.min(o.w, o.h)) * 100}%`,
+                             transform: `translate(-50%, -50%) translate(${o.x * OWN_VIEW}px, ${o.y * OWN_VIEW}px) scale(${o.z})` });
+  const submit = async () => {
+    if (!name || leaving || busy.current) return;
+    busy.current = true;
+    const img = mine ? await ownBake(own) : null, bgImg = behind ? await ownBake(back) : null;
+    busy.current = false;
+    const u = { id: form.id || (screen === "new" ? "main" : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`), first: name, last: form.last.trim(),
+                pic: img ? "own" : form.pic === "own" ? AVATARS[0].id : form.pic, ...(img && { img }),
+                ...(!img && bgImg && { bg: "own", bgImg }), ...(!img && !bgImg && form.bg && form.bg !== "own" && { bg: form.bg }) };
+    // the login: the first account, or (after "Reset account") an account that is there already and keeps its entries
+    // (it is saved once the introduction is over: left half-way, the login comes again)
+    if (screen === "new") { pend.current = { u, next: { list: state.list.some((x) => x.id === u.id) ? state.list.map((x) => (x.id === u.id ? u : x)) : [...state.list, u], last: u.id } }; setStep(0); go("intro"); return; }
+    const kept = screen === "add" || form.fresh ? { ...u, fresh: 1 } : u;
+    api.current.save({ ...state, list: screen === "edit" ? state.list.map((x) => (x.id === u.id ? kept : x)) : [...state.list, kept] });
+    go("pick");
+  };
+  // the introduction is over, or skipped: in
+  const begin = () => {
+    const p = pend.current;
+    if (!p || leaving) return;
+    pend.current = null;
+    setChosen(p.u.id); api.current.enter(p.u, p.next);
+  };
+  const onward = () => (step < INTRO.length - 1 ? setStep(step + 1) : begin());
+  const remove = () => {
+    if (!sure) { setSure(true); return; }
+    api.current.erase(form.id);
+    api.current.save({ list: state.list.filter((x) => x.id !== form.id), last: state.last === form.id ? "main" : state.last });
+    go("pick");
+  };
+  const pick = (u) => {
+    if (leaving) return;
+    if (manage) {
+      const kept = (src) => ({ src, w: 1, h: 1, z: 1, x: 0, y: 0 });
+      go("edit", { ...u, pic: u.pic || AVATARS[0].id, bg: u.bg === "own" || AV_BACKS.some((x) => x.id === u.bg) ? u.bg : "" }, u.pic === "own" && u.img ? kept(u.img) : null, u.bg === "own" && u.bgImg ? kept(u.bgImg) : null);
+      return;
+    }
+    // somebody added who has never been in: the introduction first
+    if (u.fresh) { const { fresh, ...me } = u; pend.current = { u: me, next: { ...state, list: state.list.map((x) => (x.id === u.id ? me : x)) } }; setStep(0); go("intro"); return; }
+    setChosen(u.id); api.current.enter(u, state);
+  };
+  keys.current = (e) => {
+    if (leaving) return;
+    if (screen === "intro") {
+      if (e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); onward(); }
+      else if (e.key === "ArrowLeft") setStep(Math.max(0, step - 1));
+      else if (e.key === "Escape") begin();
+      return;
+    }
+    if (screen === "pick") {
+      if (e.key === "Escape" && manage) setManage(false);
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        const all = [...root.current.querySelectorAll(".acc-tile")], at = all.indexOf(document.activeElement);
+        all[(at + (e.key === "ArrowRight" ? 1 : -1) + all.length) % all.length]?.focus();
+        e.preventDefault();
+      }
+      return;
+    }
+    if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); submit(); }
+    if (e.key === "Escape" && screen !== "new") go("pick");
+  };
+  useEffect(() => {
+    const onKey = (e) => { e.stopImmediatePropagation(); keys.current(e); };
+    const onWheel = (e) => e.stopImmediatePropagation();
+    window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
+  }, []);
+  const up = (i) => ({ "--i": i });
+  return (
+    <div ref={root} className={`acc${shown ? " in" : ""}${leaving ? " out" : ""}`}>
+      <div className="acc-bg" />
+      {screen === "pick" ? (
+        <div className={`acc-pick${fading ? " fade" : ""}${manage ? " manage" : ""}${chosen ? " chosen" : ""}`}>
+          <h1 className="acc-title acc-up" style={up(0)}>{manage ? "Manage accounts" : "Who's using Flow?"}</h1>
+          <div className="acc-tiles">
+            {state.list.map((u, i) => (
+              <button key={u.id} className={`acc-tile acc-up${chosen === u.id ? " me" : ""}`} style={up(1 + i)} autoFocus={u.id === state.last} onClick={() => pick(u)}
+                      title={manage ? `Edit ${u.first}` : `${u.first} ${u.last}`.trim()}>
+                <span className="acc-face"><Avatar pic={u.pic} img={u.img} bg={u.bg} bgImg={u.bgImg} /><i className="msym">edit</i></span>
+                <span className="acc-name">{u.first}</span>
+              </button>
+            ))}
+            {state.list.length < USERS_MAX && (
+              <button className="acc-tile add acc-up" style={up(1 + state.list.length)} onClick={() => { if (!leaving) go("add", blank()); }} title="Add an account">
+                <span className="acc-face"><span className="msym">add</span></span>
+                <span className="acc-name">Add account</span>
+              </button>
+            )}
+          </div>
+          <button className="acc-manage acc-up" style={up(2 + state.list.length)} onClick={() => setManage((v) => !v)}>{manage ? "Done" : "Manage accounts"}</button>
+        </div>
+      ) : screen === "intro" ? (
+        <div className={`acc-card acc-intro${fading ? " fade" : ""}`} key="intro">
+          <div className="in-view">
+            <div className="in-track" style={{ transform: `translateX(${-step * 100}%)` }}>
+              {INTRO.map((c, i) => (
+                <section key={c.title} className={`in-slide${i === step ? " on" : ""}`} style={{ "--tc": c.tint }} aria-hidden={i !== step}>
+                  <span className={`in-mark${c.logo ? " logo" : ""}`}>{c.logo ? <CrocLogo /> : <span className="msym">{c.icon}</span>}</span>
+                  <h1 className="acc-hello">{c.title}</h1>
+                  <p className="acc-sub">{c.sub}</p>
+                  <ul className="in-list">{c.rows.map(([icon, text]) => <li key={text}><span className="msym">{icon}</span><span>{text}</span></li>)}</ul>
+                </section>
+              ))}
+            </div>
+          </div>
+          <div className="in-dots">{INTRO.map((c, i) => <button key={c.title} className={i === step ? "on" : ""} onClick={() => setStep(i)} aria-label={c.title} title={c.title} />)}</div>
+          <div className="acc-acts">
+            <button className="in-skip" onClick={begin}>Skip</button>
+            <button className={`acc-back in-back${step ? "" : " off"}`} tabIndex={step ? 0 : -1} onClick={() => setStep(Math.max(0, step - 1))}>Back</button>
+            <button className="acc-go" onClick={onward}>{step < INTRO.length - 1 ? "Next" : "Start"}</button>
+          </div>
+        </div>
+      ) : (
+        <div className={`acc-card${fading ? " fade" : ""}`} key={screen}>
+          <span className={`acc-me acc-up${adj ? " own" : ""}`} style={up(0)} onPointerDown={onGrab} onPointerMove={onDrag} onPointerUp={onDrop} onPointerCancel={onDrop}
+                title={adj ? "Drag to move the picture" : undefined}>
+            {mine ? <img className="acc-own" src={own.src} alt="" draggable={false} style={ownStyle(own)} />
+              : behind ? <><img className="acc-own" src={back.src} alt="" draggable={false} style={ownStyle(back)} /><Avatar pic={form.pic} bare /></>
+              : <Avatar pic={form.pic === "own" ? "" : form.pic} bg={form.bg === "own" ? "" : form.bg} />}
+          </span>
+          <h1 className="acc-hello acc-up" style={up(1)}>{screen === "new" ? `Welcome${name ? `, ${name}` : ""}` : screen === "add" ? "New account" : "Edit account"}</h1>
+          <p className="acc-sub acc-up" style={up(1)}>{screen === "new" ? "Pick a picture and tell Flow your name. It goes on your cards." : screen === "add" ? "Each account keeps its own entries, goals and trades." : "The first name is engraved on the cards."}</p>
+          <div className="acc-label acc-up" style={up(2)}>Profile picture</div>
+          <div className="acc-pics acc-up" style={up(2)}>
+            {AVATARS.map((a) => <button key={a.id} className={`acc-pic${form.pic === a.id ? " on" : ""}`} onClick={() => setForm((f) => ({ ...f, pic: a.id }))} title={a.name} aria-label={a.name}><Avatar pic={a.id} /></button>)}
+            {/* the last one: a picture of his own in place of a figure. The first press opens the file box; after that it chooses the picture again */}
+            <button className={`acc-pic mine${mine ? " on" : ""}`} onClick={() => (own ? setForm((f) => ({ ...f, pic: "own" })) : choose("pic"))} title="A picture from this computer" aria-label="A picture from this computer">
+              {own ? <img className="av" src={own.src} alt="" draggable={false} /> : <span className="msym">add_photo_alternate</span>}
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={onFile} />
+          </div>
+          {/* what is behind the figure: not for a picture of his own, which fills the circle by itself */}
+          {!mine && (
+            <>
+              <div className="acc-label acc-up" style={up(2)}>Background</div>
+              <div className="acc-bgs acc-up" style={up(2)}>
+                {AV_BACKS.map((b) => <button key={b.id || "grey"} className={`acc-bgc${(form.bg || "") === b.id ? " on" : ""}`} onClick={() => setForm((f) => ({ ...f, bg: b.id }))} title={b.name} aria-label={b.name}><AvBack id={b.id} /></button>)}
+                <button className={`acc-bgc mine${behind ? " on" : ""}`} onClick={() => (back ? setForm((f) => ({ ...f, bg: "own" })) : choose("bg"))} title="A picture from this computer" aria-label="A background picture from this computer">
+                  {back ? <img className="av" src={back.src} alt="" draggable={false} /> : <span className="msym">add_photo_alternate</span>}
+                </button>
+              </div>
+            </>
+          )}
+          {adj && (
+            <div className="acc-zoom">
+              <span className="msym">photo_size_select_small</span>
+              <input type="range" min="1" max="3" step="0.01" value={adj.z} aria-label="Picture size" onChange={(e) => setAdj((o) => (o ? ownClamp({ ...o, z: Number(e.target.value) }) : o))} />
+              <span className="msym">photo_size_select_large</span>
+              <button className="acc-other" onClick={() => choose(mine ? "pic" : "bg")}>Choose another</button>
+            </div>
+          )}
+          <label className="acc-field acc-up" style={up(3)}><span>First name</span>
+            <input className="acc-in" autoFocus value={form.first} maxLength={NAME_MAX.first} spellCheck={false} autoComplete="off" placeholder="First name"
+                   onChange={(e) => setForm((f) => ({ ...f, first: nameClean(e.target.value, NAME_MAX.first) }))} />
+            <em>{form.first.length} / {NAME_MAX.first}</em>
+          </label>
+          <label className="acc-field acc-up" style={up(4)}><span>Last name</span>
+            <input className="acc-in" value={form.last} maxLength={NAME_MAX.last} spellCheck={false} autoComplete="off" placeholder="Last name"
+                   onChange={(e) => setForm((f) => ({ ...f, last: nameClean(e.target.value, NAME_MAX.last) }))} />
+            <em>{form.last.length} / {NAME_MAX.last}</em>
+          </label>
+          <div className="acc-acts acc-up" style={up(5)}>
+            {screen !== "new" && <button className="acc-back" onClick={() => go("pick")}>Back</button>}
+            {screen === "edit" && form.id !== "main" && <button className={`acc-del${sure ? " sure" : ""}`} onClick={remove}>{sure ? `Erase ${name || "this account"}'s entries for good?` : "Delete account"}</button>}
+            <button className="acc-go" disabled={!name} onClick={submit}>{screen === "edit" ? "Save" : "Continue"}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+/* Quick log (7 October 2026, from a design review he passed on: logging is the core habit, and it was slow and in a
+   different place on each screen). ⌘N anywhere on the finance side, or the button at the top of the sidebar: one line
+   of text, read as it is typed, Enter adds it to today. It stays open for the next one; Enter on the empty line or Esc
+   shuts it. The things he logs most often are one press each under it.
+   What a line may hold, in any order: an amount, what it was for, a + for income, "yesterday" / "kemarin".
+   "kopi 25" · "25rb kopi" · "1,5jt sewa" · "+5jt gaji" · "kemarin bensin 50". In rupiah a bare number under 1000 is
+   thousands, as everywhere else in the app (25 is 25.000); rb / k and jt / juta say so outright. */
+const QUICK_UNITS = { rb: 1e3, ribu: 1e3, k: 1e3, jt: 1e6, juta: 1e6, m: 1e6 };
+const QUICK_BACK = { yesterday: 1, kemarin: 1, kmrn: 1 };
+const quickNumber = (str, unit, isMYR) => {
+  let v;
+  if (!unit && !isMYR && /^\d{1,3}([.,]\d{3})+$/.test(str)) v = Number(str.replace(/[.,]/g, ""));          // 25.000, 1.500.000
+  else if (!unit && isMYR && /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(str)) v = Number(str.replace(/,/g, ""));    // 1,250.50
+  else v = parseFloat(str.replace(",", "."));                                                              // 25 · 1,5 · 12.5
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  if (unit) v *= QUICK_UNITS[unit]; else if (!isMYR && v < 1000) v *= 1000;
+  return Math.min(isMYR ? Math.round(v * 100) / 100 : Math.round(v), MAX_AMOUNT);
+};
+const parseQuick = (text, isMYR) => {
+  let inc = false, back = 0, amount = 0, got = false;
+  const words = [], toks = text.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i], low = t.toLowerCase();
+    if (QUICK_BACK[low] && !back) { back = QUICK_BACK[low]; continue; }
+    if (t === "+") { inc = true; continue; }
+    const m = !got && /^([+]?)(?:rp\.?|rm)?(\d[\d.,]*)(rb|ribu|k|jt|juta|m)?$/i.exec(t);
+    if (!m) { words.push(t); continue; }
+    let unit = m[3] ? m[3].toLowerCase() : null;
+    if (!unit && /^(rb|ribu|jt|juta)$/i.test(toks[i + 1] || "")) unit = toks[++i].toLowerCase();
+    const v = quickNumber(m[2].replace(/[.,]+$/, ""), unit, isMYR);
+    if (!v) { words.push(t); continue; }
+    got = true; amount = v;
+    if (m[1]) inc = true;
+  }
+  return { inc, back, amount, desc: words.join(" ").slice(0, 80) };
+};
+/* api.current: { put(kind, amount in rupiah, desc, days back) → the amount as shown, or null; toIDR(amount as typed);
+   often() → [{ desc, amount }]; today() → { spent, limit }; fmt }. It keeps what is typed to itself. */
+const QuickLog = memo(({ api, cur, isMYR, onClose }) => {
+  const [text, setText] = useState("");
+  const [incOn, setIncOn] = useState(false);          // Tab: income, whatever the line says
+  const [done, setDone] = useState(null);             // the last thing added: { id, inc, text }
+  const [closing, setClosing] = useState(false);
+  const boxRef = useRef(null), inRef = useRef(null), shut = useRef(null);
+  shut.current = () => { if (closing) return; setClosing(true); setTimeout(onClose, 190); };
+  // while it is open no key and no wheel reaches the panels behind (as with the settings pop-up)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (boxRef.current?.contains(e.target)) return;
+      e.stopImmediatePropagation();
+      if (e.key === "Escape") shut.current(); else inRef.current?.focus();
+    };
+    const onWheel = (e) => e.stopImmediatePropagation();
+    window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
+  }, []);
+  const { fmt, toIDR } = api.current;
+  const often = useMemo(() => api.current.often(), [done]);      // counted again after each add
+  const p = parseQuick(text, isMYR);
+  const inc = incOn || p.inc, idr = p.amount ? toIDR(String(p.amount)) : 0;
+  const cat = !inc && p.desc ? inferCat(p.desc) : null;
+  const day = api.current.today(), left = day.limit - day.spent;
+  const put = (kind, amount, desc, back) => {
+    const shown = api.current.put(kind, amount, desc, back);
+    inRef.current?.focus();
+    if (!shown) return;
+    setText(""); setIncOn(false);
+    setDone({ id: Date.now(), inc: kind === "inc", text: `${kind === "inc" ? "+" : "−"}${shown}${desc ? ` ${desc}` : ""}${back ? " · yesterday" : ""}` });
+  };
+  const onKey = (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") { shut.current(); return; }
+    if (e.key === "Tab") { e.preventDefault(); setIncOn((v) => !v); return; }
+    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) put("exp", o.amount, o.desc, 0); return; }
+    if (e.key !== "Enter") return;
+    if (!text.trim()) { shut.current(); return; }
+    if (idr) put(inc ? "inc" : "exp", idr, p.desc, p.back);
+  };
+  return (
+    <div style={{ ...S.backdrop, zIndex: 80, alignItems: "flex-start", animation: closing ? "fadeOut .2s ease both" : "fadeIn .2s ease backwards" }} onClick={() => shut.current()}>
+      <div ref={boxRef} className={`ql glass${closing ? " out" : ""}`} onClick={(e) => e.stopPropagation()}>
+        <div className="ql-line">
+          <button className={`ql-kind${inc ? " inc" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => setIncOn((v) => !v)}
+                  title="Tab switches between expense and income"><i />{inc ? "Income" : "Expense"}</button>
+          <input ref={inRef} autoFocus className="ql-in" value={text} spellCheck={false} aria-label="What to add to today"
+                 placeholder={isMYR ? "coffee 12.5 · +3k salary" : "kopi 25 · 1,5jt sewa · +5jt gaji"}
+                 onChange={(e) => setText(e.target.value.slice(0, 120))} onKeyDown={onKey} />
+        </div>
+        <div className="ql-read">
+          {!text.trim() ? <span>Type what it was and how much, then Enter.{isMYR ? "" : " A bare number is thousands: 25 is 25Rb."}</span>
+            : !idr ? <span>No amount yet{p.desc ? <> · <b>{p.desc}</b></> : ""}</span>
+            : <>
+                <b style={{ color: inc ? "#3ddc97" : "#ff8d97" }}>{inc ? "+" : "−"}{fmt(idr)}</b>
+                {p.desc && <><i>·</i><b>{p.desc}</b></>}
+                {cat && <><i>·</i><span className="ql-cat"><span className="msym">{CATS[cat].icon}</span>{CATS[cat].label}</span></>}
+                <i>·</i><span>{p.back ? "Yesterday" : "Today"}</span>
+                <kbd>Enter</kbd>
+              </>}
+        </div>
+        {often.length > 0 && (
+          <div className="ql-often">
+            <span>Often</span>
+            {often.map((o, i) => (
+              <button key={o.desc} className="ql-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => put("exp", o.amount, o.desc, 0)}
+                      title={`Add ${o.desc} to today (⌘${i + 1})`}>{o.desc}<b>{fmt(o.amount)}</b></button>
+            ))}
+          </div>
+        )}
+        <div className="ql-foot">
+          <span>Today <b>{fmt(day.spent)}</b> of {fmt(day.limit)}{" · "}
+            <b style={{ color: left >= 0 ? "#8fd7a4" : "#ff8d97" }}>{left >= 0 ? `${fmt(left)} left` : `${fmt(-left)} over`}</b></span>
+          {done ? <span key={done.id} className={`ql-done${done.inc ? " inc" : ""}`}><span className="msym">check</span>{done.text}</span>
+            : <span className="ql-hint">Tab income · Esc close</span>}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/* The quick log on the trading sides (8 October 2026: the finance side's, in a trader's words). ⌘N anywhere on a
+   trading side, or the button on top of its sidebar: one line, read as it is typed, Enter adds the trade to today.
+   A line may hold, in any order: the name, what it made (a minus is a loss), "long" / "short" (forex also "buy" /
+   "sell"), "be" for break-even, "yesterday" / "kemarin". "btc 120" · "eth -45 short" · "be sol" · "kemarin antm 350".
+   Tab turns a win into a loss and back. Amounts are in the currency the side keeps its trades in: dollars as typed,
+   rupiah as on the finance side (a bare number under 1000 is thousands; rb and jt say so outright).
+   The names he trades most are one press each under the line: with an amount typed the press adds the trade, without
+   one it writes the name. */
+const QUICK_SIDES = { long: "long", buy: "long", short: "short", sell: "short" };
+// a name as typed, where the side may stand beside it ("eth short"): { name, side }. sides: whether this market has any
+const quickName = (text, sides) => {
+  let side = null;
+  const rest = [];
+  for (const t of String(text || "").trim().split(/\s+/).filter(Boolean)) {
+    const s = sides && QUICK_SIDES[t.toLowerCase()];
+    if (s && !side) side = s; else rest.push(t);
+  }
+  return { name: rest.join(""), side };
+};
+const parseQuickTrade = (text, M) => {
+  let be = false, loss = false, back = 0, amount = 0, got = false;
+  const words = [];
+  for (const t of text.trim().split(/\s+/).filter(Boolean)) {
+    const low = t.toLowerCase();
+    if (QUICK_BACK[low] && !back) { back = QUICK_BACK[low]; continue; }
+    if (low === "be" || low === "breakeven") { be = true; continue; }
+    const m = !got && /^([+\-−]?)(?:\$|rp\.?)?(\d[\d.,]*)(rb|ribu|k|jt|juta|m)?$/i.exec(t);
+    const v = m ? Math.min(quickNumber(m[2].replace(/[.,]+$/, ""), m[3] ? m[3].toLowerCase() : null, !!M.dp), MAX_PNL) : 0;
+    if (!v) { words.push(t); continue; }
+    got = true; amount = v; loss = m[1] === "-" || m[1] === "−";
+  }
+  return { be, loss, back, amount, ...quickName(words.join(" "), M.sides) };
+};
+/* api.current: { put(sign, amount, name, days back, side) → the amount as shown, or null; often() → [{ name, n }];
+   today() → the day's tally; money; M }. It keeps what is typed to itself. */
+const TradeQuickLog = memo(({ api, onClose }) => {
+  const [text, setText] = useState("");
+  const [flip, setFlip] = useState(false);            // Tab: a loss where the line says a win, and the other way round
+  const [done, setDone] = useState(null);             // the last trade added: { id, loss, text }
+  const [closing, setClosing] = useState(false);
+  const boxRef = useRef(null), inRef = useRef(null), shut = useRef(null);
+  shut.current = () => { if (closing) return; setClosing(true); setTimeout(onClose, 190); };
+  // while it is open no key and no wheel reaches the panels behind (as with the settings pop-up)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (boxRef.current?.contains(e.target)) return;
+      e.stopImmediatePropagation();
+      if (e.key === "Escape") shut.current(); else inRef.current?.focus();
+    };
+    const onWheel = (e) => e.stopImmediatePropagation();
+    window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
+  }, []);
+  const { M, money } = api.current;
+  const often = useMemo(() => api.current.often(), [done]);      // counted again after each add
+  const p = parseQuickTrade(text, M);
+  const loss = !p.be && p.loss !== flip, ok = p.be || p.amount > 0;
+  const pnl = p.be ? (p.loss ? -p.amount : p.amount) : loss ? -p.amount : p.amount;
+  const ink = p.be ? "#e3cd77" : loss ? "#ff8d97" : "#3ddc97";
+  const day = api.current.today();
+  const put = (name) => {
+    const shown = api.current.put(p.be ? 0 : loss ? -1 : 1, p.be ? pnl : p.amount, name, p.back, p.side);
+    inRef.current?.focus();
+    if (!shown) return;
+    setText(""); setFlip(false);
+    setDone({ id: Date.now(), loss: pnl < 0, text: `${shown}${pairName(name) ? ` ${pairName(name)}` : ""}${p.back ? " · yesterday" : ""}` });
+  };
+  // a name he trades often: with an amount on the line it adds the trade, without one it is written on the line
+  const pick = (name) => { if (ok) put(name); else { setText(`${name} `); inRef.current?.focus(); } };
+  const onKey = (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") { shut.current(); return; }
+    if (e.key === "Tab") { e.preventDefault(); setFlip((v) => !v); return; }
+    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) pick(o.name); return; }
+    if (e.key !== "Enter") return;
+    if (!text.trim()) { shut.current(); return; }
+    if (ok) put(p.name);
+  };
+  return (
+    <div style={{ ...S.backdrop, zIndex: 80, alignItems: "flex-start", animation: closing ? "fadeOut .2s ease both" : "fadeIn .2s ease backwards" }} onClick={() => shut.current()}>
+      <div ref={boxRef} className={`ql glass${closing ? " out" : ""}`} onClick={(e) => e.stopPropagation()}>
+        <div className="ql-line">
+          <button className={`ql-kind${p.be ? " be" : loss ? "" : " inc"}`} onMouseDown={(e) => e.preventDefault()} onClick={() => setFlip((v) => !v)}
+                  title="Tab switches between a win and a loss"><i />{p.be ? "Breakeven" : loss ? "Loss" : "Win"}</button>
+          <input ref={inRef} autoFocus className="ql-in" value={text} spellCheck={false} aria-label="The trade to add to today"
+                 placeholder={M.quick} onChange={(e) => setText(e.target.value.slice(0, 120))} onKeyDown={onKey} />
+        </div>
+        <div className="ql-read">
+          {!text.trim() ? <span>Type the {M.small.toLowerCase()} and what it made, then Enter. A minus is a loss.{M.dp ? "" : " A bare number is thousands: 350 is 350Rb."}</span>
+            : !ok ? <span>No amount yet{p.name ? <> · <b>{pairName(p.name)}</b></> : ""}</span>
+            : <>
+                <b style={{ color: ink }}>{money(pnl)}</b>
+                <i>·</i><b>{pairName(p.name) || M.none}</b>
+                {M.sides && <><i>·</i><span>{M.sideName[p.side === "short" ? 1 : 0]}</span></>}
+                <i>·</i><span>{p.back ? "Yesterday" : "Today"}</span>
+                <kbd>Enter</kbd>
+              </>}
+        </div>
+        {often.length > 0 && (
+          <div className="ql-often">
+            <span>Often</span>
+            {often.map((o, i) => (
+              <button key={o.name} className="ql-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(o.name)}
+                      title={`${ok ? `Add it as ${o.name}` : `Write ${o.name} on the line`} (⌘${i + 1})`}>{o.name}<b>{o.n}×</b></button>
+            ))}
+          </div>
+        )}
+        <div className="ql-foot">
+          <span>{day.n ? <>Today <b style={{ color: day.pnl > 0 ? "#8fd7a4" : day.pnl < 0 ? "#ff8d97" : "#e3cd77" }}>{money(day.pnl)}</b>{" · "}{day.wins}W · {day.losses}L</> : "No trades today yet"}</span>
+          {done ? <span key={done.id} className={`ql-done${done.loss ? "" : " inc"}`}><span className="msym">check</span>{done.text}</span>
+            : <span className="ql-hint">Tab win / loss · Esc close</span>}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/* The sidebar (7 October 2026, same review: nothing on screen said where he was or how to get anywhere else; the month
+   had no visible way back, and Goals and Debts could only be reached by scrolling). It stood open at the left edge at
+   first; the same day he asked for it to be behind a menu symbol, "always closed until opened", with animations that
+   are "smooth and clear, and seamless". So: three lines in the top left corner of both sides, and the panel slides in
+   over the page when they are pressed. It shuts on the lines again (a cross by then), on Esc, on a press beside it,
+   and behind any row that is pressed. Every launch starts shut.
+   How it moves: transitions only, on transform and opacity, so a press half-way turns everything round from where it
+   is. The panel slides as one piece; its lines come in one after the other (--i) once it is on its way, and leave
+   together. The three lines turn into the cross by turning, never by fading over. Shut, the panel is parked off the
+   left edge, painted but out of sight, so the first opening has nothing to draw.
+   The page keeps 64px free on each side (body.has-side): the left for the three lines, the right to stay in the
+   middle; from 1408px of window up the page is exactly where it was without any of this.
+   It is drawn outside the page (a portal), so no moving parent can take it along. rows: { id, icon, text, tail, on, sub } or { head }; act: the button on top; spy: the ids of
+   the parts of the page (SIDE_PARTS says where each is), the one crossing the middle of the window is marked (kept in here, so scrolling
+   redraws only the sidebar). api.current.go(id) does the rest. No backdrop blur: nothing passes under it.
+   foot: { text, sub, ink, mood } is what the crocodile at the bottom says about today (the review: the mascot was
+   decoration only); pressed, it goes home like the one in the footer. */
+const SIDE_PARTS = { cal: ".cal-wrap", weekly: '[data-card="weekly expenses"]', flow: '[data-card="money flow"]', goals: '[data-card="goals"]', debts: ".debt-sec",
+                     an: '[data-card="PnL analysis"]', perf: '[data-card="performance"]', names: '[data-card="coins"], [data-card="stocks"], [data-card="pairs"]', kinds: '[data-card="breakdown"]' };
+const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"] };
+// the sidebar's props are written out afresh on every render of its panel: they are compared by what they hold, so the
+// sidebar redraws only when a row, the button on top or the crocodile's words really change
+const sameFlat = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+};
+const sameSideProps = (a, b) => a.api === b.api && a.spy === b.spy && a.spyKey === b.spyKey && a.hidden === b.hidden
+  && sameFlat(a.act, b.act) && sameFlat(a.foot, b.foot)
+  && (a.rows === b.rows || (a.rows.length === b.rows.length && a.rows.every((r, i) => sameFlat(r, b.rows[i]))));
+const SIDE_ACT = {
+  // the trading sides have two buttons on top: the quick log, as on the finance side, then the calculator
+  trade: [{ id: "quick", icon: "add", text: "Quick log", key: "⌘N", tip: "Log a trade to today (⌘N)" },
+          { id: "calc", icon: "calculate", text: "Calculator", tip: "Open the calculator" }],
+  finance: [{ id: "quick", icon: "add", text: "Quick add", key: "⌘N", tip: "Add an expense or an income to today (⌘N)" },
+            { id: "bill", icon: "group", text: "Split bill", tip: "Work out what each person pays" }],
+};
+const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot }) => {
+  const [open, setOpen] = useState(false);          // always shut until the three lines are pressed
+  const [at, setAt] = useState(null);
+  useLayoutEffect(() => { document.body.classList.add("has-side"); return () => document.body.classList.remove("has-side"); }, []);
+  // which part is on the line two fifths down the window: read once a frame while the page scrolls, and written only
+  // when it changes. The parts are looked up again whenever one has left the page: a card puts its content there
+  // afresh the first time it is seen and every time it is unfolded, the Debts section with it
+  useEffect(() => {
+    setAt(null);
+    if (!open || !spyKey || !spy) return;
+    const els = {}, missAt = {};      // a part not on the page is looked for again at most every 300ms
+    let raf = 0;
+    const read = () => {
+      raf = 0;
+      const line = window.innerHeight * 0.4;
+      let hit = null;
+      for (const id of spy) {
+        let el = els[id] && els[id].isConnected ? els[id] : null;
+        if (!el) {
+          const t = performance.now();
+          if (missAt[id] && t - missAt[id] < 300) continue;
+          el = els[id] = (warm.page || document).querySelector(SIDE_PARTS[id]);
+          if (el) delete missAt[id]; else missAt[id] = t;
+        }
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (r.top <= line && r.bottom > line) hit = id;
+      }
+      setAt(hit);
+    };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(read); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    read();
+    return () => { window.removeEventListener("scroll", onScroll); cancelAnimationFrame(raf); };
+  }, [spyKey, open]);
+  // Esc shuts it, and goes no further (the panels behind have Esc steps of their own)
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); setOpen(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open]);
+  useEffect(() => { if (hidden) setOpen(false); }, [hidden]);
+  // a row pressed does its thing and the panel shuts behind it
+  const go = (id) => { setOpen(false); api.current.go(id); };
+  const tab = open ? 0 : -1;
+  let k = 0;      // each line's place in the list, for its turn to come in
+  const line = (key, cls, kid) => <div key={key} className={`sd-in${cls ? ` ${cls}` : ""}`} style={{ "--i": k++ }}>{kid}</div>;
+  return createPortal(
+    <div className={`snav-root${open ? " open" : ""}${hidden ? " off" : ""}`}>
+      <div className="snav-scrim" onClick={() => setOpen(false)} />
+      <nav className="snav" aria-label="Sections" aria-hidden={!open}>
+        {line("name", "snav-name", "FLOW")}
+        {/* the button on top; the trading sides have two (the quick log, then the calculator) */}
+        {(Array.isArray(act) ? act : [act]).map((a) => line(`act-${a.id}`, "", (
+          <button className="sd-act" tabIndex={tab} onClick={() => go(a.id)} title={a.tip}>
+            <span className="msym">{a.icon}</span><span className="sd-t">{a.text}</span>{a.key && <kbd>{a.key}</kbd>}
+          </button>
+        )))}
+        {rows.map((r, i) => r.head ? line(`h${i}`, "", <div className="sd-head">{r.head}</div>) : line(r.id, "", (
+          <button className={`sd-row${r.sub ? " sub" : ""}${r.on ? " on" : ""}${at === r.id ? " at" : ""}`} tabIndex={tab} onClick={() => go(r.id)} title={r.tip || r.text}>
+            {r.pic !== undefined ? <span className="sd-pic"><Avatar pic={r.pic} img={r.img} bg={r.bg} bgImg={r.bgImg} /></span> : <span className="msym">{r.icon}</span>}<span className="sd-t">{r.text}</span>{r.tail != null && <i>{r.tail}</i>}
+          </button>
+        )))}
+        <div className="sd-gap" />
+        {/* the crocodile says how today stands: a green mark when it is going well, a drop of sweat when it is not */}
+        {foot && line("foot", "", (
+          <button className="sd-foot" tabIndex={tab} onClick={() => go("home")} title="Back to home">
+            <span className="sd-croc"><CrocLogo />{foot.mood === "bad" ? <i key="bad" className="sd-drop" /> : foot.mood === "good" ? <i key="good" className="sd-ok" /> : null}</span>
+            <span className="sd-say sd-t"><b style={{ color: foot.ink }}>{foot.text}</b><small>{foot.sub}</small></span>
+          </button>
+        ))}
+      </nav>
+      {/* the three lines: they turn into a cross while the panel is open, and back */}
+      <button className="snav-burger" onClick={() => setOpen((v) => !v)} title={open ? "Close the menu (Esc)" : "Menu"} aria-label="Menu" aria-expanded={open}><i /><i /><i /></button>
+    </div>, document.body);
+}, sameSideProps);
 
 /* Debts, a section of the Goals card: what he owes ("owe") and what others owe him ("owed"), each with how much of it
    has been paid back. Rows are the goals' own rows (name, paid / total, bar, a + that opens the amount box).
@@ -1139,6 +2983,102 @@ const DEBT_KINDS = [
   { dir: "owe", label: "I owe", icon: "call_made", tone: "#e2808c", who: "Who I owe, e.g. Budi", pay: "I paid this much back", unpay: "Take a payment back" },
   { dir: "owed", label: "Owed to me", icon: "call_received", tone: "#8fd7a4", who: "Who owes me, e.g. Sari", pay: "They paid this much back", unpay: "Take a payment back" },
 ];
+const DEBT_OPTS = DEBT_KINDS.map((k) => [k.dir, k.label]);
+/* Planned expenses (11 October 2026: "project expenses on this week … i want to get haircut this week and i wanna eat
+   at a restaurant", "it will also be calculated on the weekly expense chart, make sure its the future and not the past,
+   can be the present. have options for choosing dates. if its end of week then have it be input next week").
+   A plan is { id, amount, desc, date "YYYY-MM-DD" }: something he means to spend on a day that is today or later. It is
+   not spending: it is in no total, no category and no projection, only on the weekly chart (a dashed line on top of
+   what each day already holds) and in the card's own line. A plan whose day has passed is dropped when the entries
+   are read, and counts nowhere from midnight on. */
+const dayKeyOf = (d) => keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+const cleanPlans = (list, today = dayKeyOf(new Date())) => (Array.isArray(list) ? list : [])
+  .filter((p) => p && typeof p === "object" && typeof p.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(p.date) && p.date >= today && cleanAmount(p.amount) > 0)
+  .map((p) => ({ id: typeof p.id === "string" && p.id ? p.id : uid(), amount: cleanAmount(p.amount), desc: typeof p.desc === "string" ? p.desc.slice(0, 120) : "", date: p.date }));
+// the days a plan can be put on: today to the end of this week (Monday first); on the week's last day, today and all of
+// next week; and when the chart has been stepped to a week ahead (`week`: that week's Monday), the seven days of that week
+const planDays = (now = new Date(), week = 0) => {
+  const dow = (now.getDay() + 6) % 7, mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow).getTime();
+  const ahead = week > mon, from = ahead ? new Date(week) : now, n = ahead ? 7 : dow === 6 ? 8 : 7 - dow;
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i), name = DOW_FULL[(d.getDay() + 6) % 7];
+    return { key: dayKeyOf(d), label: !ahead && i === 0 ? "Today" : `${name} ${d.getDate()}`, tip: `${name} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}` };
+  });
+};
+/* The box under the weekly chart: an amount, what for, the day (one quiet field of choices, the first day after today
+   chosen to begin with), and the plans to come, soonest first, each with a tick (it happened: it becomes an expense of
+   today and leaves the plan) and a bin. It keeps what is typed to itself and reports through `api` (a ref):
+   { fmt, toIDR, ghost, add(plan), remove(id), log(id) }. `tick` changes at midnight, so the days are worked out again;
+   `week` is the Monday of the week on the chart. It is an expense that has not happened yet, so it looks like one:
+   the amount box is the expenses' red one, and the day chosen stands in a dashed red outline (dashed is "planned"
+   everywhere here), which slides to the day pressed: the days are boxes of one width, so the outline is one piece
+   that is only ever moved. */
+const WeekPlans = memo(({ plans, api, cur, isMYR, tick, week }) => {
+  const days = useMemo(() => planDays(new Date(), week), [tick, week]);
+  const [amt, setAmt] = useState("");
+  const [desc, setDesc] = useState("");
+  const [on, setOn] = useState(null);
+  const [gone, setGone] = useState({});
+  const today = dayKeyOf(new Date()), last = days[days.length - 1].key;
+  const day = days.some((d) => d.key === on) ? on : ((days[0].key === today && days[1]) || days[0]).key;
+  const list = plans.filter((x) => x.date >= today).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const add = () => {
+    const amount = api.current.toIDR(amt);
+    if (!amount) return;
+    api.current.add({ id: uid(), amount, desc: desc.trim(), date: day });
+    setAmt(""); setDesc("");
+  };
+  // a row folds away first, then the plan goes (or is filed)
+  const out = (id, how) => {
+    if (gone[id]) return;
+    setGone((g) => ({ ...g, [id]: true }));
+    setTimeout(() => { api.current[how](id); setGone((g) => { const c = { ...g }; delete c[id]; return c; }); }, 260);
+  };
+  const said = (key) => {
+    if (key === today) return "Today";
+    const d = new Date(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, Number(key.slice(8)));
+    return `${DOW_FULL[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
+  };
+  return (
+    <div className="wp">
+      <div className="wp-head">
+        <span>Planned</span>
+        {list.length > 0 && <b>{api.current.fmt(list.reduce((a, x) => a + x.amount, 0))} to come</b>}
+      </div>
+      <div style={{ ...S.addRow, marginBottom: 8 }}>
+        <AmountField value={amt} setValue={setAmt} accent="red" cur={cur} ghost={api.current.ghost(amt)} allowDecimal={isMYR} onSubmit={add} />
+        <input className="desc-field" style={{ ...S.darkInput, flex: 1, minWidth: 160 }} placeholder="Planned — e.g. haircut, dinner out"
+               value={desc} onChange={(e) => setDesc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="split-btn" title="Add to the plan" aria-label="Add to the plan" onClick={add}><span className="msym" style={{ fontSize: 20 }}>add</span></button>
+      </div>
+      <div className="wp-pick" aria-label="The day it is planned for">
+        <i>On</i>
+        <span className="wp-days" style={{ "--at": Math.max(0, days.findIndex((d) => d.key === day)) }}>
+          <span className="wp-on" />
+          {days.map((d) => <button key={d.key} className={d.key === day ? "on" : ""} title={d.tip} onClick={() => setOn(d.key)}>{d.label}</button>)}
+        </span>
+      </div>
+      {list.length > 0 && (
+        <div style={{ ...S.expList, marginTop: 12 }}>
+          {list.map((x) => (
+            <div key={x.id} className={`row-wrap${gone[x.id] ? " collapsing gone" : ""}`}>
+              <div style={S.fold}>
+                <div className="wp-row glass-soft" style={{ animation: "fadeDown .25s ease backwards" }}>
+                  <span className="wp-day">{said(x.date)}{x.date > last ? " · later" : ""}</span>
+                  <span className="wp-name">{x.desc || "Planned expense"}</span>
+                  <b className="wp-amt">{api.current.fmt(x.amount)}</b>
+                  <button className="wp-do" title="Done: add it to today's expenses" aria-label="Done: add it to today's expenses" onClick={() => out(x.id, "log")}><span className="msym">check</span></button>
+                  <button className="trash-btn" style={S.delBtn} title="Remove from the plan" onClick={() => out(x.id, "remove")}><TrashIcon /></button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const Debts = memo(({ debts, api, cur, isMYR }) => {
   const [adding, setAdding] = useState(false);
   const [dir, setDir] = useState("owe");
@@ -1146,8 +3086,9 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
   const [amt, setAmt] = useState("");
   const [payId, setPayId] = useState(null);         // the debt whose payment box is open
   const [payAmt, setPayAmt] = useState("");
+  const [edit, setEdit] = useState(null);           // the debt being edited: { id, name, amt (as typed), was (amt as it stood), dir }
   const [leaving, setLeaving] = useState(null);
-  const { fmt, fmtLive, toIDR, save } = api.current;
+  const { fmt, fmtLive, toIDR, typed, save } = api.current;
   const ghostOf = (v) => !isMYR && digitsOf(v).length > 0 && digitsOf(v).length < 4;
   const add = () => {
     const who = name.trim(), amount = toIDR(amt);
@@ -1163,7 +3104,16 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
   };
   const remove = (id) => {
     setLeaving(id);
-    setTimeout(() => { save(api.current.list().filter((d) => d.id !== id)); setLeaving(null); setPayId((p) => (p === id ? null : p)); }, 260);
+    setTimeout(() => { save(api.current.list().filter((d) => d.id !== id)); setLeaving(null); setPayId((p) => (p === id ? null : p)); setEdit((e) => (e && e.id === id ? null : e)); }, 260);
+  };
+  // edit: the name, the amount and whose debt it is. An amount left as it stood is kept to the rupiah (in MYR the box
+  // only shows it rounded); what was paid never comes to more than the new amount
+  const openEdit = (d) => { const amt = typed(d.amount); setEdit(edit && edit.id === d.id ? null : { id: d.id, name: d.name, amt, was: amt, dir: d.dir }); setPayId(null); };
+  const saveEdit = () => {
+    const who = edit.name.trim(), amount = edit.amt === edit.was ? null : toIDR(edit.amt);
+    if (!who || amount === 0) return;
+    save(debts.map((d) => (d.id !== edit.id ? d : { ...d, name: who.slice(0, 60), amount: amount || d.amount, paid: Math.min(d.paid, amount || d.amount), dir: edit.dir })));
+    setEdit(null);
   };
   const left = (kind) => debts.filter((d) => d.dir === kind).reduce((a, d) => a + d.amount - d.paid, 0);
   const kindNow = DEBT_KINDS.find((k) => k.dir === dir);
@@ -1184,24 +3134,26 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
           <div key={k.dir}>
             <div className="debt-group"><i style={{ background: k.tone }} />{k.label}</div>
             {list.map((d, i) => {
-              const pct = (d.paid / d.amount) * 100, done = d.paid >= d.amount, open = payId === d.id;
+              const pct = (d.paid / d.amount) * 100, done = d.paid >= d.amount, open = payId === d.id, ed = edit && edit.id === d.id ? edit : null;
               return (
-                <div key={d.id} className={`goal-row${leaving === d.id ? " leaving" : ""}`} style={{ animationDelay: `${i * 60}ms` }}>
+                <div key={d.id} className={`goal-row debt-row${leaving === d.id ? " leaving" : ""}`} style={{ animationDelay: `${i * 60}ms` }}>
                   <div style={S.goalTop}>
                     <span style={{ ...S.goalName, display: "inline-flex", alignItems: "center", gap: 8 }}>
                       <span className="msym" style={{ fontSize: 19, color: done ? "#8fd7a4" : k.tone }}>{k.icon}</span>
                       <span className={`debt-name${done ? " done" : ""}`}>{d.name}</span>
-                      {done && <span className="msym" style={{ fontSize: 15, color: "#8fd7a4", marginLeft: -2 }}>check_circle</span>}
+                      {done && <span className="msym" style={{ fontSize: 15, color: "#e6c877", marginLeft: -2 }}>check_circle</span>}
                     </span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <span style={S.goalAmt}>
                         <CountNum value={d.paid} duration={600} render={fmtLive} />
-                        <span style={{ color: "#6d757d" }}> / {fmt(d.amount)}</span>
+                        <span style={{ color: "#8e969e" }}> / {fmt(d.amount)}</span>
                       </span>
-                      <button className="goal-icon-btn" title={open ? "Close" : "Record a payment"} onClick={() => { setPayId(open ? null : d.id); setPayAmt(""); }}>
+                      <button className="goal-icon-btn" title={open ? "Close" : "Record a payment"} onClick={() => { setPayId(open ? null : d.id); setPayAmt(""); setEdit(null); }}>
                         <span className="msym" style={{ fontSize: 18, transform: open ? "rotate(45deg)" : "none", transition: "transform .3s cubic-bezier(0.34,1.3,0.64,1)" }}>add</span>
                       </button>
-                      <button className="trash-btn" style={{ ...S.delBtn, marginLeft: 2 }} title="Delete debt" onClick={() => remove(d.id)}><TrashIcon /></button>
+                      <button className={`goal-icon-btn${ed ? " on" : ""}`} title={ed ? "Close" : "Edit this debt"} onClick={() => openEdit(d)}>
+                        <span className="msym" style={{ fontSize: 17 }}>{ed ? "close" : "edit"}</span>
+                      </button>
                     </span>
                   </div>
                   <div style={S.goalBarRow}>
@@ -1221,6 +3173,21 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       </div>
                     </div>
                   </div>
+                  <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+                    <div style={S.fold}>
+                      {ed && (
+                        <div style={{ ...S.goalFundRow, animation: "fadeIn .24s ease backwards" }}>
+                          <SlideSeg cls="debt-seg" style={{ "--owe": ed.dir === "owe" ? 1 : 0 }} value={ed.dir} onPick={(v) => setEdit((e) => (e ? { ...e, dir: v } : e))} options={DEBT_OPTS} />
+                          <input style={{ ...S.darkInput, width: 190 }} value={ed.name} aria-label="Name" autoFocus
+                                 onChange={(e) => setEdit({ ...ed, name: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEdit(null); }} />
+                          <AmountField value={ed.amt} setValue={(v) => setEdit((e) => (e ? { ...e, amt: typeof v === "function" ? v(e.amt) : v } : e))} accent={ed.dir === "owe" ? "red" : "green"} cur={cur} width={150}
+                                       ghost={ghostOf(ed.amt)} allowDecimal={isMYR} onSubmit={saveEdit} />
+                          <button className="goal-save" onClick={saveEdit} title="Save changes" aria-label="Save changes"><span className="msym" style={{ fontSize: 22 }}>check</span></button>
+                          <button className="trash-btn" style={{ ...S.delBtn, marginLeft: "auto" }} title="Delete this debt" onClick={() => remove(d.id)}><TrashIcon /></button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -1230,9 +3197,8 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
       <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
         <div style={S.fold}>
           <div style={{ ...S.goalFundRow, paddingTop: 12, opacity: adding ? 1 : 0, transition: "opacity .24s ease" }}>
-            <span className="wr-seg">
-              {DEBT_KINDS.map((k) => <button key={k.dir} className={dir === k.dir ? "on" : ""} onClick={() => setDir(k.dir)}>{k.label}</button>)}
-            </span>
+            {/* the box slides from one side to the other and goes from a red wash to a green one on the way */}
+            <SlideSeg cls="debt-seg" style={{ "--owe": dir === "owe" ? 1 : 0 }} value={dir} onPick={setDir} options={DEBT_OPTS} />
             <input style={{ ...S.darkInput, width: 190 }} placeholder={kindNow.who} value={name}
                    onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
             <AmountField value={amt} setValue={setAmt} accent={dir === "owe" ? "red" : "green"} cur={cur} width={150}
@@ -1298,7 +3264,7 @@ const DEFAULT_TEST_CFG = {
   dows: [true, true, true, true, true, true, true],         // Monday … Sunday: the days of the week with spending
   days: TEST_DAYS_ALL,                                      // … and the days of the month
   bills: 0,                                                 // jt of monthly bills (0: none)
-  toToday: false, zeros: true, fresh: false, seed: "", range: "year", goals: true, debts: false,
+  toToday: false, zeros: true, fresh: false, seed: "", range: "year", goals: true, debts: true,
 };
 // a random source that gives the same numbers for the same seed
 const seededRand = (seed) => {
@@ -1364,7 +3330,7 @@ const cleanTestCfg = (raw) => {
     dows: Array.isArray(r.dows) && r.dows.length === 7 ? r.dows.map(Boolean) : D.dows,
     days: days(r.days, D.days), bills: num(r.bills, D.bills, 0, 1000),
     toToday: !!r.toToday, zeros: r.zeros !== false, fresh: !!r.fresh, seed: typeof r.seed === "string" ? r.seed.slice(0, 24) : "",
-    range: ["year", "month", "rest"].includes(r.range) ? r.range : D.range, goals: r.goals !== false, debts: !!r.debts,
+    range: ["year", "month", "rest"].includes(r.range) ? r.range : D.range, goals: r.goals !== false, debts: r.dv ? r.debts !== false : true, dv: 1,
   };
 };
 // roughly what a month comes to with these settings, in rupiah (the pop-up shows it)
@@ -1522,15 +3488,54 @@ const TestCfg = ({ cfg, closing, year, month, fmt, onRun, onClose }) => {
   );
 };
 
+/* a chart's hover kept out of the panel that draws the chart: hub.set(v) re-renders only the HoverSlots that show it
+   (the tooltip and its marker), never the whole panel. render(v) is the panel's own, from its latest render */
+const hoverHub = () => {
+  const hub = { v: null, subs: new Set() };
+  hub.set = (v) => { hub.v = v; hub.subs.forEach((f) => f(v)); };
+  return hub;
+};
+const useHoverHub = () => { const r = useRef(null); return (r.current ||= hoverHub()); };
+const HoverSlot = ({ hub, render }) => {
+  const [v, setV] = useState(hub.v);
+  useLayoutEffect(() => { hub.subs.add(setV); setV(hub.v); return () => { hub.subs.delete(setV); }; }, [hub]);
+  return v ? render(v) : null;
+};
+
 /* liquid-glass hover bubble for the SVG charts; positioned in % of the chart's viewBox */
-const GlassTip = ({ x, y, W, H, label, value, color, below }) => (
+const GlassTip = ({ x, y, W, H, label, value, color, below, sub }) => (
   <div className={`glass-tip${below ? " below" : ""}`} style={{ left: `${(x / W) * 100}%`, top: `${(y / H) * 100}%` }}>
     <span className="glass-tip-inner">
       <span className="glass-tip-label">{label}</span>
       <span className="glass-tip-value" style={color ? { color } : undefined}>{value}</span>
+      {sub && [].concat(sub).filter(Boolean).map((t, i) => <span key={i} className="glass-tip-sub">{t}</span>)}
     </span>
   </div>
 );
+
+/* A day's note on the weekly chart, pressed open (11 October 2026: "clicking the hovered ui, the ui expands and below
+   the …Rb show a list of expenses for that day and when clicking outside the box the ui disappears and becomes a
+   normal hover over ui"). It is the note itself, the same glass, with the list under its figure; it comes in as every
+   note does (its own pop) and goes out on a short fade. With no room above its point it stands under it, and it never
+   reaches past the chart's sides: both read once, from the layout, before it is first drawn. A press anywhere outside
+   it, Esc (which goes no further) or the window resized shuts it. */
+const WeekPin = ({ left, top, shut, onShut, children }) => {
+  const el = useRef(null);
+  useLayoutEffect(() => {
+    const t = el.current, wrap = t.offsetParent;
+    if (!wrap) return;
+    if (t.offsetTop - t.offsetHeight - 16 < -6) t.classList.add("below");
+    const l = t.offsetLeft - t.offsetWidth / 2, over = Math.max(0, 4 - l) - Math.max(0, l + t.offsetWidth - (wrap.clientWidth - 4));
+    if (over) t.style.marginLeft = `${over}px`;
+  }, []);
+  useEffect(() => {
+    const down = (e) => { if (el.current && !el.current.contains(e.target)) onShut(); };
+    const key = (e) => { if (e.key !== "Escape") return; e.preventDefault(); e.stopPropagation(); onShut(); };
+    document.addEventListener("pointerdown", down, true); window.addEventListener("keydown", key, true); window.addEventListener("resize", onShut);
+    return () => { document.removeEventListener("pointerdown", down, true); window.removeEventListener("keydown", key, true); window.removeEventListener("resize", onShut); };
+  }, []);
+  return <div ref={el} className={`glass-tip pin${shut ? " shut" : ""}`} style={{ left, top }}><span className="glass-tip-inner">{children}</span></div>;
+};
 
 /* goal icons: picked by the user, or inferred from the goal's name (keywords first, AI for anything else) */
 const GOAL_ICONS = [
@@ -1573,6 +3578,20 @@ const inferGoalIcon = (name) => {
 };
 
 /* goal progress bar: grows from 0 on mount, then eases between values */
+// a goal's progress as a ring with its % in the middle (after his picture of a goal card)
+const GoalRing = ({ pct, color, delay, children }) => {
+  const R = 21, C = 2 * Math.PI * R, f = (C * Math.max(0, Math.min(100, pct))) / 100;
+  return (
+    <span className="goal-ring">
+      <svg viewBox="0 0 52 52">
+        <circle cx="26" cy="26" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5.5" />
+        <circle className="score-arc goal-arc" style={{ animationDelay: `${delay || 0}ms` }} cx="26" cy="26" r={R} fill="none" stroke={color}
+                strokeWidth="5.5" strokeLinecap="round" strokeDasharray={`${f} ${C}`} />
+      </svg>
+      <span className="goal-ring-n">{children}</span>
+    </span>
+  );
+};
 const GoalBar = ({ pct, done, delay }) => {
   const [on, setOn] = useState(false);
   useEffect(() => {
@@ -1582,8 +3601,11 @@ const GoalBar = ({ pct, done, delay }) => {
   }, []);
   return (
     <div className="goal-track">
+      {/* the fill is the track's whole width, slid in from the left (a moved surface, never a new width): its gradient
+          starts where the track shows it, so it reads exactly as a fill that is only pct wide */}
       <div className={`goal-fill${done ? " done" : ""}`}
-           style={{ width: on ? `${Math.max(0, Math.min(100, pct))}%` : "0%", transitionDelay: on ? `${delay || 0}ms` : "0ms" }} />
+           style={{ transform: `translateX(${on ? Math.max(0, Math.min(100, pct)) - 100 : -100}%)`, "--gs": `${100 - Math.max(0, Math.min(100, pct))}%`,
+                    transitionDelay: on ? `${delay || 0}ms` : "0ms" }} />
     </div>
   );
 };
@@ -1637,34 +3659,64 @@ const ICON_CHOICES = [
 
 const CAT_RULES = {
   food: [
-    "makan", "food", "eat", "lunch", "dinner", "breakfast", "brunch", "steak", "coffee", "kopi", "nasi", "ayam", "mie", "noodle", "snack", "restaurant", "resto", "cafe", "kafe", "bakso", "sate", "pizza", "burger", "tea", "teh", "drink", "minum", "sarapan", "warung", "boba", "sushi", "chicken", "rice", "bread", "roti", "cake", "juice", "es ", "dessert", "bakery", "seafood", "ramen", "dimsum", "martabak", "gorengan", "padang", "geprek", "soto", "gado",
-    "mcdonald", "mcd", "kfc", "burger king", "wendys", "wendy's", "popeyes", "subway", "dominos", "domino's", "pizza hut", "starbucks", "sbux", "dunkin", "jco", "j.co", "richeese", "hokben", "yoshinoya", "marugame", "solaria", "sederhana", "burger nangor", "blenger", "moon chicken", "wingstop", "shihlin", "kokumi", "auntie anne", "krispy kreme", "chick fil", "five guys", "shake shack", "taco bell", "sushi tei", "genki", "ichiban", "bakmi", "eatlah", "haus", "mixue",
-    "chatime", "boost juice", "boost", "teazzi", "chagee", "kopi kenangan", "janji jiwa", "fore", "tomoro", "point coffee", "gong cha", "koi the", "xing fu", "menantea", "es teler", "tiger sugar", "dum dum", "milk tea", "matcha", "smoothie", "bubble tea",
+    "makan", "food", "eat", "lunch", "dinner", "breakfast", "brunch", "steak", "coffee", "kopi", "nasi", "ayam", "mie", "noodle", "snack", "restaurant", "=resto", "restoran", "cafe", "kafe", "bakso", "sate", "pizza", "burger", "tea", "teh", "drink", "=minum", "sarapan", "warung", "boba", "sushi", "chicken", "rice ", "bread", "roti", "cake", "juice", "es ", "dessert", "bakery", "seafood", "ramen", "dimsum", "martabak", "gorengan", "padang", "geprek", "soto", "gado",
+    "mcdonald", "mcd", "kfc", "burger king", "wendys", "wendy's", "popeyes", "subway", "dominos", "domino's", "pizza hut", "starbucks", "sbux", "dunkin", "jco", "j.co", "richeese", "hokben", "yoshinoya", "marugame", "solaria", "sederhana", "burger nangor", "blenger", "moon chicken", "wingstop", "shihlin", "kokumi", "auntie anne", "krispy kreme", "chick fil", "five guys", "shake shack", "taco bell", "sushi tei", "genki", "ichiban", "bakmi", "eatlah", "haus ", "mixue",
+    "eating", "grabfood", "grab food", "gofood", "go food", "shopeefood", "shopee food", "steamboat", "hotpot", "shabu",
+    "chatime", "boost juice", "=boost", "teazzi", "chagee", "kopi kenangan", "janji jiwa", "fore ", "tomoro", "point coffee", "gong cha", "koi the", "xing fu", "menantea", "es teler", "tiger sugar", "dum dum", "milk tea", "matcha", "smoothie", "bubble tea",
   ],
   transport: [
-    "transport", "gojek", "gocar", "goride", "gosend", "grab", "grabcar", "grabbike", "bluebird", "blue bird", "silverbird", "silver bird", "taxi", "taksi", "uber", "maxim", "indriver",
-    "bensin", "pertamax", "pertalite", "shell", "fuel", "petrol", "gasoline", "spbu",
+    "transport", "gojek", "gocar", "goride", "gosend", "grab", "grabcar", "grabbike", "bluebird", "blue bird", "silverbird", "silver bird", "taxi", "taksi", "uber", "maxim ", "indriver",
+    "bensin", "pertamax", "pertalite", "shell ", "fuel", "petrol", "gasoline", "spbu",
     "parkir", "parking", "tol", "toll", "emoney", "e-money", "e money", "flazz", "brizzi", "tapcash",
-    "bus", "busway", "transjakarta", "train", "kereta", "krl", "mrt", "lrt", "commuter", "ojek", "flight", "pesawat", "tiket", "airport", "bandara", "damri", "angkot", "commute", "tambal ban",
+    "bus", "busway", "transjakarta", "train ", "kereta", "krl", "mrt", "lrt", "commuter", "ojek", "flight", "pesawat", "=tiket", "airport", "bandara", "damri", "angkot", "commute", "tambal ban",
   ],
   shopping: [
-    "shop", "belanja", "baju", "clothes", "shirt", "kaos", "celana", "jacket", "jaket", "shoes", "sepatu", "sandal", "tokopedia", "shopee", "lazada", "blibli", "amazon", "tiktok shop", "mall", "beli", "gift", "hadiah", "bag", "tas", "makeup", "skincare", "parfum", "uniqlo", "zara", "h&m", "nike", "adidas", "muji", "ikea",
-    "alfamart", "alfamidi", "indomaret", "lawson", "family mart", "familymart", "circle k", "circlek", "minimarket", "convenience store",
-    "lego", "bearbrick", "be@rbrick", "kaws", "gunpla", "gundam", "figure", "figurine", "funko", "pop mart", "popmart", "labubu", "smiski", "sonny angel", "hot wheels", "hotwheels", "pokemon card", "trading card", "vinyl", "sneaker", "collectible", "keyboard", "mousepad", "headset", "console", "nintendo", "playstation", "steam",
+    "=shop", "=belanja", "baju", "clothes", "shirt", "kaos", "celana", "jacket", "jaket", "shoes", "sepatu", "sandal", "=tokopedia", "=shopee", "lazada", "blibli", "=amazon", "tiktok shop", "mall", "=beli", "=gift", "hadiah", "bag", "tas", "makeup", "skincare", "parfum", "uniqlo", "zara", "h&m", "nike", "adidas", "muji", "ikea",
+    "pants", "sweatpants", "jeans", "hoodie", "sweater", "sweatshirt", "dress ", "skirt", "socks", "kaos kaki", "kemeja", "jersey", "underwear", "shorts", "legging", "cardigan", "blazer", "hijab", "jilbab", "batik", "topi ", "dompet", "wallet", "kacamata", "sunglasses", "backpack", "ransel",
+    "shopping", "makanan kucing", "makanan anjing", "pet food", "cat food", "dog food", "kotak makan", "rice cooker", "coffee maker", "coffee table",
+    "=alfamart", "alfamidi", "=indomaret", "lawson", "family mart", "familymart", "circle k", "circlek", "minimarket", "convenience store",
+    "lego", "bearbrick", "be@rbrick", "kaws", "gunpla", "gundam", "figure", "figurine", "funko", "pop mart", "popmart", "labubu", "smiski", "sonny angel", "hot wheels", "hotwheels", "pokemon card", "trading card", "vinyl", "sneaker", "collectible", "keyboard", "mousepad", "headset", "console", "=nintendo", "=playstation", "=steam",
   ],
   bills: [
-    "bill", "tagihan", "listrik", "electric", "electricity", "pln", "token listrik", "water", "air pam", "pdam", "gas", "lpg", "elpiji", "internet", "wifi", "indihome", "biznet", "firstmedia", "pulsa", "kuota", "paket data", "telkomsel", "indosat",
-    "rent", "sewa", "kos", "kontrakan", "mortgage", "kpr", "subscription", "langganan", "insurance", "asuransi", "bpjs", "spotify", "netflix", "youtube premium", "icloud", "google one", "cicilan", "loan", "angsuran", "tax", "pajak", "iuran", "spp", "tuition",
+    "bill", "tagihan", "=listrik", "=electric", "electricity", "pln", "token listrik", "=water", "air pam", "pdam", "=gas", "lpg", "elpiji", "internet", "=wifi", "indihome", "biznet", "firstmedia", "pulsa", "kuota", "paket data", "telkomsel", "indosat",
+    "rent ", "=sewa", "kos", "kontrakan", "mortgage", "kpr", "subscription", "langganan", "insurance", "asuransi", "bpjs", "spotify", "netflix", "youtube premium", "icloud", "google one", "cicilan", "loan", "angsuran", "tax", "pajak", "iuran", "spp", "tuition",
   ],
 };
 
+/* Which category a note names, from the lists above. A word of a list counts where it stands as a word of its own in
+   the note (a plural s allowed); one of 4 letters and up also at the start of a longer word ("shop" in "shopping",
+   "kopi" in "kopiko"); only one of 5 and up inside or at the end of a word ("pants" in "sweatpants", "market" in
+   "supermarket"). A word written with a space after it in its list ("es ", "train ") only counts as a word of its own,
+   and one written with = before it ("=tiket", "=sewa", "=wifi") only when it is the whole note: beside another word
+   it means too many things (tiket bioskop, sewa mobil, router wifi), and the AI reads those better.
+   Before 11 October 2026 a word counted wherever its letters turned up: "sweatpants" was food for the "eat" in it (he
+   reported that one), "steam" for its "tea", "business" transport for its "bus", and the AI, which has them right, is
+   only asked about a note these lists can't place. When several fit, the best wins: a word of its own before a start
+   before an inside, then the longer word; the order of the lists only settles a tie. Answers are kept: this is asked
+   for every entry on every drawing of the panel. */
+const CAT_WORDS = Object.entries(CAT_RULES).flatMap(([cat, list], order) => list.map((raw) => ({ w: raw.replace("=", "").trim(), own: raw !== raw.trim(), alone: raw[0] === "=", cat, order })));
+const catWordChar = (c) => (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c > 127;       // a letter or a digit (the note is in lower case)
+const CAT_SEEN = new Map();
 const inferCat = (desc) => {
   const d = (desc || "").toLowerCase().trim();
   if (!d) return null;
-  for (const cat of ["food", "transport", "shopping", "bills"]) {
-    if (CAT_RULES[cat].some((w) => d.includes(w))) return cat;
+  if (CAT_SEEN.has(d)) return CAT_SEEN.get(d);
+  let best = null, top = 0;
+  for (const k of CAT_WORDS) {
+    const n = k.w.length;
+    for (let at = d.indexOf(k.w); at >= 0; at = d.indexOf(k.w, at + 1)) {
+      if (k.alone && (at > 0 || (d.length !== n && d !== `${k.w}s`))) break;
+      const before = at > 0 && catWordChar(d.charCodeAt(at - 1));
+      let after = catWordChar(d.charCodeAt(at + n));
+      if (after && d[at + n] === "s" && !catWordChar(d.charCodeAt(at + n + 1))) after = false;      // a plural
+      const kind = !before && !after ? 3 : k.own ? 0 : !before ? (n >= 4 ? 2 : 0) : n >= 5 ? 1 : 0;
+      const score = kind ? kind * 1000 + n * 10 - k.order : 0;
+      if (score > top) { top = score; best = k.cat; }
+    }
   }
-  return null;
+  if (CAT_SEEN.size > 4000) CAT_SEEN.clear();
+  CAT_SEEN.set(d, best);
+  return best;
 };
 
 const HamburgerIcon = () => (
@@ -1682,6 +3734,7 @@ const CAT_HOVER_ICON = {
   shopping: "shopping_bag",
   bills: "receipt",
   other: "grid_view",
+  left: "savings",
 };
 
 const CAT_COLORS = {
@@ -1717,7 +3770,7 @@ const CatTitleReel = ({ cat }) => {
 
 /* Pretty names: McDonalds, KFC, Burger King … */
 const WORD_FIX = {
-  mcdonalds: "McDonalds", kfc: "KFC", mcd: "McD", mcdonalds: "McDonalds", mcdonald: "McDonald", jco: "J.CO", "j.co": "J.CO",
+  mcdonalds: "McDonalds", kfc: "KFC", mcd: "McD", mcdonald: "McDonald", jco: "J.CO", "j.co": "J.CO",
   hokben: "HokBen", mrt: "MRT", lrt: "LRT", krl: "KRL", spbu: "SPBU", pln: "PLN", pdam: "PDAM",
   bpjs: "BPJS", lpg: "LPG", kpr: "KPR", atm: "ATM", kaws: "KAWS", lego: "LEGO", ikea: "IKEA",
   "h&m": "H&M", tcg: "TCG", ac: "AC", tv: "TV", ps5: "PS5", ps4: "PS4", id: "ID", bca: "BCA",
@@ -1853,7 +3906,7 @@ const projBigLeft = (counts, k, gone) => {
   return { mean, v: sum > 0 ? Math.max(0, sum2 / sum - mean * mean) : 0 };
 };
 // today is (y, m, d), at the given hour. Returns null until there are five days with spending to read a pattern from.
-const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) => {
+const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf, plans }) => {
   const dim = new Date(y, m + 1, 0).getDate(), daysLeft = dim - d;
   const lim = (limits || {})[monthKeyOf(y, m)] || DEFAULT_LIMIT;
   const itemsOn = (yy, mm, dd) => spending[keyOf(yy, mm, dd)] || [];
@@ -1945,6 +3998,23 @@ const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) 
     });
   }
 
+  // 5b. what he has planned for today or a later day of this month (the planned expenses of the weekly card). It is
+  //     known, so it is taken as it stands, on top of what that day would cost anyway. One that is itself a big buy
+  //     is one of the big buys expected, not one more: the number still to come is lowered by it (below). One named
+  //     as a bill that is due stands in for that bill.
+  const planOn = {}, planDue = [], planName = {};
+  let planSum = 0, planBig = 0;
+  (plans || []).forEach((x) => {
+    if (!x || typeof x.date !== "string" || x.date.slice(0, 7) !== monthKeyOf(y, m) || !(x.amount > 0)) return;
+    const dd = Number(x.date.slice(8));
+    if (!(dd >= d && dd <= dim)) return;
+    planOn[dd] = (planOn[dd] || 0) + x.amount; planSum += x.amount;
+    planDue.push({ day: dd, amount: x.amount, desc: x.desc || "" });
+    if ((x.desc || "").trim()) planName[canonKey(x.desc)] = true;
+    if (x.amount >= bigFrom) planBig++;
+  });
+  planDue.sort((p, q) => p.day - q.day);
+
   // 6. the rest of today (what a day like today usually costs, less what is already logged; from noon on the
   //    day counts as running out), then every empty day still to come
   const todayMore = Math.max(0, byDow[new Date(y, m, d).getDay()] - todaySoFar) * Math.max(0, Math.min(1, (24 - hour) / 12));
@@ -1964,15 +4034,17 @@ const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) 
   const known = counts.length >= PROJ_MONTHS && daysLeft > 0;
   const left = known ? projBigLeft(counts, bigNow, d / dim) : { mean: bigRate * daysLeft, v: bigRate * daysLeft };
   const share = daysLeft ? openDays / daysLeft : 0;
-  const bigMore = left.mean * share, big = bigMore * bigEach;
+  // (with nothing planned bigKeep is 1 and every figure is exactly what it was before plans were read)
+  const bigAll = left.mean * share, bigMore = Math.max(0, bigAll - planBig), big = bigMore * bigEach;
+  const bigKeep = planBig && bigAll > 0 ? bigMore / bigAll : 1;
   // how far off it may be: the days still to come vary as they did before, the big buys come or don't and cost
   // more or less, and the averages themselves are only known as well as the days behind them. The spread of the
   // number of big buys is taken halfway between what the months behind say and plain chance: the months alone made
   // the range too narrow in the backtest (it should hold the real end four times in five, and now does).
-  let variance = 0.5 * (left.v + left.mean) * share * bigEach * bigEach + bigMore * Math.max(0, (bigN ? bigSq / bigN : 0) - bigEach * bigEach);
+  let variance = 0.5 * (left.v + left.mean) * share * bigEach * bigEach * bigKeep + bigMore * Math.max(0, (bigN ? bigSq / bigN : 0) - bigEach * bigEach);
   open.forEach((n, i) => { const g = groups[i]; variance += n * g.v + (g.n > 0 ? (n * n * g.v) / g.n : 0); });
 
-  const billsDue = Object.values(bills).filter((b) => !paid[b.key] && b.day >= d - PROJ_LATE).sort((p, q) => p.day - q.day);
+  const billsDue = Object.values(bills).filter((b) => !paid[b.key] && !planName[b.key] && b.day >= d - PROJ_LATE).sort((p, q) => p.day - q.day);
   const billSum = billsDue.reduce((s, x) => s + x.amount, 0);
 
   // income: everything entered for the month, plus the pay that comes every month and isn't in yet
@@ -1990,24 +4062,25 @@ const projectMonth = ({ spending, incomes, limits, y, m, d, hour = 12, catOf }) 
   const path = [0];
   for (let dd = 1; dd <= dim; dd++) {
     const add = dd <= d ? onDay[dd] || 0
-      : (written[dd] ? onDay[dd] || 0 : byDow[new Date(y, m, dd).getDay()] + (openDays ? big / openDays : 0)) + (billOn[dd] || 0) + (dd === d + 1 ? todayMore : 0);
+      : (written[dd] ? onDay[dd] || 0 : byDow[new Date(y, m, dd).getDay()] + (openDays ? big / openDays : 0)) + (billOn[dd] || 0) + (planOn[dd] || 0) + (dd === d + 1 ? todayMore + (planOn[d] || 0) : 0);
     path.push(path[dd - 1] + add);
   }
 
-  const toCome = everyday + big + billSum + planned;
+  const toCome = everyday + big + billSum + planned + planSum;
   const endSpend = spent + toCome, endIncome = income + paySum;
   return {
     dim, daysLeft, openDays, spent, income, toCome, endSpend, endIncome, endLeft: endIncome - endSpend, sd: Math.sqrt(variance),
     everyday, todayMore, big, bigN, bigFrom, bigEach, bigPerMonth: bigRate * 30, bigNow, bigMore, bigMonths: counts.length,
-    planned, billsDue, billSum, payDue, paySum,
+    planned, planSum, planDue, billsDue, billSum, payDue, paySum,
     weekday: (byDow[1] + byDow[2] + byDow[3] + byDow[4] + byDow[5]) / 5, weekend: (byDow[0] + byDow[6]) / 2, nWd, nWe, byDow, daysRead: days.length, path,
   };
 };
 /* ---------- month-end projection: end of the maths ---------- */
 
-/* The projection as a path through the month: what is spent so far (solid), what the days to come are expected to
-   add (dashed), the range the month should end in four times in five (the cone, opening from today), and the
-   month's income as the ceiling, with what is left (or short) marked at the end. Bills that are due sit on their
+/* The projection as a path through the month. With an income it is a burndown: the money left, from the whole income
+   (the dashed line on top) down through what is spent so far (solid) and what the days to come are expected to take
+   (dashed) to what should be left on the last day, marked at the end, with the range it should land in four times in
+   five as a cone opening from today. Without an income it is the spending piling up from zero. Bills that are due sit on their
    day. Drawn at the size it is given (1 unit = 1px), like the PnL analysis charts; the pointer's day is its own
    state, so moving over it redraws nothing else. */
 const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
@@ -2025,31 +4098,37 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
   }, []);
   const H = 208, PT = 16, PB = 26, PR = 16, ih = H - PT - PB;
   const { path, dim } = p, d = dim - p.daysLeft;
-  const ticks = niceTicks(0, Math.max(p.endSpend + band, hasInc ? p.endIncome : 0, 1), 4);
-  const top = ticks[ticks.length - 1];
-  const PL = Math.max(30, Math.max(...ticks.map((v) => fmt(v).length)) * 6.5 + 15), iw = Math.max(40, w - PL - PR);
+  // With an income it is a burndown (7 October 2026, the design review: on a scale from zero up to the income the
+  // spending line hugged the floor): the money left, from the whole income down to where the month should end, on a
+  // scale that spans only that fall. Without an income there is nothing to burn down: spending piling up from zero
+  const burn = hasInc;
+  const val = (v) => (burn ? p.endIncome - v : v);
+  const ticks = burn ? niceTicks(p.endIncome - Math.max(p.endSpend + band, p.endIncome * 0.05, 1), p.endIncome, 4) : niceTicks(0, Math.max(p.endSpend + band, 1), 4);
+  const bot = ticks[0], top = ticks[ticks.length - 1];
+  const tickText = (v) => (v < 0 ? `−${fmt(-v)}` : fmt(v));
+  const PL = Math.max(30, Math.max(...ticks.map((v) => tickText(v).length)) * 6.5 + 15), iw = Math.max(40, w - PL - PR);
   const r1 = (x) => Math.round(x * 10) / 10;
-  const X = (day) => r1(PL + (day / dim) * iw), Y = (v) => r1(PT + (1 - Math.min(v, top) / top) * ih);
+  const X = (day) => r1(PL + (day / dim) * iw), Y = (v) => r1(PT + (1 - (Math.min(Math.max(v, bot), top) - bot) / (top - bot || 1)) * ih);
   // a smooth step from day to day that never overshoots a day's value
   const curve = (pts) => pts.map(([x, y], i) => { if (!i) return `M${x} ${y}`; const mid = r1((pts[i - 1][0] + x) / 2); return `C${mid} ${pts[i - 1][1]} ${mid} ${y} ${x} ${y}`; }).join("");
-  // so far: from the y-axis, a little under the first day's figure (CHART_LEAD), to today
-  const done = [[X(0), Y(path[1] * CHART_LEAD)]], todo = [], hiEdge = [], loEdge = [];
-  for (let i = 1; i <= d; i++) done.push([X(i), Y(path[i])]);
+  // so far: from the y-axis to today. The burndown starts on the whole income; the spending a little under its first
+  // day's figure (CHART_LEAD)
+  const done = [[X(0), burn ? Y(val(0)) : Y(path[1] * CHART_LEAD)]], todo = [], hiEdge = [], loEdge = [];
+  for (let i = 1; i <= d; i++) done.push([X(i), Y(val(path[i]))]);
   for (let i = d; i <= dim; i++) {
     const spread = p.daysLeft ? band * Math.sqrt((i - d) / p.daysLeft) : 0;
-    todo.push([X(i), Y(path[i])]);
-    hiEdge.push(`${X(i)} ${Y(path[i] + spread)}`);
-    loEdge.push(`${X(i)} ${Y(Math.max(path[d], path[i] - spread))}`);
+    todo.push([X(i), Y(val(path[i]))]);
+    hiEdge.push(`${X(i)} ${Y(val(path[i] + spread))}`);
+    loEdge.push(`${X(i)} ${Y(val(Math.max(path[d], path[i] - spread)))}`);
   }
-  const xEnd = X(dim), yEnd = Y(path[dim]), yInc = Y(p.endIncome), xNow = X(d);
-  const bills = p.billsDue.map((b) => { const day = Math.min(dim, Math.max(b.day, d + 1)); return { ...b, x: X(day), y: Y(path[day]) }; });
+  const xEnd = X(dim), yEnd = Y(val(path[dim])), yInc = Y(val(0)), xNow = X(d);
+  const bills = p.billsDue.map((b) => { const day = Math.min(dim, Math.max(b.day, d + 1)); return { ...b, x: X(day), y: Y(val(path[day])) }; });
   const pays = p.payDue.map((x) => ({ ...x, x: X(Math.min(dim, Math.max(x.day, d + 1))) }));
   const onMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     const day = Math.max(1, Math.min(dim, Math.round((((e.clientX - r.left) / r.width) * w - PL) / iw * dim)));
     setHot((h) => (h === day ? h : day));
   };
-  const gap = Math.abs(yInc - yEnd);
   return (
     <div ref={box} className="an-plot proj-plot" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHot(null)}>
       {w > 0 && (
@@ -2058,9 +4137,9 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
           {ticks.map((v, i) => (
             <g key={v} className="axis-fade" style={{ animationDelay: `${40 + i * 30}ms` }}>
               {/* the x-axis is the one unbroken line; the levels above it are dashed */}
-              {i === 0 ? <line x1={PL} y1={Y(0)} x2={w - PR} y2={Y(0)} stroke="#c7cdd2" strokeWidth="1" />
+              {i === 0 ? <line x1={PL} y1={Y(bot)} x2={w - PR} y2={Y(bot)} stroke="#c7cdd2" strokeWidth="1" />
                        : <line x1={PL} y1={Y(v)} x2={w - PR} y2={Y(v)} stroke="#3a3f44" strokeWidth="1" strokeDasharray="4 4" />}
-              <text x={PL - 9} y={Y(v) + 4} fill="#8a9299" fontSize="11" textAnchor="end">{fmt(v)}</text>
+              <text x={PL - 9} y={Y(v) + 4} fill="#9aa3ab" fontSize="11" textAnchor="end">{tickText(v)}</text>
             </g>
           ))}
           {hasInc && (
@@ -2071,7 +4150,7 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
             </g>
           )}
           {/* today */}
-          <line className="axis-fade" x1={xNow} y1={PT} x2={xNow} y2={Y(0)} stroke="#62696f" strokeWidth="1" strokeDasharray="2 4" style={{ animationDelay: "260ms" }} />
+          <line className="axis-fade" x1={xNow} y1={PT} x2={xNow} y2={Y(bot)} stroke="#62696f" strokeWidth="1" strokeDasharray="2 4" style={{ animationDelay: "260ms" }} />
           <g className="axis-fade" style={{ animationDelay: "120ms" }} fill="#8a9299" fontSize="11">
             {xNow - PL > 64 && <text x={PL} y={H - 8}>1 {monthName}</text>}
             {xEnd - xNow > 78 && <text x={xNow} y={H - 8} textAnchor={xNow - PL > 64 ? "middle" : "start"} fill="#c7cdd2">Today</text>}
@@ -2086,22 +4165,22 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
             </g>
           )}
           {d > 0 && <path className="an-line" pathLength="1" d={curve(done)} fill="none" stroke="#e8eaec" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />}
-          <circle className="pj-now" cx={xNow} cy={Y(path[d])} r="3.5" fill="#e8eaec" />
-          {/* the end: what is left under the income, or how far over it */}
+          <circle className="pj-now" cx={xNow} cy={Y(val(path[d]))} r="3.5" fill="#e8eaec" />
+          {/* the end: where the month should land, and on the burndown what is left there (or how far short). The words
+              stand just over the line at their own left end: it only comes down from there, so they never lie on it */}
           <g className="pj-end">
-            {hasInc && gap > 14 && <line x1={xEnd} y1={yInc} x2={xEnd} y2={yEnd} stroke={tone} strokeWidth="2" strokeLinecap="round" />}
             <circle cx={xEnd} cy={yEnd} r="4.5" fill={tone} stroke="#1d2024" strokeWidth="1.5" />
-            {hasInc && gap > 26 && <text x={xEnd - 9} y={(yInc + yEnd) / 2 + 4} fill={tone} fontSize="11.5" fontWeight="700" textAnchor="end">{fmt(Math.abs(p.endLeft))} {p.endLeft >= 0 ? "left" : "short"}</text>}
+            {burn && <text x={xEnd} y={Math.max(PT + 11, Y(val(path[Math.max(d, Math.floor(dim * (1 - 104 / iw)))])) - 10)} fill={tone} fontSize="11.5" fontWeight="700" textAnchor="end">{fmt(Math.abs(p.endLeft))} {p.endLeft >= 0 ? "left" : "short"}</text>}
           </g>
           {hot !== null && (
             <g pointerEvents="none">
-              <line x1={X(hot)} y1={PT} x2={X(hot)} y2={Y(0)} stroke="#8a9299" strokeWidth="1" />
-              <circle cx={X(hot)} cy={Y(path[hot])} r="4" fill="#e8eaec" stroke="#1d2024" strokeWidth="1.5" />
+              <line x1={X(hot)} y1={PT} x2={X(hot)} y2={Y(bot)} stroke="#8a9299" strokeWidth="1" />
+              <circle cx={X(hot)} cy={Y(val(path[hot]))} r="4" fill="#e8eaec" stroke="#1d2024" strokeWidth="1.5" />
             </g>
           )}
         </svg>
       )}
-      {w > 0 && hot !== null && <GlassTip x={X(hot)} y={Y(path[hot])} W={w} H={H} label={`${hot} ${monthName}${hot > d ? " · expected" : ""}`} value={fmt(path[hot])} below={Y(path[hot]) < 70} />}
+      {w > 0 && hot !== null && <GlassTip x={X(hot)} y={Y(val(path[hot]))} W={w} H={H} label={`${hot} ${monthName}${hot > d ? " · expected" : ""}`} value={burn ? `${val(path[hot]) < 0 ? "−" : ""}${fmt(Math.abs(val(path[hot])))} left` : fmt(path[hot])} below={Y(val(path[hot])) < 70} />}
     </div>
   );
 };
@@ -2187,19 +4266,114 @@ const COIN_TINT = { BTC: "#f7931a", ETH: "#8c9eff", SOL: "#b07cff", BNB: "#f3ba2
                     AVAX: "#ef6a6a", LINK: "#5c84f0", SUI: "#6fbcff", PEPE: "#6cc24a", TON: "#39a9eb", HYPE: "#7ee8d0", BONK: "#f5a524" };
 const coinTint = (coin) => COIN_TINT[coin] || `hsl(${[...coin].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)} 52% 70%)`;
 
+// where a trade keeps pictures: its own, and the ones on its setup. Whatever counts, packs or sweeps pictures goes by these
+const SHOT_KEYS = ["imgs", "preImgs"];
+const shotIds = (t) => SHOT_KEYS.flatMap((k) => t[k] || []);
 /* the journal's own fields on a trade (crypto), each kept only when it is filled in and makes sense:
-   tp = how far the full TP is from the entry in %, tf = time frame, risk = % of the account, lev = leverage,
-   rr = the R it made or lost, dur = how long it ran (as typed), pre = the plan before, note = the description after */
+   tp = how far the full TP is from the entry in %, risk = how far the stop is from the entry in % (the risk of that
+   one trade, not the share of the account he risks), both to three decimals; tf = time frame, lev = leverage,
+   rr = the R it made or lost, dur = how long it ran (as typed), pre = the plan before, note = the description after,
+   imgs = the pictures attached (their ids, see "pictures on a trade"), preImgs = the pictures on the setup (11 October
+   2026: "put photos on pre notes on all trading apps"), kept apart from the trade's own */
 const TF_LIST = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1D"];
+// each time frame has a muted colour of its own, cool for the short ones and warm for the long (he asked for the boxes to differ)
+const TF_TINT = ["#8fd0d6", "#8fc4e0", "#9db4ea", "#b3a6e8", "#cfa0dc", "#e0a3bd", "#e3b08f", "#d9c486"];
+const TF_LONG = "#b7cf9a";                                 // anything longer than a day
+const TF_UNIT = { m: 1, h: 60, D: 1440, W: 10080, M: 43200 };
+// a time frame as he types it ("45m", "2H", "3 d", "1w"; a capital M is a month), in the list's own spelling, or ""
+const tfClean = (s) => {
+  const m = /^\s*(\d{1,3})\s*([mhHdDwWM])\s*$/.exec(String(s ?? ""));
+  if (!m || !+m[1]) return "";
+  return `${+m[1]}${m[2] === "m" || m[2] === "M" ? m[2] : m[2] === "h" || m[2] === "H" ? "h" : m[2].toUpperCase()}`;
+};
+const tfMin = (tf) => parseInt(tf, 10) * TF_UNIT[tf.slice(-1)];
+// one of his own takes the colour of the listed one nearest to it in length
+const tfTint = (tf) => {
+  const at = TF_LIST.indexOf(tf);
+  if (at >= 0) return TF_TINT[at];
+  const min = tfMin(tf);
+  if (!(min > 0)) return TF_TINT[0];
+  if (min > 1440) return TF_LONG;
+  let best = 0;
+  TF_LIST.forEach((t, i) => { if (Math.abs(Math.log(tfMin(t) / min)) < Math.abs(Math.log(tfMin(TF_LIST[best]) / min))) best = i; });
+  return TF_TINT[best];
+};
+/* the IDX journal's own tags (6 October 2026): how the trade was held, and the stock's sector. The sector is read from
+   the ticker (IDX_SECTOR_OF, the names he is likely to trade) unless he picks one himself; a ticker it doesn't know stays
+   untagged until he does. Both are there for the Breakdown card: "Bank · 18 trades · 67% win rate · +Rp8,2jt" */
+const IDX_STYLES = [["intraday", "Intraday"], ["swing", "Swing"], ["position", "Position"], ["invest", "Investment"]];
+const IDX_STYLE_NAME = Object.fromEntries(IDX_STYLES);
+const IDX_SECTORS = ["Bank", "Finance", "Energy", "Mining", "Consumer", "Tech", "Telco", "Property", "Infra", "Industrial", "Health", "Transport"];
+// the stocks it knows: ticker|company, by sector. The company is written without its "PT … Tbk", which every one carries
+const IDX_BOOK = {
+  Bank: "BBCA|Bank Central Asia;BBRI|Bank Rakyat Indonesia (Persero);BMRI|Bank Mandiri (Persero);BBNI|Bank Negara Indonesia (Persero);BRIS|Bank Syariah Indonesia;BBTN|Bank Tabungan Negara (Persero);BNGA|Bank CIMB Niaga;BDMN|Bank Danamon Indonesia;PNBN|Bank Pan Indonesia;NISP|Bank OCBC NISP;BJBR|Bank Pembangunan Daerah Jawa Barat dan Banten;BJTM|Bank Pembangunan Daerah Jawa Timur;ARTO|Bank Jago;BBYB|Bank Neo Commerce;BTPS|Bank BTPN Syariah;MEGA|Bank Mega;BNLI|Bank Permata;BBKP|Bank KB Bukopin;AGRO|Bank Raya Indonesia;BANK|Bank Aladin Syariah;BBHI|Allo Bank Indonesia;BGTG|Bank Ganesha",
+  Finance: "ADMF|Adira Dinamika Multi Finance;BFIN|BFI Finance Indonesia;CFIN|Clipan Finance Indonesia;PNLF|Panin Financial;SMMA|Sinar Mas Multiartha;TUGU|Asuransi Tugu Pratama Indonesia;SRTG|Saratoga Investama Sedaya;PANS|Panin Sekuritas;TRIM|Trimegah Sekuritas Indonesia",
+  Energy: "ADRO|Alamtri Resources Indonesia;ITMG|Indo Tambangraya Megah;PTBA|Bukit Asam;BUMI|Bumi Resources;INDY|Indika Energy;HRUM|Harum Energy;MEDC|Medco Energi Internasional;PGAS|Perusahaan Gas Negara;AKRA|AKR Corporindo;ELSA|Elnusa;ENRG|Energi Mega Persada;BYAN|Bayan Resources;DSSA|Dian Swastatika Sentosa;ADMR|Alamtri Minerals Indonesia;BREN|Barito Renewables Energy;PGEO|Pertamina Geothermal Energy;RAJA|Rukun Raharja;TOBA|TBS Energi Utama;GEMS|Golden Energy Mines;DOID|BUMA Internasional Grup;BSSR|Baramulti Suksessarana;MBAP|Mitrabara Adiperdana;CUAN|Petrindo Jaya Kreasi;RATU|Raharja Energi Cepu;AADI|Adaro Andalan Indonesia;KKGI|Resource Alam Indonesia;PTRO|Petrosea",
+  Mining: "ANTM|Aneka Tambang;INCO|Vale Indonesia;MDKA|Merdeka Copper Gold;TINS|Timah;AMMN|Amman Mineral Internasional;BRMS|Bumi Resources Minerals;MBMA|Merdeka Battery Materials;NCKL|Trimegah Bangun Persada;HRTA|Hartadinata Abadi;PSAB|J Resources Asia Pasifik;ARCI|Archi Indonesia;NICL|PAM Mineral;ZINC|Kapuas Prima Coal;DKFT|Central Omega Resources",
+  Consumer: "UNVR|Unilever Indonesia;ICBP|Indofood CBP Sukses Makmur;INDF|Indofood Sukses Makmur;MYOR|Mayora Indah;GGRM|Gudang Garam;HMSP|Hanjaya Mandala Sampoerna;CPIN|Charoen Pokphand Indonesia;JPFA|Japfa Comfeed Indonesia;ULTJ|Ultrajaya Milk Industry & Trading Company;AMRT|Sumber Alfaria Trijaya;MAPI|Mitra Adiperkasa;ACES|Aspirasi Hidup Indonesia;ERAA|Erajaya Swasembada;LPPF|Matahari Department Store;RALS|Ramayana Lestari Sentosa;MIDI|Midi Utama Indonesia;CMRY|Cisarua Mountain Dairy;GOOD|Garudafood Putra Putri Jaya;ROTI|Nippon Indosari Corpindo;CLEO|Sariguna Primatirta;MAPA|Map Aktif Adiperkasa;AALI|Astra Agro Lestari;LSIP|PP London Sumatra Indonesia;TBLA|Tunas Baru Lampung;SIMP|Salim Ivomas Pratama;WIIM|Wismilak Inti Makmur;STTP|Siantar Top;SCMA|Surya Citra Media;MNCN|Media Nusantara Citra",
+  Tech: "GOTO|GoTo Gojek Tokopedia;BUKA|Bukalapak.com;EMTK|Elang Mahkota Teknologi;DCII|DCI Indonesia;MTDL|Metrodata Electronics;BELI|Global Digital Niaga;DMMX|Digital Mediatama Maxima;MLPT|Multipolar Technology;WIRG|WIR Asia;GLVA|Galva Technologies",
+  Telco: "TLKM|Telkom Indonesia (Persero);ISAT|Indosat;EXCL|XLSMART Telecom Sejahtera;TOWR|Sarana Menara Nusantara;TBIG|Tower Bersama Infrastructure;MTEL|Dayamitra Telekomunikasi;FREN|Smartfren Telecom;SUPR|Solusi Tunas Pratama;WIFI|Solusi Sinergi Digital;LINK|Link Net",
+  Property: "BSDE|Bumi Serpong Damai;CTRA|Ciputra Development;PWON|Pakuwon Jati;SMRA|Summarecon Agung;ASRI|Alam Sutera Realty;LPKR|Lippo Karawaci;PANI|Pantai Indah Kapuk Dua;DMAS|Puradelta Lestari;APLN|Agung Podomoro Land;KIJA|Kawasan Industri Jababeka;BEST|Bekasi Fajar Industrial Estate;MKPI|Metropolitan Kentjana;CBDK|Bangun Kosambi Sukses",
+  Infra: "JSMR|Jasa Marga (Persero);WIKA|Wijaya Karya (Persero);PTPP|PP (Persero);ADHI|Adhi Karya (Persero);WSKT|Waskita Karya (Persero);SMGR|Semen Indonesia (Persero);INTP|Indocement Tunggal Prakarsa;SMBR|Semen Baturaja;WTON|Wijaya Karya Beton;TOTL|Total Bangun Persada;ACST|Acset Indonusa;META|Nusantara Infrastructure",
+  Industrial: "ASII|Astra International;UNTR|United Tractors;AUTO|Astra Otoparts;SRIL|Sri Rejeki Isman;IMAS|Indomobil Sukses Internasional;INKP|Indah Kiat Pulp & Paper;TKIM|Pabrik Kertas Tjiwi Kimia;BRPT|Barito Pacific;TPIA|Chandra Asri Pacific;SMSM|Selamat Sempurna;ARNA|Arwana Citramulia;MARK|Mark Dynamics Indonesia;IMPC|Impack Pratama Industri;ISSP|Steel Pipe Industry of Indonesia;KRAS|Krakatau Steel (Persero);ESSA|ESSA Industries Indonesia;AVIA|Avia Avian",
+  Health: "KLBF|Kalbe Farma;SIDO|Industri Jamu dan Farmasi Sido Muncul;KAEF|Kimia Farma;MIKA|Mitra Keluarga Karyasehat;HEAL|Medikaloka Hermina;SILO|Siloam International Hospitals;PRDA|Prodia Widyahusada;INAF|Indofarma;TSPC|Tempo Scan Pacific;PYFA|Pyridam Farma",
+  Transport: "GIAA|Garuda Indonesia (Persero);BIRD|Blue Bird;ASSA|Adi Sarana Armada;SMDR|Samudera Indonesia;TMAS|Temas;BLTA|Berlian Laju Tanker;ELPI|Pelayaran Nasional Ekalya Purnamasari;HATM|Habco Trans Maritima",
+};
+const IDX_SECTOR_OF = {}, IDX_NAME = {};
+for (const sec in IDX_BOOK) IDX_BOOK[sec].split(";").forEach((row) => { const [tk, name] = row.split("|"); IDX_SECTOR_OF[tk] = sec; IDX_NAME[tk] = `PT ${name} Tbk`; });
+const sectorOf = (t) => t.sec || IDX_SECTOR_OF[t.pair] || "";
+const stockWorth = (lots, price) => (Number(lots) > 0 && Number(price) > 0 ? Math.round(Number(lots) * 100 * Number(price)) : 0);     // a lot is 100 shares
+/* forex (8 October 2026), in MetaTrader's words. Pips are worked out, never typed, and only for a pair of two
+   currencies it knows: a pip is 0.01 where the yen is quoted and 0.0001 otherwise. Metals, indices and anything else
+   have no pip everybody agrees on, so none is shown for them. */
+const FX_CCY = ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SGD", "HKD", "NOK", "SEK", "DKK", "MXN", "ZAR", "PLN", "TRY", "CNH"];
+const fxPip = (pair) => {
+  const m = /^([A-Z]{3})\/?([A-Z]{3})/.exec(String(pair || ""));
+  return m && m[1] !== m[2] && FX_CCY.includes(m[1]) && FX_CCY.includes(m[2]) ? (m[2] === "JPY" ? 0.01 : 0.0001) : 0;
+};
+// how many pips a trade made (a minus: lost), from its open and close price; null when it can't be said
+const fxPips = (t) => {
+  const pip = fxPip(t.pair), o = Number(t.open), c = Number(t.close);
+  return pip && o > 0 && c > 0 ? roundTo(((c - o) / pip) * (t.side === "short" ? -1 : 1), 1) : null;
+};
+const pipsText = (p) => `${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p).toFixed(1)}`;
+// what MetaTrader shows as a trade's Profit: its result before the swap and the commission, which pnl already holds
+const fxGross = (t) => roundTo((Number(t.pnl) || 0) - (Number(t.swap) || 0) - (Number(t.comm) || 0), 2);
+const SHOT_MAX = 6;                                        // pictures on one trade
+const shotIdOk = (s) => typeof s === "string" && /^(ph:\d{1,9}|[a-z0-9-]{6,40})$/.test(s);
 const journalOf = (it) => {
   const o = {};
-  for (const [k, max] of [["tp", 1e5], ["risk", 100], ["lev", 1000], ["rr", 1000]]) {
+  for (const [k, max, dp] of [["tp", 1e5, 3], ["risk", 100, 3], ["lev", 1000, 2], ["rr", 1000, 2]]) {
     const v = Number(it[k]);
-    if (it[k] !== "" && it[k] != null && Number.isFinite(v) && v > 0) o[k] = roundTo(Math.min(v, max), 2);
+    if (it[k] !== "" && it[k] != null && Number.isFinite(v) && v > 0) o[k] = roundTo(Math.min(v, max), dp);
   }
-  if (TF_LIST.includes(it.tf)) o.tf = it.tf;
+  // the stocks journal's own: lots, the average entry and exit price, style and sector. What the buy and the sell came to
+  // is not kept: it is lots × 100 × the price (stockWorth), so the three can never disagree. A value typed before 6 October
+  // 2026, when the two had boxes of their own, is dropped here
+  for (const [k, max] of [["lots", 1e7], ["entry", 1e9], ["exit", 1e9]]) {
+    const v = Number(it[k]);
+    if (it[k] !== "" && it[k] != null && Number.isFinite(v) && v > 0) o[k] = Math.round(Math.min(v, max));
+  }
+  // the forex journal's own: the volume in lots, the open and the close price, S/L and T/P as prices, and the swap and
+  // the commission (a cost, so always a minus). Those two are already inside the trade's pnl
+  for (const [k, max, dp] of [["vol", 1e4, 2], ["open", 1e7, 6], ["close", 1e7, 6], ["sl", 1e7, 6], ["tpp", 1e7, 6]]) {
+    const v = Number(it[k]);
+    if (it[k] !== "" && it[k] != null && Number.isFinite(v) && v > 0) o[k] = roundTo(Math.min(v, max), dp);
+  }
+  for (const k of ["swap", "comm"]) {
+    const v = roundTo(Math.max(-1e7, Math.min(Number(it[k]) || 0, 1e7)), 2);
+    if (it[k] !== "" && it[k] != null && v) o[k] = k === "comm" ? -Math.abs(v) : v;
+  }
+  if (IDX_STYLE_NAME[it.style]) o.style = it.style;
+  if (IDX_SECTORS.includes(it.sec)) o.sec = it.sec;
+  const tf = tfClean(it.tf);
+  if (tf) o.tf = tf;
   for (const [k, max] of [["dur", 16], ["pre", 400], ["note", 4000]]) {
     if (typeof it[k] === "string" && it[k].trim()) o[k] = it[k].trim().slice(0, max);
+  }
+  for (const k of SHOT_KEYS) {
+    const list = Array.isArray(it[k]) ? [...new Set(it[k].filter(shotIdOk))].slice(0, SHOT_MAX) : [];
+    if (list.length) o[k] = list;
   }
   return o;
 };
@@ -2216,43 +4390,76 @@ const migrateTrades = (t, dp) => {
       id: it.id || uid(), pnl: Math.max(-MAX_PNL * 1e4, Math.min(MAX_PNL * 1e4, roundTo(Number(it.pnl), dp))),
       pair: pairName(it.pair), side: it.side === "short" ? "short" : "long",
       ...journalOf(it),
+      ...(it.be && Number(it.pnl) !== 0 ? { be: true } : {}),     // marked break-even though it closed a few dollars off
       ...(it.test ? { test: true } : {}),
     }));
     if (items.length) out[k] = items;
   }
   return out;
 };
+// money put into the trading account, or taken out of it (a minus), by day: "2026-10-02" -> [{ id, amt }]
+const migrateDeps = (d, dp) => {
+  const out = {};
+  if (!d || typeof d !== "object") return out;
+  for (const k in d) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || !Array.isArray(d[k])) continue;
+    const items = d[k].filter((it) => it && typeof it === "object" && Number.isFinite(Number(it.amt)) && Number(it.amt) !== 0)
+      .map((it) => ({ id: it.id || uid(), amt: Math.max(-MAX_PNL * 1e4, Math.min(MAX_PNL * 1e4, roundTo(Number(it.amt), dp))) }));
+    if (items.length) out[k] = items;
+  }
+  return out;
+};
+const NO_DEPS = [];
+// the balance as saved: what he typed (never less than nothing), the day he typed it, and the moment
+const cleanBal = (b) => (b && typeof b === "object" && Number.isFinite(b.v) && b.v >= 0 && b.v <= 2 * MAX_AMOUNT && /^\d{4}-\d{2}-\d{2}$/.test(b.at)
+  ? { v: b.v, at: b.at, ts: Number.isFinite(b.ts) ? b.ts : 8.64e15 } : null);
+// was this entry already part of the balance when it was typed? Anything for an earlier day, and what had been logged
+// for that same day by then (an entry's id begins with the moment it was made). Whatever came after moves the balance
+const inBal = (mark, day, id) => day < mark.at || (day === mark.at && !(parseInt(id, 10) > mark.ts));
 
 // totals of a list of trades, added onto `acc`. profit and loss are both kept as positive sums
 const newTally = () => ({ n: 0, wins: 0, losses: 0, profit: 0, loss: 0, pnl: 0 });
 const tally = (list, acc = newTally()) => {
   for (const t of list) {
     acc.n++; acc.pnl += t.pnl;
-    if (t.pnl > 0) { acc.wins++; acc.profit += t.pnl; } else if (t.pnl < 0) { acc.losses++; acc.loss -= t.pnl; }   // 0 = break-even: a trade, neither won nor lost
+    // a break-even trade is a trade, neither won nor lost: one at exactly 0, or one he marked break-even with the few
+    // dollars it closed at (be). Those dollars still count in the sums
+    if (t.be) { if (t.pnl > 0) acc.profit += t.pnl; else acc.loss -= t.pnl; }
+    else if (t.pnl > 0) { acc.wins++; acc.profit += t.pnl; } else if (t.pnl < 0) { acc.losses++; acc.loss -= t.pnl; }
   }
+  // cents added up as they are drift (0.1 + 0.2 - 0.3 is not 0), and a day that came to nothing then read as a green one
+  acc.pnl = roundTo(acc.pnl, 2); acc.profit = roundTo(acc.profit, 2); acc.loss = roundTo(acc.loss, 2);
   return acc;
 };
-// one month: its totals, each day's own totals (null for a day without trades), and its green and red days
+// one month: its totals, each day's own totals (null for a day without trades), and its green and red days.
+// up / down are what the bar is drawn from, both positive: what the green days made and what the red days lost, by each
+// day's net result (the year: its green and red months). It used to be winning against losing trades, which left green
+// in the bar of a month that was red on every day
 const cryptoMonth = (trades, y, m) => {
   const dim = new Date(y, m + 1, 0).getDate();
-  const tot = { ...newTally(), days: [], greenDays: 0, greenSum: 0, redDays: 0, redSum: 0 };
+  const tot = { ...newTally(), days: [], greenDays: 0, greenSum: 0, redDays: 0, redSum: 0, up: 0, down: 0 };
   for (let d = 1; d <= dim; d++) {
     const list = trades[keyOf(y, m, d)];
     if (!list || !list.length) { tot.days.push(null); continue; }
     const day = tally(list);
     tally(list, tot);
     tot.days.push(day);
-    if (day.pnl >= 0) { tot.greenDays++; tot.greenSum += day.pnl; } else { tot.redDays++; tot.redSum += day.pnl; }
+    // a day that ended on exactly zero is neither (the tile is yellow)
+    if (day.pnl > 0) { tot.greenDays++; tot.greenSum += day.pnl; } else if (day.pnl < 0) { tot.redDays++; tot.redSum += day.pnl; }
   }
+  tot.greenSum = roundTo(tot.greenSum, 2); tot.redSum = roundTo(tot.redSum, 2);
+  tot.up = tot.greenSum; tot.down = Math.abs(tot.redSum);
   return tot;
 };
 const cryptoYear = (trades, y) => {
-  const tot = { ...newTally(), months: [] };
+  const tot = { ...newTally(), months: [], up: 0, down: 0 };
   for (let m = 0; m < 12; m++) {
     const ms = cryptoMonth(trades, y, m);
     tot.months.push(ms);
     tot.n += ms.n; tot.wins += ms.wins; tot.losses += ms.losses; tot.profit += ms.profit; tot.loss += ms.loss; tot.pnl += ms.pnl;
+    if (ms.pnl > 0) tot.up += ms.pnl; else if (ms.pnl < 0) tot.down -= ms.pnl;
   }
+  for (const k of ["profit", "loss", "pnl", "up", "down"]) tot[k] = roundTo(tot[k], 2);
   return tot;
 };
 
@@ -2295,12 +4502,12 @@ const shortIn = (cur, amount) => {
     : v >= 1e4 ? `${CUR_SIGN[cur]}${+(v / 1e3).toFixed(1)}k` : exactIn(cur, v);
 };
 
-const CurRoll = ({ idx }) => {
+const CurRoll = ({ idx, usd }) => {      // usd: what the dollar is called on this side (USDT, or USD on forex)
   const h = 17;
   return (
     <span style={{ display: "inline-block", height: h, overflow: "hidden", verticalAlign: "top", lineHeight: `${h}px` }}>
       <span style={{ display: "block", transform: `translateY(${-idx * h}px)`, transition: "transform .42s cubic-bezier(0.32,0.72,0.24,1)" }}>
-        {CUR_LIST.map((c) => <span key={c} style={{ display: "block", height: h }}>{c}</span>)}
+        {CUR_LIST.map((c) => <span key={c} style={{ display: "block", height: h }}>{c === "USDT" && usd ? usd : c}</span>)}
       </span>
     </span>
   );
@@ -2310,7 +4517,7 @@ const CurRoll = ({ idx }) => {
    for the box to move, not to vanish and come back). Only transforms move: the box is two rounded pieces, each as
    wide as the whole switch, one clipping the other. The outer one slides to the choice's left edge; the inner one
    slides back inside it until its right end is on the choice's right edge. What shows is where the two overlap. */
-const SlideSeg = ({ options, value, onPick, style }) => {
+const SlideSeg = ({ options, value, onPick, style, cls = "" }) => {     // cls must never change: "go" is put on the element by hand, and a rewritten class name would take it off
   const wrap = useRef(null), box = useRef(null), fill = useRef(null);
   useLayoutEffect(() => {
     const el = wrap.current, on = el.querySelector("button.on");
@@ -2321,9 +4528,9 @@ const SlideSeg = ({ options, value, onPick, style }) => {
     if (!el.classList.contains("go")) requestAnimationFrame(() => el.classList.add("go"));
   }, [value]);
   return (
-    <span className="wr-seg slide" style={style} ref={wrap}>
+    <span className={`wr-seg slide ${cls}`} style={style} ref={wrap}>
       <span className="seg-box" ref={box}><span className="seg-fill" ref={fill} /></span>
-      {options.map(([v, label]) => <button key={v} className={v === value ? "on" : ""} onClick={() => onPick(v)}>{label}</button>)}
+      {options.map(([v, label, title]) => <button key={v} className={v === value ? "on" : ""} title={title} onClick={() => onPick(v)}>{label}</button>)}
     </span>
   );
 };
@@ -2406,6 +4613,10 @@ const QuoteChip = ({ quote, text, change, onPick }) => {
    - the margin (IM) is $1 whenever it can be, so the leverage is the size itself, to two decimals, never under 1x
      and never over the maximum
    - where the leverage is held at 1x or at the maximum, the margin gives instead: IM = size / leverage, to three decimals
+   - the IM can be typed instead (9 October 2026: "make me able to change IM manually"): the leverage is then the size
+     over that IM, held between 1x and the maximum as before. The IM stays exactly as typed when the leverage's two
+     decimals leave the stop within 0.05% of the risk; otherwise it gives like the automatic one (the stop still loses
+     the risk) and a note in the results says what it became and why. No IM given: the $1 rule above
    Everything shown is then worked out again from that rounded leverage and margin, the two numbers that get typed
    into the exchange, so the figures are what the position will really do.
    Targets are taken in the order the price reaches them, nearest to the entry first, whatever order they were typed
@@ -2450,7 +4661,7 @@ const arrangeTargets = (f) => {
   slots.forEach((i, k) => { tps[i].price = texts[k]; });
   return { ...f, tps, full: hasFull ? texts[texts.length - 1] : f.full };
 };
-const calcPosition = ({ entry, sl, risk, maxLev, tps = [], fullTp = 0, fullText, side }) => {
+const calcPosition = ({ entry, sl, risk, maxLev, tps = [], fullTp = 0, fullText, side, im = null }) => {
   const errors = [];
   const err = (fields, msg) => errors.push({ fields, msg });
   if (!(entry > 0)) err(["entry"], "Entry is missing.");
@@ -2460,6 +4671,7 @@ const calcPosition = ({ entry, sl, risk, maxLev, tps = [], fullTp = 0, fullText,
   if (!(maxLev > 0)) err(["maxLev"], "Max leverage is missing.");
   else if (maxLev < 1) err(["maxLev"], "Max leverage can't be under 1x.");
   else if (maxLev > CALC_MAX_LEV) err(["maxLev"], `Max leverage is over ${CALC_MAX_LEV}x. Check the number.`);
+  if (im !== null && !(im > 0)) err(["im"], "IM is 0. Give it an amount, or empty the box to have it worked out.");
   if (!(entry > 0)) return { errors };
 
   // which way the trade goes: locked by hand, or read from the levels. The targets decide; the stop settles a tie
@@ -2491,9 +4703,13 @@ const calcPosition = ({ entry, sl, risk, maxLev, tps = [], fullTp = 0, fullText,
   const slDist = -move(sl);
   const want = risk / slDist;                                     // the size that loses exactly the risk at the stop
   if (want < 0.0005) return { errors: [{ fields: ["risk"], msg: "Risk $ is too small for this stop: no position is that small." }], long: dir > 0, auto };
+  // The leverage comes from the risk alone. An IM typed by hand (what the exchange really took: Bybit won't take the
+  // exact figure) never moves it: the position is that IM at that leverage, and what the stop then loses is handed
+  // back as `risk`, more or less than the risk typed
   const lev = roundTo(Math.min(Math.max(want / CALC_IM, 1), maxLev), 2);
-  const im = Math.max(roundTo(want / lev, 3), 0.001);
-  const size = im * lev;
+  const margin = im > 0 ? im : Math.max(roundTo(want / lev, 3), 0.001);     // worked out: the margin that, with that leverage, loses the risk at the stop
+  const size = margin * lev;
+  const notes = [];
   let open = 100;                                                 // % of the position still open
   const targets = orderTargets(entry, tps, fullTp, fullText).map((t, k) => {
     const close = t.slot === "full" ? open : Math.min(t.close, open);
@@ -2508,17 +4724,96 @@ const calcPosition = ({ entry, sl, risk, maxLev, tps = [], fullTp = 0, fullText,
   if (targets.length > 1) rr.push({ label: `${targets.map((t) => +t.close.toFixed(2)).join("/")} partials`, profit: total });
   if (last) rr.push({ label: "100% → Full TP", profit: last.full });
   return {
-    errors, long: dir > 0, auto, lev, im, size, qty: size / entry, slMove: -slDist, risk: lossAtSl,
+    errors, long: dir > 0, auto, lev, im: margin, size, qty: size / entry, slMove: -slDist, risk: lossAtSl, notes,
     targets, partials: Math.max(0, targets.length - 1), total, split: targets.map((t) => `${+t.close.toFixed(2)}%`).join(" / "),
     rr: rr.map((r) => ({ ...r, ratio: r.profit / lossAtSl })),
   };
 };
 
+/* ---------- forex calculator: the maths (8 October 2026) ----------
+   The crypto calculator's pop-up, sized the way MetaTrader trades. What differs:
+   - A position is a volume in lots: 0.01 at the least, in steps of 0.01. It is the largest volume that loses no more
+     than the risk at the stop, so the stop's real loss is the risk or a little under it, never over.
+   - One lot is 100,000 of a pair's base currency, 100 ounces of gold (XAU), 5,000 of silver (XAG). For anything else
+     (an index, oil, a coin) he says how many units a lot is: it differs from broker to broker, so it is never guessed.
+   - A pair's profit is made in the currency it is quoted in, and is turned into dollars as MetaTrader does it:
+     quoted in dollars (EURUSD, XAUUSD) it is dollars already; where the dollar is the base (USDJPY) it is divided by
+     the price the position is closed at; on a cross (EURJPY, EURGBP) it goes through the dollar rate of the quote
+     currency (USDJPY, GBPUSD), which he types: the app fetches no forex prices.
+   - Partial targets close whole hundredths of a lot, the last target whatever is left.
+   - The leverage is the account's (1:100 is 100) and only says what margin the position ties up; it may be left empty.
+   The checks of the levels, the side read from them and the order of the targets are calcPosition's own. */
+const FX_LOT = { XAU: 100, XAG: 5000 };
+const FX_USD_SECOND = ["EUR", "GBP", "AUD", "NZD"];     // their dollar pair is written with the dollar second (GBPUSD); every other one's with the dollar first (USDJPY)
+const fxSpec = (sym) => {
+  const m = /^([A-Z]{3})([A-Z]{3})/.exec(String(sym || ""));
+  const lot = m && m[1] !== m[2] && FX_CCY.includes(m[2]) ? (FX_CCY.includes(m[1]) ? 1e5 : FX_LOT[m[1]] || 0) : 0;
+  if (!lot) return { known: false, lot: 0, kind: "usd", quote: "USD", via: "", pip: 0 };
+  const q = m[2], kind = q === "USD" ? "usd" : m[1] === "USD" ? "inv" : "cross";
+  return { known: true, lot, kind, quote: q, via: kind !== "cross" ? "" : FX_USD_SECOND.includes(q) ? `${q}USD` : `USD${q}`, pip: fxPip(sym) };
+};
+const calcForex = ({ pair, rate, contract, lev, ...inp }) => {
+  const r = calcPosition({ ...inp, maxLev: 100 });
+  const spec = fxSpec(pair), errors = [...r.errors];
+  const err = (fields, msg) => errors.push({ fields, msg });
+  if (!spec.known && !(contract > 0)) err(["contract"], "The contract size is missing: how many units 1 lot of this symbol is. Its specification in MetaTrader says.");
+  if (spec.kind === "cross" && !(rate > 0)) err(["rate"], `The ${spec.via} rate is missing: this pair's profit is made in ${spec.quote}, so its dollars depend on it.`);
+  if (lev > 5000) err(["maxLev"], "Leverage is over 1:5000. Check the number.");
+  if (errors.length || !r.targets) return { ...r, errors, spec };
+  const { entry, sl, risk } = inp, dir = r.long ? 1 : -1, lot = spec.known ? spec.lot : contract;
+  // one unit of the quote currency in dollars, for a position closed at `price`
+  const usd = (price) => (spec.kind === "inv" ? 1 / price : spec.kind === "cross" ? (spec.via.startsWith("USD") ? 1 / rate : rate) : 1);
+  const pl = (vol, price) => vol * lot * (price - entry) * dir * usd(price);
+  const perLot = -pl(1, sl);                                        // what one lot loses at the stop
+  const lots = Math.floor((risk / perLot) * 100 + 1e-7) / 100;
+  if (lots < 0.01) return { errors: [{ fields: ["risk"], msg: `Risk $ is too small for this stop: the smallest volume, 0.01 lot, would lose $${NF2.format(perLot * 0.01)}.` }], long: r.long, auto: r.auto, spec };
+  let left = lots;
+  const notes = [];
+  const targets = r.targets.map((t, k) => {
+    const vol = k === r.targets.length - 1 ? left : Math.min(left, Math.floor(((lots * t.close) / 100) * 100 + 1e-7) / 100);
+    left = roundTo(left - vol, 2);
+    if (!vol) notes.push(`${t.label} would close less than 0.01 lot, so nothing is closed there.`);
+    return { ...t, vol, full: pl(lots, t.price), pnl: pl(vol, t.price), close: (vol / lots) * 100, open: (left / lots) * 100,
+             pips: spec.pip ? ((t.price - entry) / spec.pip) * dir : null };
+  });
+  const lossAtSl = -pl(lots, sl), total = targets.reduce((s, t) => s + t.pnl, 0), last = targets[targets.length - 1];
+  const rr = [];
+  if (targets.length > 1) rr.push({ label: `${targets.map((t) => +t.close.toFixed(1)).join("/")} partials`, profit: total });
+  if (last) rr.push({ label: "100% → Full TP", profit: last.full });
+  const size = lots * lot * entry * usd(entry);                     // what the position is worth, in dollars
+  return {
+    errors, long: r.long, auto: r.auto, spec, lots, units: lots * lot, size, margin: lev > 0 ? size / lev : null,
+    pipVal: spec.pip ? lots * lot * spec.pip * usd(entry) : null, slMove: r.slMove, slPips: spec.pip ? -Math.abs(entry - sl) / spec.pip : null, risk: lossAtSl,
+    targets, partials: Math.max(0, targets.length - 1), total, split: targets.map((t) => `${+t.close.toFixed(1)}%`).join(" / "),
+    rr: rr.map((x) => ({ ...x, ratio: x.profit / lossAtSl })), notes,
+  };
+};
+/* The targets of a made-up trade ("Test levels", all calculators; 11 October 2026: its targets were always the same two,
+   with whatever stood in their % boxes, so an emptied box gave "TP1 closes 0%"). One to five partial targets, never as
+   many as the time before, each further out than the one before (`move`, in stop distances) and closing a share of its
+   own: multiples of 5 that leave every later target and the full TP 10% at least. */
+const testTargets = (was) => {
+  let n;
+  do { n = 1 + Math.floor(Math.random() * 5); } while (n === was);
+  const list = [];
+  let move = 1 + Math.random() * 0.8, left = 100;
+  for (let i = 0; i < n; i++) {
+    const most = Math.min(50, left - 10 * (n - i));
+    const close = 5 * (2 + Math.floor(Math.random() * (Math.floor(most / 5) - 1)));
+    list.push({ move, close: String(close) });
+    left -= close; move += 0.5 + Math.random() * 0.9;
+  }
+  return { list, full: move + 0.6 + Math.random() * 1.4 };
+};
+// made-up levels for the forex "Test levels" button: [symbol, a price it trades near, decimals, the rate of its quote currency's dollar pair for a cross]
+const CALC_TEST_FX = [["EURUSD", 1.085, 5], ["GBPUSD", 1.27, 5], ["AUDUSD", 0.66, 5], ["USDJPY", 150, 3], ["USDCHF", 0.88, 5], ["XAUUSD", 2650, 2], ["EURJPY", 162, 3, "150"], ["GBPJPY", 190, 3, "150"], ["EURGBP", 0.85, 5, "1.27"]];
+
 /* ---------- position calculator: the pop-up ---------- */
 // made-up levels for the "Test levels" button: [coin, a price it trades near, decimals of its price, its max leverage]
 const CALC_TEST_COINS = [["BTC", 118400, 1, 125], ["ETH", 4320, 2, 100], ["SOL", 182, 2, 75], ["AVAX", 11.09, 3, 75], ["DOGE", 0.2413, 5, 75],
                          ["XRP", 2.843, 4, 75], ["SUI", 3.512, 4, 50], ["LINK", 21.77, 3, 50], ["PEPE", 0.00001234, 8, 50], ["HYPE", 48.2, 3, 20]];
-const CALC_BLANK = { coin: "", side: "", entry: "", sl: "", risk: "", riskCur: "USDT", maxLev: "", tps: [{ price: "", close: "25" }, { price: "", close: "30" }], full: "" };
+// (rate and contract are the forex calculator's own boxes: the dollar rate a cross needs, and the units in a lot of a symbol it doesn't know)
+const CALC_BLANK = { coin: "", side: "", entry: "", sl: "", risk: "", riskCur: "USDT", maxLev: "", im: "", tps: [{ price: "", close: "25" }, { price: "", close: "30" }], full: "", rate: "", contract: "" };
 const CALC_DP = 12;                                  // decimals a price box takes: enough for the smallest coins
 // what was saved from an earlier session, made safe to show again
 const cleanCalc = (c) => {
@@ -2528,8 +4823,8 @@ const cleanCalc = (c) => {
   while (tps.length < 2) tps.push({ price: "", close: CALC_BLANK.tps[tps.length].close });
   const riskCur = CUR_LIST.includes(c.riskCur) ? c.riskCur : "USDT";       // the currency the risk box was left in
   return { coin: str(c.coin).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12), side: c.side === "long" || c.side === "short" ? c.side : "",
-           entry: numIn(str(c.entry), CALC_DP), sl: numIn(str(c.sl), CALC_DP), risk: riskCur === "IDR" ? idrIn(str(c.risk)) : numIn(str(c.risk), 2), riskCur, maxLev: numIn(str(c.maxLev), 2),
-           tps, full: numIn(str(c.full), CALC_DP) };
+           entry: numIn(str(c.entry), CALC_DP), sl: numIn(str(c.sl), CALC_DP), risk: riskCur === "IDR" ? idrIn(str(c.risk)) : numIn(str(c.risk), 2), riskCur, maxLev: numIn(str(c.maxLev), 2), im: numIn(str(c.im), 3),
+           tps, full: numIn(str(c.full), CALC_DP), rate: numIn(str(c.rate), CALC_DP), contract: numIn(str(c.contract), 4) };
 };
 // a quantity without an exponent: 6,583,468 · 7.325 · 0.003122 · 0.000008333
 const qtyText = (q) => {
@@ -2576,7 +4871,91 @@ const useEaseHeight = () => {
   return ref;
 };
 
-const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Click, rateOf, fx, canFetch, onRate, live }) => {
+/* Settings (6 October 2026: he asked for a settings symbol in the footer, between export / import and the test buttons).
+   A small pop-up per side holding what could already be set on that side, some of it until now only by a hidden gesture
+   or behind a calculator's hidden gear: finance has the currency and the daily limit, crypto the currency shown and the
+   exchange rates, stocks the broker's fees. Each line changes the same state through the same function as before, so
+   nothing is kept twice. While it is open no key and no wheel reaches the panels behind: they each keep a list of their
+   own of what is open, and this spares adding to every one of them. */
+const SettingsPop = ({ onClose, children }) => {
+  const [closing, setClosing] = useState(false);
+  const shut = useRef(null);
+  shut.current = () => { if (closing) return; setClosing(true); setTimeout(onClose, 190); };
+  useEffect(() => {
+    const onKey = (e) => { e.stopImmediatePropagation(); if (e.key === "Escape") shut.current(); };
+    const onWheel = (e) => e.stopImmediatePropagation();
+    window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
+  }, []);
+  return (
+    <div style={{ ...S.backdrop, animation: closing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={() => shut.current()}>
+      <div className="glass set-modal" style={{ animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }} onClick={(e) => e.stopPropagation()}>
+        <div style={S.modalHead}>
+          <span style={S.panelTitle}>Settings</span>
+          <button className="x-btn" style={S.closeBtn} onClick={() => shut.current()}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+};
+// a button in the settings that says it has done it, for a moment
+const SetDo = ({ onDo, children }) => {
+  const [done, setDone] = useState(false);
+  useEffect(() => { if (!done) return; const t = setTimeout(() => setDone(false), 1600); return () => clearTimeout(t); }, [done]);
+  return <button className="bk-btn" onClick={() => { onDo(); setDone(true); }}>{done ? "Applied" : children}</button>;
+};
+// a number box in the settings: it shows what is typed while it is being typed, and the value in force again once left
+const SetNum = ({ value, dp, unit, onPick }) => {
+  const [text, setText] = useState(null);
+  return (
+    <span className="set-v">
+      <input className="pc-in set-in" inputMode="decimal" value={text ?? value} onBlur={() => setText(null)}
+             onChange={(e) => { const v = numIn(e.target.value, dp); setText(v); onPick(v); }} />
+      {unit && <i>{unit}</i>}
+    </span>
+  );
+};
+/* Undo and redo for a calculator's boxes (both calculators; 6 October 2026: he asked for the two buttons, small but
+   visible). A step is what the boxes held, and whether the results were showing, before a change. Typing on in the same
+   box without a pause of CALC_UNDO_MS is one step, so an undo takes back a number, not a digit; a button (Clear, Test
+   levels, + Add, ×, Long / Short, a live price taken, Enter's tidying) is always a step of its own. A change that leaves
+   the boxes as they were is no step. Kept for as long as the pop-up is open; ⌘Z and ⇧⌘Z do the same. */
+const CALC_UNDO_MS = 800, CALC_UNDO_MAX = 100;
+const useCalcUndo = (draft, put) => {
+  const h = useRef({ past: [], next: [], at: 0, el: null }).current;
+  const [can, setCan] = useState(0);
+  const now = () => ({ f: draft.current.inputs, shown: draft.current.shown });
+  const sync = () => setCan((h.past.length ? 1 : 0) + (h.next.length ? 2 : 0));
+  // called before a change, with what the boxes are about to hold
+  const note = (next, typed) => {
+    if (JSON.stringify(next) === JSON.stringify(draft.current.inputs)) return;
+    const t = performance.now(), el = document.activeElement;
+    if (!typed || el !== h.el || t - h.at > CALC_UNDO_MS) { h.past.push(now()); if (h.past.length > CALC_UNDO_MAX) h.past.shift(); }
+    h.at = typed ? t : 0; h.el = el; h.next.length = 0; sync();
+  };
+  const step = (from, to) => { if (!from.length) return; to.push(now()); put(from.pop()); h.at = 0; sync(); };
+  return { note, undo: () => step(h.past, h.next), redo: () => step(h.next, h.past), canUndo: (can & 1) > 0, canRedo: (can & 2) > 0 };
+};
+// the two buttons, in the row of helper buttons under the boxes. A press must not take the focus from the box being typed in
+const CalcUndo = ({ hist }) => (
+  <span className="pc-undo" onMouseDown={(e) => e.preventDefault()}>
+    <button className={hist.canUndo ? "" : "off"} tabIndex={-1} onClick={hist.undo} title="Undo (⌘Z)" aria-label="Undo"><span className="msym">undo</span></button>
+    <button className={hist.canRedo ? "" : "off"} tabIndex={-1} onClick={hist.redo} title="Redo (⇧⌘Z)" aria-label="Redo"><span className="msym">redo</span></button>
+  </span>
+);
+// ⌘Z / ⇧⌘Z in a calculator, except in its hidden settings, where the box's own undo is left alone
+const calcUndoKey = (e, hist) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "z") return false;
+  const at = document.activeElement;
+  if (at && at.closest && at.closest(".pc-head")) return false;
+  e.preventDefault();
+  if (e.shiftKey) hist.redo(); else hist.undo();
+  return true;
+};
+// fxm: the forex side's calculator (see calcForex): a symbol, Buy / Sell, lots, the account's leverage, no live price
+const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Click, rateOf, fx, canFetch, onRate, live, fxm }) => {
+  const unit = fxm ? "USD" : "USDT";
   const [f, setF] = useState(draft.current.inputs);
   const [shown, setShown] = useState(draft.current.shown);   // Enter has been pressed once: from then on the results follow the levels as they are typed
   const [strict, setStrict] = useState(false);               // Enter was pressed on levels that can't be right: the errors stay up until they are fixed
@@ -2588,9 +4967,16 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
   const fitRef = useEaseHeight();
   useEffect(() => { formRef.current?.querySelector("input")?.focus(); }, []);
 
-  const update = (next) => { draft.current.inputs = next; setF(next); };
-  const set = (patch) => update({ ...f, ...patch });
-  const setTp = (i, patch) => update({ ...f, tps: f.tps.map((t, k) => (k === i ? { ...t, ...patch } : t)) });
+  // undo puts back what the boxes held. A risk kept in another main currency than the one of now is exchanged on the way
+  const hist = useCalcUndo(draft, (s) => {
+    const from = s.f.riskCur || "USDT", typed = riskOf(from, s.f.risk);
+    const g = from === cur ? s.f : { ...s.f, riskCur: cur, risk: typed > 0 ? riskText(cur, (typed / rateOf(from)) * rateOf(cur)) : s.f.risk };
+    riskUsd.current = null; draft.current.inputs = g; draft.current.shown = s.shown; setF(g); setShown(s.shown); setStrict(false);
+  });
+  // how: "typed" (typing, which undo takes back a number at a time), "quiet" (no step: the currency exchanged), else a step of its own
+  const update = (next, how) => { if (how !== "quiet") hist.note(next, how === "typed"); draft.current.inputs = next; setF(next); };
+  const set = (patch, how = "typed") => update({ ...f, ...patch }, how);
+  const setTp = (i, patch) => update({ ...f, tps: f.tps.map((t, k) => (k === i ? { ...t, ...patch } : t)) }, "typed");
 
   /* The risk is typed in the main currency (Risk $, Risk IDR, Risk MYR). Switching the currency, here or on the panel
      while this was closed, exchanges what is in the box at the rate of the moment; an empty box only changes its label.
@@ -2602,20 +4988,24 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
   useLayoutEffect(() => {
     if (rc === cur) return;
     const typed = riskOf(rc, f.risk);
-    if (!(typed > 0)) { update({ ...f, riskCur: cur }); return; }
+    if (!(typed > 0)) { update({ ...f, riskCur: cur }, "quiet"); return; }
     const usd = riskUsd.current ?? typed / riskRate;
     riskUsd.current = usd;
-    update({ ...f, risk: riskText(cur, usd * rateOf(cur)), riskCur: cur });
+    update({ ...f, risk: riskText(cur, usd * rateOf(cur)), riskCur: cur }, "quiet");
   }, [cur]);
   const riskName = `Risk ${rc === "USDT" ? "$" : rc}`;
-  const say = (msg) => (rc === "USDT" ? msg : msg.replace("Risk $", riskName));       // the maths words its errors in dollars
+  // the maths words its errors in dollars, and in long and short: forex buys and sells
+  const say = (msg) => { const m = fxm ? msg.replace(/\ba long\b/g, "a buy").replace(/\ba short\b/g, "a sell") : msg; return rc === "USDT" ? m : m.replace("Risk $", riskName); };
 
-  const work = (g) => calcPosition({
+  const work = (g) => (fxm ? calcForex : calcPosition)({
     entry: numOf(g.entry), sl: numOf(g.sl), risk: riskOf(rc, g.risk) / riskRate, maxLev: numOf(g.maxLev), side: g.side,
     tps: g.tps.map((t) => ({ price: numOf(t.price), close: numOf(t.close), text: t.price })), fullTp: numOf(g.full), fullText: g.full,
+    ...(fxm ? { pair: g.coin, rate: numOf(g.rate), contract: numOf(g.contract), lev: numOf(g.maxLev) } : { im: g.im ? numOf(g.im) : null }),      // (an empty IM box: worked out)
   });
   const res = useMemo(() => work(f), [f, riskRate]);
   const ok = res.errors.length === 0;
+  // with an IM typed by hand the risk is the answer, not the question: the Risk box then shows what the stop loses
+  const riskAuto = !fxm && !!f.im && ok;
   if (ok) lastGood.current = res;
   // the coin's latest price: grey in the empty entry box, and what Enter takes for an entry left empty
   const quote = useQuote(live, f.coin);
@@ -2644,13 +5034,14 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
     onSaved(tidy, true);
   };
   const clear = () => {
-    update({ ...f, coin: "", side: "", entry: "", sl: "", full: "", tps: f.tps.map((t) => ({ ...t, price: "" })) });
+    update({ ...f, coin: "", side: "", entry: "", sl: "", full: "", rate: "", contract: "", im: "", tps: f.tps.map((t) => ({ ...t, price: "" })) });
     setShown(false); draft.current.shown = false; lastGood.current = null; setStrict(false);
     formRef.current?.querySelector("input")?.focus();
   };
   // Enter calculates wherever the focus is, except in the rate settings and on the corner buttons; Esc steps back out
   const keys = useRef(null);
   keys.current = (e) => {
+    if (calcUndoKey(e, hist)) return;
     if (e.key === "Escape") { if (tools) setTools(false); else close(); return; }
     if (e.key !== "Enter") return;
     const at = document.activeElement;
@@ -2662,15 +5053,21 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // test tool: a made-up trade on a real-looking coin (long or short, a stop 0.6% to 5% away, three targets), calculated at once
+  // test tool: a made-up trade on a real-looking coin (long or short, a stop 0.6% to 5% away, one to five partial targets
+  // and a full TP: testTargets), calculated at once
+  const testN = useRef(0);
   const testLevels = () => {
-    const [coin, near, dp, maxLev] = CALC_TEST_COINS[Math.floor(Math.random() * CALC_TEST_COINS.length)];
+    const list = fxm ? CALC_TEST_FX : CALC_TEST_COINS;
+    const [coin, near, dp, extra] = list[Math.floor(Math.random() * list.length)], maxLev = fxm ? 100 : extra;
     const dir = Math.random() < 0.6 ? 1 : -1;
-    const entry = near * (0.97 + Math.random() * 0.06), stop = 0.006 + Math.random() * 0.044;
+    const entry = near * (0.97 + Math.random() * 0.06), stop = fxm ? 0.001 + Math.random() * 0.005 : 0.006 + Math.random() * 0.044;      // a pair moves far less than a coin
     const at = (move) => (entry * (1 + dir * move)).toFixed(dp);
-    const tps = f.tps.map((t, i) => ({ close: t.close, price: i < 2 ? at(stop * (i ? 2.2 + Math.random() : 1.2 + Math.random() * 0.8)) : "" }));
-    update({ coin, side: "", entry: entry.toFixed(dp), sl: at(-stop), risk: f.risk || riskText(rc, (1 + Math.floor(Math.random() * 9) / 2) * riskRate), riskCur: rc,
-             maxLev: String(maxLev), tps, full: at(stop * (3.4 + Math.random() * 2)) });
+    const made = testTargets(testN.current);
+    testN.current = made.list.length;
+    const tps = made.list.map((t) => ({ price: at(stop * t.move), close: t.close }));
+    while (tps.length < 2) tps.push({ price: "", close: CALC_BLANK.tps[tps.length].close });
+    update({ coin, side: "", entry: entry.toFixed(dp), sl: at(-stop), risk: f.risk || riskText(rc, (fxm ? 50 + Math.floor(Math.random() * 5) * 50 : 1 + Math.floor(Math.random() * 9) / 2) * riskRate), riskCur: rc,
+             maxLev: String(maxLev), im: "", tps, full: at(stop * made.full), rate: fxm && extra ? extra : "", contract: "" });
     setShown(true); draft.current.shown = true; setStrict(false);
   };
   const keepFocus = (e) => e.preventDefault();               // on the helper buttons: a click must not take the focus from the box being typed in
@@ -2695,6 +5092,9 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
   const pct = (m) => `${m >= 0 ? "+" : "-"}${Math.abs(m * 100).toFixed(2)}%`;
   const coin = f.coin || "—";
   const sideWord = res.long === undefined ? "" : res.long ? "long" : "short";
+  const sideName = (s) => (fxm ? (s === "long" ? "buy" : "sell") : s);
+  const now = fxm ? fxSpec(f.coin) : null;                   // what the symbol typed is: a pair it knows, a cross, something else
+  const pips = (p) => `${p >= 0 ? "+" : "−"}${Math.abs(p).toFixed(1)} pips`;
   const manual = fx.manual.IDR || fx.manual.MYR;
   const fxNote = manual ? "Typed by hand. Empty a box to go back to the live rate."
     : fx.live ? `Live rate, fetched ${stampText(fx.live.at)}.`
@@ -2706,12 +5106,12 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
            onClick={(e) => e.stopPropagation()}>
         <div className="pc-head">
           <span style={S.panelTitle}>Calculator</span>
-          <button className="cur-btn" style={{ ...S.currency, marginLeft: 6 }} title="Main currency · click: USDT ⇄ IDR · three quick clicks: MYR" onClick={onCurClick}>
-            <CurRoll idx={CUR_LIST.indexOf(cur)} />
+          <button className="cur-btn" style={{ ...S.currency, marginLeft: 6 }} title={`Main currency · click: ${unit} ⇄ IDR · three quick clicks: MYR`} onClick={onCurClick}>
+            <CurRoll idx={CUR_LIST.indexOf(cur)} usd={unit} />
           </button>
           {panel !== "empty" && (
             <button className="cur-btn pc-cur2" style={{ ...S.currency, marginLeft: 0 }} title="Second currency, shown in brackets" onClick={onCur2Click}>
-              ≈ <CurRoll idx={CUR_LIST.indexOf(cur2)} />
+              ≈ <CurRoll idx={CUR_LIST.indexOf(cur2)} usd={unit} />
             </button>
           )}
           <span className="pc-tools">
@@ -2726,7 +5126,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                 <div className="pc-lab">Exchange rate</div>
                 {["IDR", "MYR"].map((c) => (
                   <div key={c} className="pc-pop-row">
-                    <span>1 USDT =</span>
+                    <span>1 {unit} =</span>
                     <input className="pc-in" inputMode="decimal"
                            value={rateText[c] ?? String(+rateOf(c).toFixed(c === "IDR" ? 2 : 4))}
                            onChange={(e) => { const v = numIn(e.target.value, 4, pasted(e)); setRateText((t) => ({ ...t, [c]: v })); onRate(c, numOf(v)); }} />
@@ -2734,7 +5134,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                   </div>
                 ))}
                 <div className="pc-note">{fxNote}</div>
-                <div className="pc-note">{dataNote(live, "crypto", quote)}</div>
+                <div className="pc-note">{fxm ? "Forex prices are not fetched: the entry and a cross's dollar rate are typed." : dataNote(live, "crypto", quote)}</div>
               </div>
             )}
           </span>
@@ -2743,12 +5143,12 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
         <div className="pc-body" ref={fitRef}>
           <div className="pc-form" ref={formRef}>
             <div className="pc-line">
-              <label>Coin</label>
+              <label>{fxm ? "Symbol" : "Coin"}</label>
               <span className="pc-coin">
-                <input className="pc-in" value={f.coin} placeholder="BTC" spellCheck={false} autoCapitalize="characters"
+                <input className="pc-in" value={f.coin} placeholder={fxm ? "EURUSD" : "BTC"} spellCheck={false} autoCapitalize="characters"
                        onChange={(e) => set({ coin: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) })} />
-                <span className="pc-ghost" aria-hidden="true"><i>{f.coin || "BTC"}</i><b>/USDT.P</b></span>
-                <QuoteChip quote={quote} text={quote.q && quote.q.price.replace(/^\d+/, (w) => NF0.format(Number(w)))} onPick={() => set({ entry: livePrice })}
+                {!fxm && <span className="pc-ghost" aria-hidden="true"><i>{f.coin || "BTC"}</i><b>/USDT.P</b></span>}
+                <QuoteChip quote={quote} text={quote.q && quote.q.price.replace(/^\d+/, (w) => NF0.format(Number(w)))} onPick={() => set({ entry: livePrice }, "step")}
                            change={quote.q && quote.q.chg !== null && f.coin.length <= 5 && `${quote.q.chg >= 0 ? "+" : "-"}${Math.abs(quote.q.chg).toFixed(2)}%`} />
               </span>
             </div>
@@ -2758,9 +5158,9 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
               <span className="pc-side">
                 {["long", "short"].map((s) => (
                   <button key={s} tabIndex={-1} onMouseDown={keepFocus} className={`pc-side-b ${s}${f.side === s ? " on" : !f.side && sideWord === s ? " auto" : ""}`}
-                          title={f.side === s ? `Locked to ${s}. Click to go back to automatic` : `Lock the position to a ${s}`}
-                          onClick={() => set({ side: f.side === s ? "" : s })}>
-                    {s}{!f.side && sideWord === s && <i>auto</i>}
+                          title={f.side === s ? `Locked to ${sideName(s)}. Click to go back to automatic` : `Lock the position to a ${sideName(s)}`}
+                          onClick={() => set({ side: f.side === s ? "" : s }, "step")}>
+                    {sideName(s)}{!f.side && sideWord === s && <i>auto</i>}
                   </button>
                 ))}
               </span>
@@ -2769,15 +5169,51 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
             <div className="pc-line"><label>Stop loss</label>{price("sl", f.sl, (v) => set({ sl: v }))}</div>
             <div className="pc-line two">
               <label>{riskName}</label>
-              <input className={`pc-in${bad("risk")}`} data-f="risk" inputMode="decimal" value={f.risk} placeholder="0" title={`What is lost if the stop is hit, in ${rc}`}
-                     onChange={(e) => { riskUsd.current = null; set({ risk: rc === "IDR" ? idrIn(e.target.value, 0, pasted(e)) : numIn(e.target.value, 2, pasted(e)) }); }} />
-              <label>Max lev</label>
+              {/* Risk and IM go together: whichever is typed, the other is worked out and shown in grey (the box is too
+                  narrow for the word "auto" beside a figure). The risk he typed is kept underneath (it sets the leverage)
+                  and is back when the IM box is emptied */}
+              <input className={`pc-in${riskAuto ? " auto" : ""}${bad("risk")}`} data-f="risk" inputMode="decimal" value={riskAuto ? "" : f.risk} placeholder={riskAuto ? riskText(rc, res.risk * riskRate) : "0"}
+                     title={riskAuto ? `Worked out: what the stop loses with the IM you typed, in ${rc}. Type a risk here and the IM is worked out again` : `What is lost if the stop is hit, in ${rc}`}
+                     onChange={(e) => { riskUsd.current = null; set({ risk: rc === "IDR" ? idrIn(e.target.value, 0, pasted(e)) : numIn(e.target.value, 2, pasted(e)), ...(fxm ? {} : { im: "" }) }); }} />
+              <label>{fxm ? "Leverage" : "Max lev"}</label>
               <span className="pc-unit">
-                <input className={`pc-in${bad("maxLev")}`} data-f="maxLev" inputMode="decimal" value={f.maxLev} placeholder="0" title="The highest leverage this coin allows"
+                <input className={`pc-in${bad("maxLev")}`} data-f="maxLev" inputMode="decimal" value={f.maxLev} placeholder={fxm ? "100" : "0"}
+                       title={fxm ? "Your account's leverage (1:100 is 100). It only says what margin the position ties up; leave it empty to skip that" : "The highest leverage this coin allows"}
                        onChange={(e) => set({ maxLev: numIn(e.target.value, 2, pasted(e)) })} />
                 <span>x</span>
               </span>
             </div>
+            {/* the margin: empty, it is worked out ($1 whenever the leverage allows) and shown in grey; typed, the
+                leverage stays as it is and the Risk box follows */}
+            {!fxm && (
+              <div className="pc-line">
+                <label>IM $</label>
+                <span className="pc-unit wide">
+                  <input className={`pc-in${bad("im")}`} data-f="im" inputMode="decimal" value={f.im || ""} placeholder={ok && res.im ? String(+res.im.toFixed(3)) : String(CALC_IM)}
+                         title="The margin the position is opened with. Empty: worked out for you, $1 whenever the leverage allows. Typed (what the exchange really took): the leverage stays, and the Risk box shows what the stop then loses"
+                         onChange={(e) => set({ im: numIn(e.target.value, 3, pasted(e)) })} />
+                  {!f.im && <span>auto</span>}
+                </span>
+              </div>
+            )}
+            {/* forex: what the maths can't know of the symbol typed. A cross is settled in its quote currency, so the
+                dollar rate of that currency is asked for; a symbol that is no currency pair, gold or silver has a lot of its own */}
+            {fxm && now.kind === "cross" && (
+              <div className="pc-line more" key="rate">
+                <label title={`${f.coin}'s profit is made in ${now.quote}: the rate of ${now.via} now turns it into dollars`}>{now.via}</label>
+                {price("rate", f.rate || "", (v) => set({ rate: v }), "its rate now")}
+              </div>
+            )}
+            {fxm && !now.known && f.coin.length >= 3 && (
+              <div className="pc-line more" key="contract">
+                <label title="How many units 1 lot of this symbol is: see its specification in MetaTrader (it differs from broker to broker)">1 lot =</label>
+                <span className="pc-unit">
+                  <input className={`pc-in${bad("contract")}`} data-f="contract" inputMode="decimal" value={f.contract || ""} placeholder="contract size"
+                         onChange={(e) => set({ contract: numIn(e.target.value, 4, pasted(e)) })} />
+                  <span>units</span>
+                </span>
+              </div>
+            )}
             <div className="pc-rule" />
             {f.tps.map((t, i) => (
               <div key={i} className={`pc-line tp${i >= 2 ? " more" : ""}`}>
@@ -2803,8 +5239,9 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
               </span>
             </div>
             <div className="pc-go-row">
-              <span style={{ display: "inline-flex", gap: 14 }}>
-                <button className="pc-clear" tabIndex={-1} onMouseDown={keepFocus} onClick={clear} title="Empty the coin and the levels. Risk, max leverage and the close % stay">Clear levels</button>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 14 }}>
+                <CalcUndo hist={hist} />
+                <button className="pc-clear" tabIndex={-1} onMouseDown={keepFocus} onClick={clear} title="Empty the coin and the levels. Risk, max leverage, IM and the close % stay">Clear levels</button>
                 {SHOW_TEST_TOOLS && <button className="pc-clear test" tabIndex={-1} onMouseDown={keepFocus} onClick={testLevels} title="Fill in made-up levels to try the calculator. Your risk and close % stay">Test levels</button>}
               </span>
               <button className="pc-go" onClick={submit} title="Calculate (Enter)" aria-label="Calculate"><span className="msym">keyboard_return</span></button>
@@ -2814,14 +5251,14 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
           {panel === "empty" ? (
             <div className="pc-empty">
               <span className="msym">calculate</span>
-              <span>Entry, stop loss, risk and max leverage, then Enter.</span>
+              <span>{fxm ? "Symbol, entry, stop loss and risk, then Enter." : "Entry, stop loss, risk and max leverage, then Enter."}</span>
             </div>
           ) : panel === "err" ? (
             <div className="pc-err">
               <div className="pc-err-h"><span className="msym">error</span>Error</div>
               <div className="pc-err-sub">
                 {res.errors.length === 1 ? "One box can't be right. It is marked in red." : `${res.errors.length} things can't be right. The boxes are marked in red.`}
-                {sideWord && (res.auto ? ` Read as a ${sideWord} from your levels: lock Long or Short if that is wrong.` : ` Locked to a ${sideWord}.`)}
+                {sideWord && (res.auto ? ` Read as a ${sideName(sideWord)} from your levels: lock ${fxm ? "Buy or Sell" : "Long or Short"} if that is wrong.` : ` Locked to a ${sideName(sideWord)}.`)}
               </div>
               {res.errors.map((e, i) => (
                 <button key={i} className="pc-err-row" tabIndex={-1} onMouseDown={keepFocus} onClick={() => goTo(e.fields[0])} title="Go to that box"><span>{i + 1}</span>{say(e.msg)}</button>
@@ -2831,21 +5268,34 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
             <div className={`pc-res${panel === "stale" ? " stale" : ""}`}>
               {panel === "stale" && <div className="pc-why">Not updated: {say(res.errors[0].msg)}</div>}
               <div className="pc-res-head">
-                <span className="pc-sym">{coin}<span>/USDT.P</span></span>
-                <span className={`pc-dir ${r.long ? "long" : "short"}`}>{r.long ? "Long" : "Short"}</span>
+                <span className="pc-sym">{coin}{!fxm && <span>/USDT.P</span>}</span>
+                <span className={`pc-dir ${r.long ? "long" : "short"}`}>{fxm ? (r.long ? "Buy" : "Sell") : r.long ? "Long" : "Short"}</span>
               </div>
+              {fxm ? (
+                // forex: the volume to type into MetaTrader, the margin it ties up, what it is worth, and what a pip of it is worth
+                <div className="pc-tiles">
+                  <div className="pc-tile glass-soft key"><div className="pc-tile-l">Volume</div><div className="pc-tile-v">{r.lots.toFixed(2)}<span> lot</span></div></div>
+                  <div className="pc-tile glass-soft key"><div className="pc-tile-l">Margin</div><div className="pc-tile-v">{r.margin === null ? "—" : `$${NF2.format(r.margin)}`}</div></div>
+                  <div className="pc-tile glass-soft"><div className="pc-tile-l">Position size</div><div className="pc-tile-v">${NF2.format(r.size)}</div></div>
+                  {r.pipVal !== null
+                    ? <div className="pc-tile glass-soft"><div className="pc-tile-l">Per pip</div><div className="pc-tile-v">${NF2.format(r.pipVal)}</div></div>
+                    : <div className="pc-tile glass-soft"><div className="pc-tile-l">Units</div><div className="pc-tile-v">{qtyText(r.units)}</div></div>}
+                </div>
+              ) : (
               <div className="pc-tiles">
                 <div className="pc-tile glass-soft key"><div className="pc-tile-l">Leverage</div><div className="pc-tile-v">{+r.lev.toFixed(2)}x</div></div>
                 <div className="pc-tile glass-soft key"><div className="pc-tile-l">IM</div><div className="pc-tile-v">${NF3.format(r.im)}</div></div>
                 <div className="pc-tile glass-soft"><div className="pc-tile-l">Position size</div><div className="pc-tile-v">${NF2.format(r.size)}</div></div>
                 <div className="pc-tile glass-soft"><div className="pc-tile-l">Quantity</div><div className="pc-tile-v">≈ {qtyText(r.qty)}<span> {coin}</span></div></div>
               </div>
+              )}
+              {(r.notes || []).map((n) => <div key={n} className="pc-why">{n}</div>)}
 
               <div className="pc-title">Full-position PnL</div>
               <div className="pc-row h"><span>Level</span><span>Price</span><span>Move</span><span>Full-position PnL</span></div>
-              <div className="pc-row"><span className="k">SL</span><span>{f.sl}</span><span>{pct(r.slMove)}</span><span>{amount(-r.risk)}</span></div>
+              <div className="pc-row"><span className="k">SL</span><span>{f.sl}</span><span>{fxm && r.slPips !== null ? pips(r.slPips) : pct(r.slMove)}</span><span>{amount(-r.risk)}</span></div>
               {r.targets.map((t) => (
-                <div key={t.label} className="pc-row"><span className="k">{t.label}</span><span>{t.text}</span><span>{pct(t.move)}</span><span>{amount(t.full)}</span></div>
+                <div key={t.label} className="pc-row"><span className="k">{t.label}</span><span>{t.text}</span><span>{fxm && t.pips !== null ? pips(t.pips) : pct(t.move)}</span><span>{amount(t.full)}</span></div>
               ))}
 
               {r.partials > 0 && (
@@ -2853,7 +5303,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                   <div className="pc-title">Partial TP plan <span>— {r.split}</span></div>
                   <div className="pc-row h"><span>Target</span><span>Close</span><span>Remaining</span><span>Realized PnL</span></div>
                   {r.targets.map((t) => (
-                    <div key={t.label} className="pc-row"><span className="k">{t.label} <i>@ {t.text}</i></span><span>{+t.close.toFixed(2)}%</span><span>{+t.open.toFixed(2)}%</span><span>{amount(t.pnl)}</span></div>
+                    <div key={t.label} className="pc-row"><span className="k">{t.label} <i>@ {t.text}</i></span><span>{fxm ? `${t.vol.toFixed(2)} lot` : `${+t.close.toFixed(2)}%`}</span><span>{+t.open.toFixed(fxm ? 1 : 2)}%</span><span>{amount(t.pnl)}</span></div>
                   ))}
                   <div className="pc-row t"><span className="k">Total</span><span>100%</span><span>0%</span><span>{amount(r.total)}</span></div>
                 </>
@@ -3034,10 +5484,12 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
   const fitRef = useEaseHeight();
   useEffect(() => { formRef.current?.querySelector("input")?.focus(); }, []);
 
-  const update = (next) => { draft.current.inputs = next; setF(next); };
-  const set = (patch) => update({ ...f, ...patch });
-  const setTp = (i, patch) => update({ ...f, tps: f.tps.map((t, k) => (k === i ? { ...t, ...patch } : t)) });
-  const setBuy = (i, patch) => update({ ...f, buys: f.buys.map((b, k) => (k === i ? { ...b, ...patch } : b)) });
+  const hist = useCalcUndo(draft, (s) => { draft.current.inputs = s.f; draft.current.shown = s.shown; setF(s.f); setShown(s.shown); setStrict(false); });
+  // how: "typed" (typing, which undo takes back a number at a time), "quiet" (no step: the page switched), else a step of its own
+  const update = (next, how) => { if (how !== "quiet") hist.note(next, how === "typed"); draft.current.inputs = next; setF(next); };
+  const set = (patch, how = "typed") => update({ ...f, ...patch }, how);
+  const setTp = (i, patch) => update({ ...f, tps: f.tps.map((t, k) => (k === i ? { ...t, ...patch } : t)) }, "typed");
+  const setBuy = (i, patch, how = "typed") => update({ ...f, buys: f.buys.map((b, k) => (k === i ? { ...b, ...patch } : b)) }, how);
   const pos = f.tab === "pos";
 
   const work = (g) => (g.tab === "pos"
@@ -3051,9 +5503,9 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
   const livePrice = quote.q ? idrIn(quote.q.price) : "";
   const withLive = (g) => (!livePrice ? g : g.tab === "pos" ? (g.entry ? g : { ...g, entry: livePrice }) : g.target && !g.at ? { ...g, at: livePrice } : g);
   const pickLive = () => {
-    if (pos) { set({ entry: livePrice }); return; }
+    if (pos) { set({ entry: livePrice }, "step"); return; }
     const empty = f.buys.findIndex((b) => !b.price);                 // averaging down: the first buy without a price, else "Buying at"
-    if (empty >= 0) setBuy(empty, { price: livePrice }); else set({ at: livePrice });
+    if (empty >= 0) setBuy(empty, { price: livePrice }, "step"); else set({ at: livePrice }, "step");
   };
   // what the lots come to, as they are typed: at the entry, or at the latest price while the entry is still empty
   const lotsAt = idrOf(f.entry) || idrOf(livePrice), lotsWorth = idrOf(f.lots) * IDX_LOT * lotsAt;
@@ -3090,14 +5542,18 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
     formRef.current?.querySelector("input")?.focus();
   };
   // test tool: made-up numbers on a real-looking stock, on its price steps, calculated at once
+  const testN = useRef(0);
   const testLevels = () => {
     const [coin, near] = STOCK_TEST[Math.floor(Math.random() * STOCK_TEST.length)];
     const snap = (p) => { const t = idxTick(p); return idrIn(String(Math.max(t, Math.round(p / t) * t))); };
     const entry = near * (0.96 + Math.random() * 0.08), stop = 0.02 + Math.random() * 0.06;
     if (pos) {
+      const made = testTargets(testN.current);
+      testN.current = made.list.length;
+      const tps = made.list.map((t) => ({ price: snap(entry * (1 + stop * t.move)), close: t.close }));
+      while (tps.length < 2) tps.push({ price: "", close: STOCK_BLANK.tps[tps.length].close });
       update({ ...f, coin, entry: snap(entry), sl: snap(entry * (1 - stop)), lots: f.lots || String(1 + Math.floor(Math.random() * 40)),
-               tps: f.tps.map((t, i) => ({ close: t.close, price: i < 2 ? snap(entry * (1 + stop * (i ? 2.3 + Math.random() : 1.2 + Math.random() * 0.8))) : "" })),
-               full: snap(entry * (1 + stop * (3.5 + Math.random() * 2))) });
+               tps, full: snap(entry * (1 + stop * made.full)) });
     } else {
       const held = 5 + Math.floor(Math.random() * 40), more = Math.max(1, Math.round(held * (0.3 + Math.random())));
       const avg = idrOf(snap(entry)), down = idrOf(snap(entry * (1 - 0.06 - Math.random() * 0.12))), lower = idrOf(snap(down * 0.95));
@@ -3109,6 +5565,7 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
   // Enter calculates wherever the focus is, except in the fee settings and on the corner buttons; Esc steps back out
   const keys = useRef(null);
   keys.current = (e) => {
+    if (calcUndoKey(e, hist)) return;
     if (e.key === "Escape") { if (tools) setTools(false); else close(); return; }
     if (e.key !== "Enter") return;
     const at = document.activeElement;
@@ -3142,7 +5599,7 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
            onClick={(e) => e.stopPropagation()}>
         <div className="pc-head">
           <span style={S.panelTitle}>Calculator</span>
-          <SlideSeg style={{ marginLeft: 8 }} value={f.tab} onPick={(tab) => { set({ tab }); setStrict(false); }} options={[["pos", "Position"], ["avg", "Average down"]]} />
+          <SlideSeg style={{ marginLeft: 8 }} value={f.tab} onPick={(tab) => { set({ tab }, "quiet"); setStrict(false); }} options={[["pos", "Position"], ["avg", "Average down"]]} />
           <span className="pc-tools">
             {/* hidden until the pointer is in this corner: the broker's fees */}
             <button className={`pc-gear${tools ? " on" : ""}`} style={S.closeBtn} title="Broker fees" aria-label="Broker fees"
@@ -3243,7 +5700,8 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
               </>
             )}
             <div className="pc-go-row">
-              <span style={{ display: "inline-flex", gap: 14 }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 14 }}>
+                <CalcUndo hist={hist} />
                 <button className="pc-clear" tabIndex={-1} onMouseDown={keepFocus} onClick={clear} title="Empty this page's numbers. The sell % stay">Clear</button>
                 {SHOW_TEST_TOOLS && <button className="pc-clear test" tabIndex={-1} onMouseDown={keepFocus} onClick={testLevels} title="Fill in made-up numbers to try the calculator">Test levels</button>}
               </span>
@@ -3394,8 +5852,11 @@ const pctText = (v) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
 /* one line chart of the analysis card: dashed levels, dates along the bottom, one or two lines.
    It is drawn at the size it is given (one unit = 1px), so its text is the same size in a narrow window and a wide one.
    The pointer's day is its own state, so moving over a chart redraws that chart only */
-const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => {
+let anClipSeq = 0;
+const AnChart = ({ lines, days, kind, cur, zero, tone, note, shade, height = 218 }) => {     // shade: { from, to, end, level }, the stretch under a level to wash red (the max drawdown)
   const box = useRef(null);
+  const clipId = useRef(null);                                   // each chart's wash is cut off by a shape of its own
+  if (!clipId.current) clipId.current = `an-clip-${++anClipSeq}`;
   const [w, setW] = useState(0);
   const [hot, setHot] = useState(null);
   useLayoutEffect(() => {
@@ -3443,13 +5904,27 @@ const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => 
       return d;
     };
     const at = [...new Set([0, 1, 2, 3].map((k) => Math.round((k * (N - 1)) / 3)))];
+    // the wash: from the level (the peak) down to the first line, over the days it was under it
+    let area = null;
+    if (shade && shown.length && N > 1) {
+      const ys = shown[0].vals.map(Y), a = Math.max(0, shade.from), yl = Y(shade.level);
+      let d = `M${X(a)} ${yl}L${X(a)} ${ys[a]}`;
+      // drawn on to the day it was back over the level, and cut off at the level, so the wash ends where the line crosses it
+      for (let i = a + 1; i <= shade.end; i++) {
+        if (N > 200) { d += `L${X(i)} ${ys[i]}`; continue; }
+        const mid = r1((X(i - 1) + X(i)) / 2);
+        d += `C${mid} ${ys[i - 1]} ${mid} ${ys[i]} ${X(i)} ${ys[i]}`;
+      }
+      const back = shade.end > shade.to && ys[shade.to] > ys[shade.end] ? (ys[shade.to] - yl) / (ys[shade.to] - ys[shade.end]) : 0;     // how far into that last day
+      area = { d: `${d}L${X(shade.end)} ${yl}Z`, x1: X(a), x2: r1(X(shade.to) + (X(shade.end) - X(shade.to)) * Math.min(1, Math.max(0, back))), xe: X(shade.end), y: yl, h: Math.max(0, H - PB - yl) };
+    }
     return {
-      PL, iw, X,
+      PL, iw, X, area,
       levels: levels.map((t) => ({ y: Y(t.v), text: t.text, zero: shown.length > 0 && Math.abs(t.v) < 1e-9 })),
       dates: at.map((i, k) => ({ x: X(i), text: dayText(days[i]), anchor: N === 1 ? "middle" : k === 0 ? "start" : k === at.length - 1 ? "end" : "middle" })),
       marks: shown.map((l) => { const ys = l.vals.map(Y); return { color: l.color, vals: l.vals, ys, d: N > 1 ? path(ys) : "" }; }),
     };
-  }, [lines, days, kind, cur, zero, w, H]);
+  }, [lines, days, kind, cur, zero, w, H, shade]);
   const onMove = (e) => {
     if (!g || !g.marks.length) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -3458,6 +5933,9 @@ const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => 
     setHot((h) => (h === i ? h : i));
   };
   const main = g && hot !== null && hot < N ? g.marks[0] : null;
+  // a difference, signed, in the chart's own unit: points for a % chart
+  const deltaText = (v) => (kind === "pct" ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)} pts`
+    : `${v > 0 ? "+" : v < 0 ? "−" : ""}${cur === "USDT" ? "$" : ""}${curBody(cur, Math.abs(v))}`);
   const tipText = (v) => (kind === "pct" ? pctText(v)
     : `${tone === "pnl" ? signOf(v) : v < 0 ? "-" : ""}${cur === "USDT" ? "$" : ""}${curBody(cur, v)}`);
   return (
@@ -3473,13 +5951,20 @@ const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => 
           {g.dates.map((t, i) => (
             <text key={i} className="axis-fade" style={{ animationDelay: `${60 + i * 40}ms` }} x={t.x} y={H - 9} fill="#8a9299" fontSize="11" textAnchor={t.anchor}>{t.text}</text>
           ))}
+          {g.area && (
+            <g className="axis-fade" style={{ animationDelay: "280ms" }} pointerEvents="none">
+              <clipPath id={clipId.current}><rect x={g.area.x1} y={g.area.y} width={Math.max(0, g.area.xe - g.area.x1)} height={g.area.h} /></clipPath>
+              <path d={g.area.d} fill="rgba(255,93,108,0.12)" clipPath={`url(#${clipId.current})`} />
+              <line x1={g.area.x1} y1={g.area.y} x2={g.area.x2} y2={g.area.y} stroke="rgba(255,141,151,0.5)" strokeWidth="1" strokeDasharray="2 3" />
+            </g>
+          )}
           {g.marks.map((m, i) => (m.d
-            ? <path key={i} className="an-line" pathLength="1" d={m.d} fill="none" stroke={m.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            ? <path key={i} className="an-line" pathLength="1" d={m.d} fill="none" stroke={m.color} strokeWidth={i ? 1.5 : 2.2} opacity={i ? 0.38 : 1} strokeLinecap="round" strokeLinejoin="round" />
             : <circle key={i} className="axis-fade" cx={g.X(0)} cy={m.ys[0]} r="4" fill={m.color} />))}
           {main && (
             <g pointerEvents="none">
               <line x1={g.X(hot)} y1={PT} x2={g.X(hot)} y2={H - PB} stroke="#5a6168" strokeWidth="1" />
-              {g.marks.map((m, i) => <circle key={i} cx={g.X(hot)} cy={m.ys[hot]} r="4.5" fill={m.color} stroke="#1c1f23" strokeWidth="2" />)}
+              {g.marks.map((m, i) => <circle key={i} cx={g.X(hot)} cy={m.ys[hot]} r={i ? 3.5 : 4.5} opacity={i ? 0.6 : 1} fill={m.color} stroke="#1c1f23" strokeWidth="2" />)}
             </g>
           )}
         </svg>
@@ -3488,6 +5973,8 @@ const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => 
       {main && (
         <GlassTip key={hot} W={w} H={H} x={Math.min(Math.max(g.X(hot), 60), Math.max(60, w - 60))} y={main.ys[hot]} below={main.ys[hot] < 66}
                   label={dayText(days[hot])} value={tipText(main.vals[hot])}
+                  sub={[hot > 0 && `${deltaText(main.vals[hot] - main.vals[hot - 1])} on the day`,
+                        g.marks[1] && `Before: ${tipText(g.marks[1].vals[hot])} · ${deltaText(main.vals[hot] - g.marks[1].vals[hot])}`]}
                   color={tone !== "pnl" ? undefined : main.vals[hot] > 0 ? "#9df0c9" : main.vals[hot] < 0 ? "#ff8d97" : undefined} />
       )}
     </div>
@@ -3495,7 +5982,7 @@ const AnChart = ({ lines, days, kind, cur, zero, tone, note, height = 218 }) => 
 };
 
 // `unit` and `dp` are the currency the trades are kept in (USDT with cents, or whole rupiah): what the balance is typed in
-const PnlAnalysis = memo(({ trades, an, start, end, cur, rate, base, allPnl, unit, dp, api }) => {
+const PnlAnalysis = memo(({ trades, deps, an, start, end, cur, rate, base, allPnl, allDep, unit, unitName, dp, api }) => {
   const [bal, setBal] = useState(null);                 // the balance box while it is being typed in
   const [dates, setDates] = useState(null);             // the two date boxes while one is being typed in
   const balRef = useRef(null);
@@ -3510,36 +5997,64 @@ const PnlAnalysis = memo(({ trades, an, start, end, cur, rate, base, allPnl, uni
     }
     return out.sort((a, b) => a[0] - b[0]);
   }, [trades]);
+  // money put into the account or taken out of it, by day, oldest first: [day, amount]
+  const flows = useMemo(() => {
+    const out = [];
+    for (const k in deps) {
+      const n = isoDay(k);
+      if (n !== null) out.push([n, deps[k].reduce((s, t) => s + t.amt, 0)]);
+    }
+    return out.sort((a, b) => a[0] - b[0]);
+  }, [deps]);
   const data = useMemo(() => {
-    // what was made before day s, then the running total at the end of each day from s to e
+    // what was made before day s, then the running total at the end of each day from s to e; the same for the money
+    // put in (put: before day s, fl: since)
     const run = (s, e) => {
-      let i = 0, before = 0, c = 0, n = 0;
+      let i = 0, before = 0, c = 0, n = 0, j = 0, put = 0, f = 0;
       while (i < daily.length && daily[i][0] < s) before += daily[i++][1];
-      const cum = [];
+      while (j < flows.length && flows[j][0] < s) put += flows[j++][1];
+      const cum = [], fl = [];
       for (let d = s; d <= e; d++) {
         if (i < daily.length && daily[i][0] === d) { c += daily[i][1]; n += daily[i][2]; i++; }
-        cum.push(Math.round(c * 100) / 100);
+        if (j < flows.length && flows[j][0] === d) f += flows[j++][1];
+        cum.push(Math.round(c * 100) / 100); fl.push(f);
       }
-      return { before, cum, n };
+      return { before, cum, n, put, fl };
     };
     const now = run(start, end), prev = run(start - N, start - 1);
-    // the balance each time frame began with: what the percentages are of
-    const eq = base === null ? null : base + now.before, prevEq = base === null ? null : base + prev.before;
-    const pct = eq > 0 ? now.cum.map((c) => (c / eq) * 100) : null;
-    const prevPct = pct && prevEq > 0 && prev.n > 0 ? prev.cum.map((c) => (c / prevEq) * 100) : null;
-    const asset = base === null ? null : now.cum.map((c) => (eq + c) * rate);
+    // the balance each time frame began with, and what was put in since: what the percentages are of
+    const eq = base === null ? null : base + now.before + now.put, prevEq = base === null ? null : base + prev.before + prev.put;
+    const share = (r, q) => (q !== null && r.fl.some((f) => q + f > 0) ? r.cum.map((c, i) => (q + r.fl[i] > 0 ? (c / (q + r.fl[i])) * 100 : 0)) : null);
+    const pct = share(now, eq);
+    const prevPct = pct && prev.n > 0 ? share(prev, prevEq) : null;
+    const asset = base === null ? null : now.cum.map((c, i) => Math.max(0, eq + now.fl[i] + c) * rate);
+    // max drawdown: the deepest fall from a peak inside the time frame (the peak may be where it began, at 0). How much, in
+    // % of what the account held at that peak when the balance is known, and the days it stayed under that peak: from
+    // the peak (-1: the start) to the last day before it was back there, which the chart washes red
+    let peak = 0, peakAt = -1, dd = 0, ddFrom = -1, ddLow = -1, ddPeak = 0;
+    now.cum.forEach((c, i) => {
+      if (c > peak) { peak = c; peakAt = i; }
+      if (peak - c > dd + 1e-9) { dd = peak - c; ddFrom = peakAt; ddLow = i; ddPeak = peak; }
+    });
+    let ddTo = ddLow;
+    while (dd > 0 && ddTo + 1 < N && now.cum[ddTo + 1] < ddPeak) ddTo++;
+    const ddEq = eq === null ? null : eq + (ddFrom >= 0 ? now.fl[ddFrom] : 0) + ddPeak;
+    const draw = dd > 0 ? { amt: dd, pct: ddEq !== null && ddEq > 0 ? Math.min(100, (dd / ddEq) * 100) : null, from: ddFrom, low: ddLow, to: ddTo, end: Math.min(N - 1, ddTo + 1), level: ddPeak * rate } : null;
     return {
+      draw,
       days: Array.from({ length: N }, (_, i) => start + i), n: now.n, total: now.cum[N - 1],
       pct, prevPct, asset, broke: base !== null && !pct,
       pnlLines: [{ color: AN_BLUE, vals: now.cum.map((c) => c * rate) }],
       pctLines: [{ color: AN_ORANGE, vals: pct }, { color: AN_BLUE, vals: prevPct }],
       assetLines: [{ color: AN_ORANGE, vals: asset }],
     };
-  }, [daily, start, end, base, rate]);
+  }, [daily, flows, start, end, base, rate]);
 
   const sym = cur === "USDT" ? "$" : "";
   const tone = (v) => (v > 0 ? "#5ee3a9" : v < 0 ? "#ff8d97" : "#9aa3ab");
-  const balance = base === null ? null : Math.round((base + allPnl) * 100) / 100;
+  // an account can't hold less than nothing: if what is logged says so, something is missing, and it reads 0
+  const balance = base === null ? null : Math.max(0, Math.round((base + allPnl + allDep) * 100) / 100);
+  const balShown = balance === null ? "" : dp ? NF2.format(balance) : Math.round(balance).toLocaleString("id-ID");
   const balText = balance === null ? "" : dp ? String(balance) : `${balance < 0 ? "-" : ""}${Math.abs(Math.round(balance)).toLocaleString("id-ID")}`;
   const saveBal = () => {
     if (bal === null) return;
@@ -3561,7 +6076,7 @@ const PnlAnalysis = memo(({ trades, an, start, end, cur, rate, base, allPnl, uni
     api.current.setAn({ kind: "custom", from: dayIso(a), to: dayIso(b) });
   };
   const needBal = (
-    <button className="an-ask" onClick={() => { balRef.current?.focus(); balRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }}>
+    <button className="an-ask" onClick={() => setBal("")}>
       Type your balance to see this
     </button>
   );
@@ -3576,17 +6091,22 @@ const PnlAnalysis = memo(({ trades, an, start, end, cur, rate, base, allPnl, uni
           ))}
           <button className={`an-tab${custom ? " on" : ""}`} onClick={pickCustom}>Custom Time Frame</button>
         </div>
-        <label className="an-bal" title={`Your account balance right now, in ${unit === "IDR" ? "rupiah" : unit}. It moves with every trade you log from here on; type it again after a deposit or a withdrawal. Empty the box to remove it`}>
-          Balance
-          <span className={`an-bal-box${unit === "USDT" ? "" : " wide"}`}>
-            <i>{CUR_SIGN[unit]}</i>
-            <input ref={balRef} inputMode={dp ? "decimal" : "numeric"} placeholder="Type it"
-                   value={bal !== null ? bal : balText}
-                   onFocus={() => setBal(balText)}
-                   onChange={(e) => setBal(sanitizeAmount(e.target.value, !!dp))}
+        {/* the balance: a figure, pressed to be typed over (what the exchange shows now). Empty: no balance */}
+        {bal !== null ? (
+          <label className="an-bal edit">
+            <span>Balance</span><i>{CUR_SIGN[unit]}</i>
+            <input ref={balRef} autoFocus inputMode={dp ? "decimal" : "numeric"} placeholder="0" aria-label="Balance" value={bal}
+                   onFocus={(e) => e.target.select()} onChange={(e) => setBal(sanitizeAmount(e.target.value, !!dp))}
                    onBlur={saveBal} onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
-          </span>
-        </label>
+          </label>
+        ) : (
+          <button className={`an-bal${balance === null ? " none" : ""}`} onClick={() => setBal(balText)}
+                  title={`Your account balance, in ${unit === "IDR" ? "rupiah" : unitName}. Press to type what ${unitName === "USDT" ? "the exchange" : "your broker"} shows now: from that day on it follows the trades${unit === "USDT" ? ", deposits and withdrawals" : ""} you log. Something logged for an earlier day only rewrites the past. It never goes below zero`}>
+            <span>Balance</span>
+            {balance === null ? <b>Set it</b> : <b><i>{CUR_SIGN[unit]}</i>{balShown}</b>}
+            <span className="msym">edit</span>
+          </button>
+        )}
       </div>
       {custom && (
         <div className="an-dates">
@@ -3600,9 +6120,15 @@ const PnlAnalysis = memo(({ trades, an, start, end, cur, rate, base, allPnl, uni
       <div className="an-grid">
         <div>
           <div className="an-title">Cumulative PnL <span>({cur})</span></div>
-          <div className="an-val" style={{ color: data.n ? tone(data.total) : "#9aa3ab" }}>{signOf(data.total)}{sym}{curBody(cur, data.total * rate)}</div>
+          <div className="an-val">
+            <span style={{ color: data.n ? tone(data.total) : "#9aa3ab" }}>{signOf(data.total)}{sym}{curBody(cur, data.total * rate)}</span>
+            <span className="an-dd" title={data.draw ? `The deepest fall from a peak in this time frame: from ${data.draw.from < 0 ? "its start" : dayText(data.days[data.draw.from])} down to ${dayText(data.days[data.draw.low])}${data.draw.pct === null ? "" : ". In % of what the account held at that peak"}. The red wash on the chart is the time spent under that peak` : "The deepest fall from a peak in this time frame"}>
+              Max drawdown<b style={data.draw ? undefined : { color: "#9aa3ab" }}>{data.draw ? (data.draw.pct !== null ? `−${data.draw.pct.toFixed(1)}%` : `−${sym}${curBody(cur, data.draw.amt * rate)}`) : data.n ? "None" : "—"}</b>
+              {data.draw && data.draw.pct !== null && <i>−{sym}{curBody(cur, data.draw.amt * rate)}</i>}
+            </span>
+          </div>
           <div className="an-box glass-soft">
-            <AnChart key={pk} lines={data.pnlLines} days={data.days} kind="money" cur={cur} zero tone="pnl"
+            <AnChart key={pk} lines={data.pnlLines} days={data.days} kind="money" cur={cur} zero tone="pnl" shade={data.draw}
                      note={data.n ? null : "No trades in this time frame"} />
           </div>
         </div>
@@ -3658,14 +6184,6 @@ const CoinRing = memo(({ coins, cur, rate, label, none, things, loss, onLoss }) 
     from += r.share * RING_C;
   });
   const on = hot !== null && hot < rows.length ? rows[hot] : null;
-  const side = (isLoss, text) => {
-    const lit = loss === isLoss, c = isLoss ? C_RED : C_GREEN;
-    return (
-      <button className="mode-btn" title={isLoss ? `Which ${things} the losses came from` : `Which ${things} the winnings came from`}
-              onClick={() => { setHot(null); onLoss(isLoss); }}
-              style={{ ...S.modeBtn, color: lit ? c : "#6d757d", borderColor: lit ? `${c}99` : "#33373b", background: lit ? "rgba(255,255,255,0.07)" : "none" }}>{text}</button>
-    );
-  };
   return (
     <div className="ring-wrap">
       <div className="ring-head">
@@ -3673,7 +6191,9 @@ const CoinRing = memo(({ coins, cur, rate, label, none, things, loss, onLoss }) 
           <div className="an-title">{loss ? "Loss" : "Win"} distribution <span>({cur})</span></div>
           <div className="an-asof" style={{ margin: "3px 0 0" }}>Biggest to smallest · {label}</div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>{side(false, "Wins")}{side(true, "Losses")}</div>
+        <SlideSeg cls="ring-sw" style={{ "--loss": loss ? 1 : 0 }} value={loss ? "loss" : "win"} onPick={(v) => { setHot(null); onLoss(v === "loss"); }}
+                  options={[["win", <span className="msym">trending_up</span>, `Wins: which ${things} the winnings came from`],
+                            ["loss", <span className="msym">trending_down</span>, `Losses: which ${things} the losses came from`]]} />
       </div>
       <div className="ring-body" onMouseLeave={() => setHot(null)}>
         <div className="ring-fig">
@@ -3727,6 +6247,9 @@ const Reveal = ({ children }) => {
    that was the whole panel worked out again, 17ms, as each card came into view and on every press of an arrow).
    style: extra for the card. loose: what reaches out of the fold is shown (an open menu). parts: its content is made
    of Reveal parts that open themselves, so it isn't put there afresh when the card is seen. */
+// each card's own colour, muted: its title is a tag in it and a soft glow of it sits behind the title. The glow is a
+// band of a fixed height at the top (never sized from the card), so folding a card draws nothing again
+const CARD_TINT = { "weekly expenses": "#86bfe8", "money flow": "#7fd8b4", goals: "#e3c477", "PnL analysis": "#86bfe8", performance: "#7fd8b4", coins: "#e3c477", stocks: "#e3c477", pairs: "#e3c477", breakdown: "#8fa3b8" };
 const FoldCard = ({ title, sub, runKey, name, style, loose, parts, children }) => {
   const ref = useRef(null);
   const [seen, setSeen] = useState(false);
@@ -3743,9 +6266,10 @@ const FoldCard = ({ title, sub, runKey, name, style, loose, parts, children }) =
     return () => io.disconnect();
   }, []);
   return (
-    <div ref={ref} className={`flow-card glass${seen ? " shown" : ""}`} style={style ? { ...S.flowCard, ...style } : S.flowCard}>
+    <div ref={ref} data-mv="" data-card={name} className={`flow-card glass${seen ? " shown" : ""}`} style={{ ...S.flowCard, ...style, "--tint": CARD_TINT[name] || "#9aa3ab" }}>
+      <div className="card-aura" />
       <div style={S.flowHead}>
-        <span style={S.sectionLabel}>{title}</span>
+        <span className="card-tag"><i />{title}</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
           <span style={S.flowSub}>{sub}</span>
           <button className={`plain-arrow chev${open ? " up" : ""}`} style={S.plainArrow}
@@ -3770,13 +6294,14 @@ const FoldCard = ({ title, sub, runKey, name, style, loose, parts, children }) =
 };
 
 /* a pair box: the coin as typed, with USDT.P written after it in grey (not when the quote is already typed: BTCUSDT,
-   BTC/USDT). A stock's box has nothing written after it */
-const PairBox = ({ value, wrap, pad, ghost, ...input }) => (
+   BTC/USDT). A stock's box has nothing written after it. `tail` is more grey text, at the right end of the box */
+const PairBox = ({ value, wrap, pad, ghost, tail, ...input }) => (
   <span style={{ position: "relative", display: "block", ...wrap }}>
     <input value={value} {...input} />
     {ghost && value && !value.includes("/") && coinOf(value) === value && (
       <span className="pair-ghost" style={{ padding: `0 ${pad}px` }} aria-hidden="true"><i>{value}</i><b>{ghost}</b></span>
     )}
+    {tail && <span className="pair-tail" style={{ right: pad }} aria-hidden="true">{tail}</span>}
   </span>
 );
 
@@ -3788,23 +6313,193 @@ const SideChip = ({ side, onToggle, big }) => (
   </button>
 );
 
+/* ---------- pictures on a trade (crypto journal) ----------
+   A picture is made small before it is kept: at most SHOT_EDGE px on its long side, as WebP, which brings a chart
+   screenshot from megabytes down to some 40–150 KB. Pictures live in IndexedDB "flow-shots", apart from the trades:
+   a trade only holds their ids (imgs), so the saved trades stay small and typing in a box rewrites no picture.
+   They go into the backup with the trades. A picture no trade points to any more is removed the next time the
+   crypto side is opened, never at once (an import can be undone, and the trade would come back without it).
+   Test data has pictures at no cost: the id "ph:<number>" is a made-up chart, drawn on the spot from that number.
+   Only the crypto side keeps pictures: if the stocks side ever does, shotSweep must be told about its trades too. */
+const SHOT_EDGE = 1600, SHOT_Q = 0.8;
+const shots = { db: null, urls: new Map() };
+const shotOpen = () => (shots.db ||= new Promise((done) => {
+  try {
+    const rq = indexedDB.open(USER.pre ? `flow-shots-${USER.id}` : "flow-shots", 1);     // a store per account (see "accounts")
+    rq.onupgradeneeded = () => rq.result.createObjectStore("img");
+    rq.onsuccess = () => done(rq.result);
+    rq.onerror = rq.onblocked = () => done(null);
+  } catch (e) { done(null); }
+}));
+// one request on the store; null when it could not be done
+const shotDo = async (mode, ask) => {
+  const db = await shotOpen();
+  if (!db) return null;
+  return new Promise((done) => {
+    try {
+      const rq = ask(db.transaction("img", mode).objectStore("img"));
+      rq.onsuccess = () => done(rq.result ?? true);
+      rq.onerror = () => done(null);
+    } catch (e) { done(null); }
+  });
+};
+// a picture file made small and kept: its id, or null if it can't be read as a picture
+const shotAdd = async (file, pre = "") => {
+  let blob = null;
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, SHOT_EDGE / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(bmp.width * k)); cv.height = Math.max(1, Math.round(bmp.height * k));
+    const cx = cv.getContext("2d");
+    cx.imageSmoothingQuality = "high";
+    cx.drawImage(bmp, 0, 0, cv.width, cv.height);
+    bmp.close();
+    const small = await new Promise((done) => cv.toBlob(done, "image/webp", SHOT_Q));
+    blob = small && (k < 1 || small.size < file.size) ? small : file;        // a file already smaller than that is kept as it is
+  } catch (e) { return null; }
+  const id = pre + uid();        // "idx-…" on the stocks side, so each side's sweep leaves the other's pictures alone
+  return (await shotDo("readwrite", (s) => s.put(blob, id))) ? id : null;
+};
+// where a kept picture is shown from: made once per picture, kept for the session
+const shotUrl = (id) => {
+  if (!shots.urls.has(id)) shots.urls.set(id, shotDo("readonly", (s) => s.get(id)).then((b) => (b instanceof Blob ? URL.createObjectURL(b) : null)));
+  return shots.urls.get(id);
+};
+// for the backup: the pictures these trades hold, as text; and back again
+const shotPack = async (trades) => {
+  const out = {};
+  for (const k in trades) for (const t of trades[k]) for (const id of shotIds(t)) {
+    if (id.startsWith("ph:") || out[id]) continue;
+    const b = await shotDo("readonly", (s) => s.get(id));
+    const text = b instanceof Blob ? await new Promise((done) => { const r = new FileReader(); r.onload = () => done(r.result); r.onerror = () => done(null); r.readAsDataURL(b); }) : null;
+    if (text) out[id] = text;
+  }
+  return out;
+};
+const shotUnpack = async (images) => {
+  for (const id in images) {
+    if (typeof images[id] === "string" && images[id].length > 4e6) continue;     // far bigger than any picture we keep
+    const m = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+\/=]+)$/.exec(typeof images[id] === "string" ? images[id] : "");
+    if (!shotIdOk(id) || id.startsWith("ph:") || !m) continue;
+    try {
+      const bin = atob(m[2]), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      await shotDo("readwrite", (s) => s.put(new Blob([bytes], { type: m[1] }), id));
+      shots.urls.delete(id);
+    } catch (e) { /* that one picture is left out */ }
+  }
+};
+// the pictures no trade points to any more are removed. Only ever called with trades that were just read in full
+const SHOT_SIDES = ["idx-", "fx-"];        // how a picture's id begins on the stocks and the forex side; crypto's begin with nothing
+const shotSweep = async (trades, pre = "") => {
+  if (USER.aside) return;                // "Reset account": its trades are aside, and their pictures would look like nobody's
+  const keep = new Set();
+  for (const k in trades) for (const t of trades[k]) for (const id of shotIds(t)) keep.add(id);
+  const keys = await shotDo("readonly", (s) => s.getAllKeys());
+  const mine = (id) => (pre ? String(id).startsWith(pre) : !SHOT_SIDES.some((p) => String(id).startsWith(p)));
+  const gone = Array.isArray(keys) ? keys.filter((id) => !keep.has(id) && mine(id)) : [];
+  if (!gone.length) return;
+  const db = await shotOpen();
+  try { const st = db.transaction("img", "readwrite").objectStore("img"); gone.forEach((id) => st.delete(id)); } catch (e) { /* they stay until next time */ }
+};
+// a test picture: a made-up chart with its entry, target and stop, the same one every time for the same number
+const phDraw = (cv, seed, w, h) => {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const c = cv.getContext("2d");
+  if (!c) return;
+  c.scale(dpr, dpr);
+  let s = (seed % 2147483646) + 1;
+  const rnd = () => (s = (s * 48271) % 2147483647) / 2147483647;
+  rnd(); rnd();
+  const up = rnd() < 0.5, n = 46, bw = w / n, cs = [];
+  let p = 0;
+  for (let i = 0; i < n; i++) {
+    const o = p;
+    p += (rnd() - 0.5 + (up ? 0.09 : -0.09)) * 2;
+    cs.push([o, p, Math.max(o, p) + rnd() * 0.7, Math.min(o, p) - rnd() * 0.7]);
+  }
+  const max = Math.max(...cs.map((k) => k[2])), min = Math.min(...cs.map((k) => k[3]));
+  const y = (v) => h * 0.1 + ((max - v) / (max - min || 1)) * h * 0.8;
+  c.fillStyle = "#15181c"; c.fillRect(0, 0, w, h);
+  c.lineWidth = 1;
+  c.strokeStyle = "rgba(255,255,255,0.05)";
+  for (let i = 1; i < 5; i++) { c.beginPath(); c.moveTo(0, Math.round((h * i) / 5) + 0.5); c.lineTo(w, Math.round((h * i) / 5) + 0.5); c.stroke(); }
+  cs.forEach(([o, cl, hi, lo], i) => {
+    const x = i * bw + bw / 2;
+    c.fillStyle = c.strokeStyle = cl >= o ? "#5fbf95" : "#d9707b";
+    c.beginPath(); c.moveTo(x, y(hi)); c.lineTo(x, y(lo)); c.stroke();
+    c.fillRect(x - bw * 0.31, Math.min(y(o), y(cl)), bw * 0.62, Math.max(1, Math.abs(y(o) - y(cl))));
+  });
+  const entry = cs[Math.floor(n * 0.42)][1], gap = (max - min) * 0.24 * (up ? 1 : -1);
+  c.setLineDash([Math.max(3, w / 90), Math.max(2, w / 120)]);
+  [[entry, "#aab3bb"], [entry + gap, "#5fbf95"], [entry - gap * 0.5, "#d9707b"]].forEach(([v, col]) => {
+    c.strokeStyle = col; c.beginPath(); c.moveTo(0, y(v)); c.lineTo(w, y(v)); c.stroke();
+  });
+  c.setLineDash([]);
+  if (h > 200) { c.fillStyle = "rgba(255,255,255,0.3)"; c.font = "600 15px Inter, sans-serif"; c.fillText("Test picture", 16, h - 16); }
+};
+// one picture: a kept one from its address, a test one drawn on the spot. Small in a sheet, `big` when opened
+const Shot = ({ id, big }) => {
+  const ph = id.startsWith("ph:");
+  const [url, setUrl] = useState(null);
+  const cv = useRef(null);
+  useLayoutEffect(() => { if (ph && cv.current) phDraw(cv.current, +id.slice(3) || 0, big ? 960 : 104, big ? 540 : 66); }, [id]);
+  useEffect(() => {
+    if (ph) return;
+    let on = true;
+    shotUrl(id).then((u) => { if (on) setUrl(u); });
+    return () => { on = false; };
+  }, [id]);
+  return ph ? <canvas ref={cv} /> : url ? <img src={url} alt="" draggable={false} decoding="async" /> : <i />;
+};
+// a picture opened large, over everything: a press anywhere or Esc closes it (and only it)
+const ShotView = ({ id, onClose }) => {
+  const [out, setOut] = useState(false);
+  const close = () => { setOut(true); setTimeout(onClose, 170); };
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); close(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  return createPortal(<div className={`shot-view${out ? " out" : ""}`} onClick={close}><Shot id={id} big /></div>, document.body);
+};
+
 /* ---------- trading journal (crypto day panel) ----------
    A trade is a page of properties, after his Notion picture: Win / Breakeven / Loss and the $ box on top, then coin,
    position, time frame, duration, full TP %, risk %, leverage and R, the notes before, and a big description.
    A sheet keeps what is typed to itself, so typing redraws nothing behind it. The one on top adds a trade (Enter or
-   the button); the one inside a logged trade saves itself, at once on a switch and on leaving a box otherwise. */
+   the button); the one inside a logged trade saves itself, at once on a switch and on leaving a box otherwise.
+   A logged trade's sheet also holds its pictures (see "pictures on a trade"). */
 const JR_RES = { win: ["Win", "emoji_events"], be: ["Breakeven", "drag_handle"], loss: ["Loss", "close"] };
-const resOf = (pnl) => (pnl > 0 ? "win" : pnl < 0 ? "loss" : "be");
-const sheetOf = (t = {}) => ({
-  res: t.id ? resOf(t.pnl) : "win", amt: t.pnl ? String(Math.abs(t.pnl)) : "", pair: t.pair || "", side: t.side === "short" ? "short" : "long",
-  tp: String(t.tp || ""), tf: t.tf || "", risk: String(t.risk || ""), lev: String(t.lev || ""), rr: String(t.rr || ""),
-  dur: t.dur || "", pre: t.pre || "", note: t.note || "",
-});
-// what a sheet comes to as a trade; null while a win or a loss has no amount yet
-const sheetTrade = (d) => {
-  const amt = d.res === "be" ? 0 : pnlOf(d.amt);
+// a break-even trade is one at exactly $0, or one he marked break-even with the few dollars it closed at (be)
+const resOf = (t) => (t.be || !t.pnl ? "be" : t.pnl > 0 ? "win" : "loss");
+// (forex: the box on top holds MetaTrader's Profit, which is the trade's result less its swap and its commission)
+const sheetOf = (t = {}, idx, fx) => {
+  const gross = fx ? fxGross(t) : t.pnl;
+  return {
+    res: !t.id ? "win" : fx ? (t.be || !gross ? "be" : gross > 0 ? "win" : "loss") : resOf(t), pair: t.pair || "", side: t.side === "short" ? "short" : "long",
+    amt: !gross ? "" : idx ? (t.be && gross < 0 ? "-" : "") + idrIn(String(Math.abs(gross))) : String(t.be ? gross : Math.abs(gross)),
+    style: t.style || "", sec: t.sec || "", lots: String(t.lots || ""), ...Object.fromEntries(["entry", "exit"].map((k) => [k, t[k] ? idrIn(String(t[k])) : ""])),
+    tp: String(t.tp || ""), tf: t.tf || "", risk: String(t.risk || ""), lev: String(t.lev || ""), rr: String(t.rr || ""),
+    vol: String(t.vol || ""), open: String(t.open || ""), close: String(t.close || ""), sl: String(t.sl || ""), tpp: String(t.tpp || ""),
+    swap: t.swap ? String(t.swap) : "", comm: t.comm ? String(Math.abs(t.comm)) : "",
+    dur: t.dur || "", pre: t.pre || "", note: t.note || "", imgs: t.imgs || [], preImgs: t.preImgs || [],
+  };
+};
+// what a sheet comes to as a trade; null while a win or a loss has no amount yet. A break-even trade may carry what
+// it closed at, with a minus if it cost a little
+const sheetTrade = (d, idx, fx) => {
+  const amt = idx ? Math.round(idrOf(d.amt)) : pnlOf(d.amt);
   if (d.res !== "be" && !amt) return null;
-  return { pnl: d.res === "loss" ? -amt : amt, pair: pairName(d.pair), side: d.side, ...journalOf(d) };
+  const gross = d.res === "be" ? amt : d.res === "loss" ? -Math.abs(amt) : Math.abs(amt);
+  // forex: the swap as typed (a minus when it was charged) and the commission (always a cost) are part of the result,
+  // so what the tracker counts is Profit + Swap + Commission, as the balance in MetaTrader does
+  const cost = fx ? { swap: numOf(d.swap), comm: -Math.abs(numOf(d.comm)) } : null;
+  const pnl = fx ? roundTo(gross + cost.swap + cost.comm, 2) : gross;
+  const f = idx ? { ...d, ...Object.fromEntries(["entry", "exit"].map((k) => [k, idrOf(d[k])])) } : fx ? { ...d, ...cost } : d;      // rupiah boxes are typed with dots
+  return { pnl, ...(d.res === "be" && pnl ? { be: true } : {}), pair: pairName(d.pair), side: idx ? "long" : d.side, ...journalOf(f) };
 };
 const JrRow = ({ icon, tint, label, cls, children }) => (
   <div className={`jr-row${cls ? " " + cls : ""}`}>
@@ -3812,87 +6507,248 @@ const JrRow = ({ icon, tint, label, cls, children }) => (
     <span className="jr-v">{children}</span>
   </div>
 );
-const TradeSheet = memo(function TradeSheet({ trade, api, ghost }) {
-  const [d, setD] = useState(() => sheetOf(trade));
+const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView, idx, fx }) {
+  const [d, setD] = useState(() => sheetOf(trade, idx, fx));
   const live = useRef(d);                                  // the latest draft, for a save on the way out of a box
-  const saved = useRef(trade ? JSON.stringify(sheetTrade(d)) : "");
+  const saved = useRef(trade ? JSON.stringify(sheetTrade(d, idx, fx)) : "");
   const amtRef = useRef(null);
+  const kept = useRef("");                                 // the amount a win or a loss had, while it is switched to break-even
+  const [own, setOwn] = useState(() => (TF_LIST.includes(d.tf) ? "" : d.tf));      // the box for a time frame of his own
+  const [busy, setBusy] = useState(false);                 // pictures being made small
   const save = () => {
-    const f = trade && sheetTrade(live.current), sig = JSON.stringify(f);
+    const f = trade && sheetTrade(live.current, idx, fx), sig = JSON.stringify(f);
     if (f && sig !== saved.current) { saved.current = sig; api.current.edit(trade.id, f); }
   };
   const set = (patch, now) => { live.current = { ...live.current, ...patch }; setD(live.current); if (now) save(); };
   const add = () => {
-    const f = sheetTrade(live.current);
+    const f = sheetTrade(live.current, idx, fx);
     if (!f) { amtRef.current?.focus(); return; }
     api.current.add(f);
-    set({ ...sheetOf(), side: live.current.side, tf: live.current.tf });
+    set({ ...sheetOf({}, idx, fx), side: live.current.side, tf: live.current.tf, style: live.current.style });
     amtRef.current?.focus();
   };
+  // to break-even: back to $0, and he types what it closed at if it wasn't nothing. Away from it: the amount it had before
+  const setRes = (id) => {
+    const cur = live.current;
+    if (id === cur.res) return;
+    let amt = cur.amt;
+    if (id === "be") { kept.current = cur.amt; amt = ""; }
+    else if (cur.res === "be") amt = cur.amt.replace("-", "") || kept.current;
+    set({ res: id, amt }, true);
+  };
   const onKey = (e) => { if (e.key === "Enter") { if (trade) e.target.blur(); else add(); } };
-  const num = (k) => ({ className: "jr-in", inputMode: "decimal", value: d[k], onChange: (e) => set({ [k]: sanitizeAmount(e.target.value, true) }), onBlur: save, onKeyDown: onKey });
+  const num = (k, places) => ({ className: "jr-in", inputMode: "decimal", value: d[k], onChange: (e) => set({ [k]: sanitizeAmount(e.target.value, true, places) }), onBlur: save, onKeyDown: onKey });
   const text = (k, max) => ({ className: "jr-in", value: d[k], onChange: (e) => set({ [k]: e.target.value.slice(0, max) }), onBlur: save });
+  // what a % comes to with the leverage typed, in grey at the right end of its box (nothing without a leverage)
+  const lev = Math.min(Number(d.lev) || 0, 1000);
+  const withLev = (k) => (lev > 0 && Number(d[k]) > 0 ? `${roundTo(Number(d[k]) * lev, 2)}% at ${roundTo(lev, 2)}x` : "");
+  // a time frame of his own is taken when its box is left, or on Enter; one that is in the list lights up its own box
+  const ownDone = () => {
+    const tf = tfClean(own);
+    if (!tf) { setOwn(""); if (live.current.tf && !TF_LIST.includes(live.current.tf)) set({ tf: "" }, true); return; }
+    setOwn(TF_LIST.includes(tf) ? "" : tf);
+    if (tf !== live.current.tf) set({ tf }, true);
+  };
+  const ownTf = tfClean(own);
+  // pictures: from the file box, dropped on the sheet, or pasted while this trade is the open one. `k` says where they
+  // go: the trade's own (imgs), or its setup (preImgs: its button, a drop on its line, a paste while typing in its box)
+  const preRef = useRef(null);
+  const attach = async (files, k = "imgs") => {
+    const list = [...(files || [])].filter((f) => /^image\//.test(f.type)).slice(0, SHOT_MAX - live.current[k].length);
+    if (!list.length) return;
+    setBusy(true);
+    const ids = (await Promise.all(list.map((f) => shotAdd(f, idx ? "idx-" : fx ? "fx-" : "")))).filter(Boolean);
+    setBusy(false);
+    if (ids.length) set({ [k]: [...live.current[k], ...ids].slice(0, SHOT_MAX) }, true);
+  };
+  const thumbs = (k) => d[k].map((id) => (
+    <span key={id} className="jr-shot" onClick={() => onView(id)} title="Open">
+      <Shot id={id} />
+      <button tabIndex={-1} className="jr-shot-x" onClick={(e) => { e.stopPropagation(); set({ [k]: live.current[k].filter((x) => x !== id) }, true); }} title="Remove" aria-label="Remove">×</button>
+    </span>
+  ));
+  useEffect(() => {
+    if (!active) return;                                     // the open trade's sheet, or the one that adds a trade while none is open
+    const onPaste = (e) => {
+      const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => /^image\//.test(f.type));
+      if (files.length) { e.preventDefault(); attach(files, document.activeElement === preRef.current ? "preImgs" : "imgs"); }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [active]);
   const short = d.side === "short";
+  const U = idx ? "Rp" : "$";
+  const rp = (k) => ({ className: "jr-in", inputMode: "numeric", value: d[k], onChange: (e) => set({ [k]: idrIn(e.target.value) }), onBlur: save, onKeyDown: onKey });
+  const secAuto = IDX_SECTOR_OF[d.pair] || "";
+  // what the buy comes to from the lots and the entry (and the sell from the exit): shown, not typed
+  const worth = (k) => { const v = stockWorth(d.lots, idrOf(d[k])); return v ? `Rp${idrIn(String(v))}` : ""; };
+  // forex: the pips between the open and the close price, and what the trade comes to with its swap and commission
+  const pips = fx ? fxPips(d) : null, fxNet = fx ? sheetTrade(d, false, true) : null;
+  const netText = fxNet ? `${fxNet.pnl > 0 ? "+" : fxNet.pnl < 0 ? "−" : ""}$${Math.abs(fxNet.pnl).toFixed(2)}` : "";
+  const was = trade ? Math.abs(fx ? fxGross(trade) : trade.pnl) : 0;      // the amount the box held when the trade was opened
   return (
-    <div className={`jr-sheet ${d.res}${trade ? " in-list" : ""}`}>
+    <div className={`jr-sheet ${d.res}${trade ? " in-list" : ""}`}
+         onDragOver={(e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
+         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attach(e.dataTransfer.files); } }}>
       <div className="jr-top">
         <div className="jr-res">
           {Object.entries(JR_RES).map(([id, [label, icon]]) => (
-            <button key={id} tabIndex={-1} className={`jr-res-b${d.res === id ? " on" : ""}`} onClick={() => set({ res: id }, true)}>
+            <button key={id} tabIndex={-1} className={`jr-res-b${d.res === id ? " on" : ""}`} onClick={() => setRes(id)}>
               <span className="msym">{icon}</span>{label}
             </button>
           ))}
         </div>
-        <label className="jr-pnl" title={d.res === "be" ? "A break-even trade counts as $0" : "Realised PnL of the trade, in USDT"}>
-          <span>{d.res === "win" ? "+$" : d.res === "loss" ? "−$" : "$"}</span>
-          <input ref={amtRef} inputMode="decimal" placeholder="0.00" aria-label="PnL in dollars" disabled={d.res === "be"}
-                 value={d.res === "be" ? "" : d.amt} onChange={(e) => set({ amt: sanitizeAmount(e.target.value, true) })}
-                 onBlur={() => { if (trade && trade.pnl && !pnlOf(live.current.amt)) set({ amt: String(Math.abs(trade.pnl)) }); save(); }}
+        <label className="jr-pnl" title={d.res === "be" ? "A break-even trade is neither won nor lost. Leave it at $0, or type what it closed at (with a minus if it cost a little)"
+                                         : fx ? "The trade's Profit as MetaTrader shows it, in USD. Its swap and its commission go in their own boxes and are added to it" : "Realised PnL of the trade, in USDT"}>
+          <span>{d.res === "win" ? `+${U}` : d.res === "loss" ? `−${U}` : U}</span>
+          <input ref={amtRef} inputMode="decimal" placeholder={idx ? "0" : "0.00"} aria-label={idx ? "PnL in rupiah" : "PnL in dollars"} value={d.amt}
+                 onChange={(e) => set({ amt: (live.current.res === "be" && /^\s*[-−]/.test(e.target.value) ? "-" : "") + (idx ? idrIn(e.target.value) : sanitizeAmount(e.target.value, true)) })}
+                 onBlur={() => { if (was && live.current.res !== "be" && !(idx ? idrOf(live.current.amt) : pnlOf(live.current.amt))) set({ amt: idx ? idrIn(String(was)) : String(was) }); save(); }}
                  onKeyDown={onKey} />
         </label>
       </div>
       <div className="jr-cols">
         <div className="jr-col">
-          <JrRow icon="toll" tint="#d9bd62" label="Coin">
-            <PairBox pad={11} ghost={ghost} className="jr-in" placeholder="BTC, ETH, SOL…" aria-label="Coin" value={d.pair}
+          <JrRow icon={fx ? "currency_exchange" : idx ? "apartment" : "toll"} tint="#d9bd62" label={fx ? "Symbol" : idx ? "Stock" : "Coin"}>
+            <PairBox pad={11} ghost={ghost && ` ${ghost}`} className="jr-in" placeholder={fx ? "EURUSD, XAUUSD, GBPJPY…" : idx ? "BBCA, TLKM, ANTM…" : "BTC, ETH, SOL…"} aria-label={fx ? "Symbol" : idx ? "Stock" : "Coin"} value={d.pair}
                      onChange={(e) => set({ pair: pairName(e.target.value) })} onBlur={save} onKeyDown={onKey} />
           </JrRow>
-          <JrRow icon="trending_up" tint={short ? "#e2808c" : "#8fd7a4"} label="Position" cls={short ? "flip" : ""}>
-            {["long", "short"].map((s) => (
-              <button key={s} tabIndex={-1} className={`jr-chip ${s}${d.side === s ? " on" : ""}`} onClick={() => set({ side: s }, true)}>{s === "long" ? "Long" : "Short"}</button>
-            ))}
+          {idx ? (
+            <>
+              <JrRow icon="timelapse" tint="#c9b98a" label="Trade style">
+                <span className="jr-pick">
+                  {IDX_STYLES.map(([id, name]) => (
+                    <button key={id} tabIndex={-1} className={`jr-chip${d.style === id ? " on" : ""}`} onClick={() => set({ style: d.style === id ? "" : id }, true)}>{name}</button>
+                  ))}
+                </span>
+              </JrRow>
+              <JrRow icon="category" tint="#9db7c9" label="Sector" cls="top">
+                <span className="jr-pick">
+                  <button tabIndex={-1} className={`jr-chip${d.sec ? "" : " on"}`} title="Read from the ticker" onClick={() => set({ sec: "" }, true)}>Auto{secAuto ? ` · ${secAuto}` : ""}</button>
+                  {IDX_SECTORS.map((sec) => (
+                    <button key={sec} tabIndex={-1} className={`jr-chip${d.sec === sec ? " on" : ""}`} onClick={() => set({ sec: d.sec === sec ? "" : sec }, true)}>{sec}</button>
+                  ))}
+                </span>
+              </JrRow>
+            </>
+          ) : (
+          <JrRow icon="trending_up" tint={short ? "#e2808c" : "#8fd7a4"} label={fx ? "Type" : "Position"} cls={short ? "flip" : ""}>
+            <span className="jr-pick">
+              {["long", "short"].map((s) => (
+                <button key={s} tabIndex={-1} className={`jr-chip ${s}${d.side === s ? " on" : ""}`} onClick={() => set({ side: s }, true)}>{fx ? (s === "long" ? "Buy" : "Sell") : s === "long" ? "Long" : "Short"}</button>
+              ))}
+            </span>
           </JrRow>
+          )}
+          {fx && (
+            <JrRow icon="stacks" tint="#b7a4e6" label="Volume">
+              <PairBox pad={11} ghost=" lot" {...num("vol", 2)} placeholder="e.g. 0.10" aria-label="Volume in lots" />
+            </JrRow>
+          )}
           <JrRow icon="candlestick_chart" tint="#8fb4e0" label="Time frame">
-            {TF_LIST.map((tf) => (
-              <button key={tf} tabIndex={-1} className={`jr-chip${d.tf === tf ? " on" : ""}`} onClick={() => set({ tf: d.tf === tf ? "" : tf }, true)}>{tf}</button>
+            <span className="jr-pick">
+            {TF_LIST.map((tf, i) => (
+              <button key={tf} tabIndex={-1} className={`jr-chip tf${d.tf === tf ? " on" : ""}`} style={{ "--tf": TF_TINT[i] }}
+                      onClick={() => { setOwn(""); set({ tf: d.tf === tf ? "" : tf }, true); }}>{tf}</button>
             ))}
+            <input className={`jr-chip tf own${ownTf && d.tf === ownTf ? " on" : ""}`} style={{ "--tf": ownTf ? tfTint(ownTf) : "#8a9299" }}
+                   value={own} placeholder="Own" maxLength={5} aria-label="A time frame of your own" title="A time frame of your own: 45m, 2h, 3D, 1W…"
+                   onChange={(e) => setOwn(e.target.value.replace(/[^\dmhHdDwWM]/g, ""))} onBlur={ownDone}
+                   onKeyDown={(e) => { if (e.key === "Enter") { ownDone(); if (trade) e.target.blur(); else add(); } }} />
+            </span>
           </JrRow>
           <JrRow icon="hourglass_top" tint="#8fb4e0" label="Duration">
             <input {...text("dur", 16)} onKeyDown={onKey} placeholder="e.g. 5h 40m" aria-label="Duration" />
           </JrRow>
+          {fx && (
+            <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
+              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 2.5" aria-label="R factor" />
+            </JrRow>
+          )}
         </div>
         <div className="jr-col">
+          {fx ? (
+            // forex, as a position reads in MetaTrader: the prices, then the swap and the commission. The pips and what the
+            // trade comes to are worked out, never typed
+            <>
+              <JrRow icon="login" tint="#8fb4e0" label="Open price"><input {...num("open", 6)} placeholder="Price it opened at" aria-label="Open price" /></JrRow>
+              <JrRow icon="shield" tint="#dc9ba4" label="S / L"><input {...num("sl", 6)} style={{ color: "#dfa8b0" }} placeholder="Stop loss, as a price" aria-label="Stop loss" /></JrRow>
+              <JrRow icon="flag" tint="#7ccfb0" label="T / P"><input {...num("tpp", 6)} style={{ color: "#a5dcc6" }} placeholder="Take profit, as a price" aria-label="Take profit" /></JrRow>
+              <JrRow icon="logout" tint="#8fb4e0" label="Close price"><input {...num("close", 6)} placeholder="Price it closed at" aria-label="Close price" /></JrRow>
+              <JrRow icon="dark_mode" tint="#b7a4e6" label="Swap">
+                <input className="jr-in" inputMode="decimal" value={d.swap} placeholder="0.00 · with a minus when it was charged" aria-label="Swap"
+                       onChange={(e) => set({ swap: (/^\s*[-−]/.test(e.target.value) ? "-" : "") + sanitizeAmount(e.target.value, true) })} onBlur={save} onKeyDown={onKey} />
+              </JrRow>
+              <JrRow icon="receipt_long" tint="#b7a4e6" label="Commission"><input {...num("comm", 2)} placeholder="0.00 · always a cost" aria-label="Commission" /></JrRow>
+              <JrRow icon="straighten" tint="#9db7c9" label="Pips"><span className="jr-calc" title="Worked out from the open and the close price. Only for currency pairs: metals and indices have no agreed pip">{pips !== null ? `${pipsText(pips)} pips` : <i>From the open and close price</i>}</span></JrRow>
+              <JrRow icon="functions" tint="#9db7c9" label="Net result"><span className="jr-calc" title="Worked out: profit + swap + commission. This is what the tracker counts, as your balance does">{netText || <i>Profit + swap + commission</i>}</span></JrRow>
+            </>
+          ) : (
+          <>
           <JrRow icon="flag" tint="#7ccfb0" label="Full TP %">
-            <PairBox pad={11} ghost=" %" {...num("tp")} style={{ color: "#a5dcc6" }} placeholder="Entry to full TP, in %" aria-label="Full TP %" />
+            <PairBox pad={11} ghost=" %" tail={withLev("tp")} {...num("tp", 3)} style={{ color: "#a5dcc6" }} placeholder="Entry to full TP, in %" aria-label="Full TP %" />
           </JrRow>
           <JrRow icon="shield" tint="#dc9ba4" label="Risk %">
-            <PairBox pad={11} ghost=" %" {...num("risk")} placeholder="Of the account" aria-label="Risk %" />
+            <PairBox pad={11} ghost=" %" tail={withLev("risk")} {...num("risk", 3)} style={{ color: "#dfa8b0" }} placeholder="Entry to stop, in %" aria-label="Risk %" />
           </JrRow>
+          {idx ? (
+            <JrRow icon="stacks" tint="#b7a4e6" label="Lots">
+              <PairBox pad={11} ghost=" lot" {...num("lots", 0)} placeholder="e.g. 120 (1 lot = 100 shares)" aria-label="Lots" />
+            </JrRow>
+          ) : (
           <JrRow icon="speed" tint="#b7a4e6" label="Leverage">
-            <PairBox pad={11} ghost="x" {...num("lev")} placeholder="e.g. 20" aria-label="Leverage" />
+            <PairBox pad={11} ghost=" x" {...num("lev")} placeholder="e.g. 20" aria-label="Leverage" />
           </JrRow>
-          <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
-            <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 8" aria-label="R factor" />
+          )}
+          <JrRow icon="balance" tint="#e0b97c" label={idx ? "RR" : "R / Factor"}>
+            <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder={idx ? "e.g. 3.2" : "e.g. 8"} aria-label="R factor" />
           </JrRow>
+          {idx && (
+            <>
+              <JrRow icon="login" tint="#8fb4e0" label="Avg entry"><input {...rp("entry")} placeholder="Average buy price" aria-label="Average entry price" /></JrRow>
+              <JrRow icon="logout" tint="#8fb4e0" label="Avg exit"><input {...rp("exit")} placeholder="Average sell price" aria-label="Average exit price" /></JrRow>
+              <JrRow icon="shopping_cart" tint="#9db7c9" label="Buy value"><span className="jr-calc" title="Worked out: lots × 100 shares × the average entry">{worth("entry") || <i>Lots × 100 × avg entry</i>}</span></JrRow>
+              <JrRow icon="sell" tint="#9db7c9" label="Sell value"><span className="jr-calc" title="Worked out: lots × 100 shares × the average exit">{worth("exit") || <i>Lots × 100 × avg exit</i>}</span></JrRow>
+            </>
+          )}
+          </>
+          )}
         </div>
       </div>
-      <JrRow icon="lightbulb" tint="#cfc59a" label="Pre notes">
-        <input {...text("pre", 400)} onKeyDown={onKey} placeholder="The plan before the entry" aria-label="Pre notes" />
+      <JrRow icon="lightbulb" tint="#cfc59a" label="Setup" cls={d.preImgs.length ? "top" : ""}>
+        {/* the setup's own pictures (the chart before the entry): a small button at the end of its box, and the
+            pictures under it once there are some */}
+        <div className="jr-pre" onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); e.stopPropagation(); attach(e.dataTransfer.files, "preImgs"); } }}>
+          <div className="jr-pre-line">
+            <input ref={preRef} {...text("pre", 400)} onKeyDown={onKey} placeholder="The plan before the entry" aria-label="Setup" />
+            {d.preImgs.length < SHOT_MAX && (
+              <label className={`jr-pre-add${busy ? " busy" : ""}`} title="Put pictures on the setup: choose them, drop them on this line, or paste one while typing in it">
+                <span className="msym">add_photo_alternate</span>
+                <input type="file" accept="image/*" multiple hidden onChange={(e) => { attach(e.target.files, "preImgs"); e.target.value = ""; }} />
+              </label>
+            )}
+          </div>
+          {d.preImgs.length > 0 && <div className="jr-shots" data-nowarm="">{thumbs("preImgs")}</div>}
+        </div>
       </JrRow>
-      <JrRow icon="edit_note" tint="#aab3bb" label="Description" cls="top">
-        <textarea {...text("note", 4000)} rows={4} placeholder="How it went, and what to take from it" aria-label="Description"
+      <JrRow icon="edit_note" tint="#aab3bb" label="Review" cls="top">
+        <textarea {...text("note", 4000)} rows={4} placeholder="How it went, and what to take from it" aria-label="Review"
                   onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onKey(e); }} />
       </JrRow>
+      {(
+        <JrRow icon="image" tint="#9db7c9" label="Pictures" cls="top">
+          {/* left out of the warm-up's copy of the screen: a kept picture's address only lasts for the session */}
+          <div className="jr-shots" data-nowarm="">
+            {thumbs("imgs")}
+            {d.imgs.length < SHOT_MAX && (
+              <label className={`jr-shot add${busy ? " busy" : ""}`} title="Attach pictures: choose them, drop them here, or paste one">
+                <span className="msym">add_photo_alternate</span>
+                <input type="file" accept="image/*" multiple hidden onChange={(e) => { attach(e.target.files); e.target.value = ""; }} />
+              </label>
+            )}
+          </div>
+        </JrRow>
+      )}
       {!trade && (
         <div className="jr-foot">
           <button className="jr-add" onClick={add} title="Add this trade (Enter)"><span className="msym">add</span>Add trade</button>
@@ -3901,36 +6757,272 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost }) {
     </div>
   );
 });
-/* the day's journal: the sheet for a new trade, then the trades logged, one line each. A press opens a trade's own sheet */
-const TradeJournal = memo(function TradeJournal({ list, removing, api, ghost }) {
+/* a logged trade opened to look at (the row → this → the form, 6 October 2026): the result and its R big, what was
+   filled in as tiles, the setup and the review as text, the pictures. Nothing can be typed here; "Edit trade" gives the form */
+const TradeView = memo(function TradeView({ trade: t, api, onEdit, onView, idx, fx }) {
+  const pips = fx ? fxPips(t) : null;
+  const res = resOf(t), sign = res === "win" ? "+" : res === "loss" ? "−" : "";
+  const lev = Math.min(Number(t.lev) || 0, 1000);
+  const at = (v) => (lev > 0 && Number(v) > 0 ? `${roundTo(Number(v) * lev, 2)}% at ${roundTo(lev, 2)}×` : "");
+  const dots = (v) => idrIn(String(Math.round(v)));
+  const buy = idx ? stockWorth(t.lots, t.entry) : 0, sell = idx ? stockWorth(t.lots, t.exit) : 0, sec = idx ? sectorOf(t) : "";
+  const move = idx && t.entry > 0 && t.exit > 0 ? (t.exit / t.entry - 1) * 100 : null;
+  // one line that says what kind of trade it was: [text, colour]
+  const bits = (fx ? [
+    [t.side === "short" ? "Sell" : "Buy", t.side === "short" ? "#e2808c" : "#8fd7a4"],
+    t.tf && [t.tf, tfTint(t.tf)],
+    t.vol && [`${t.vol} lot`, "#b7a4e6"],
+    t.dur && [t.dur],
+  ] : idx ? [
+    t.style && [IDX_STYLE_NAME[t.style], "#c9b98a"],
+    t.tf && [t.tf, tfTint(t.tf)],
+    t.lots && [`${dots(t.lots)} lot`, "#b7a4e6"],
+    t.dur && [t.dur],
+    sec && [sec, "#9db7c9"],
+  ] : [
+    [t.side === "short" ? "Short" : "Long", t.side === "short" ? "#e2808c" : "#8fd7a4"],
+    t.tf && [t.tf, tfTint(t.tf)],
+    t.lev && [`${t.lev}×`, "#b7a4e6"],
+    t.dur && [t.dur],
+  ]).filter(Boolean);
+  // then its figures, a name over each: [name, figure, colour, [small figure beside it, its colour]]
+  const cells = (fx ? [
+    t.open && ["Open", String(t.open)],
+    t.close && ["Close", String(t.close), undefined, pips !== null && [`${pipsText(pips)} pips`, pips >= 0 ? "#8fd7a4" : "#e2808c"]],
+    t.sl && ["S / L", String(t.sl), "#dfa8b0"],
+    t.tpp && ["T / P", String(t.tpp), "#a5dcc6"],
+    // what MetaTrader shows as Profit, and the two that are taken from it, when there are any
+    (t.swap || t.comm) && ["Profit", api.current.money(fxGross(t))],
+    t.swap && ["Swap", api.current.money(t.swap)],
+    t.comm && ["Commission", api.current.money(t.comm)],
+  ] : idx ? [
+    t.entry && ["Entry", dots(t.entry)],
+    t.exit && ["Exit", dots(t.exit), undefined, move !== null && [`${move >= 0 ? "+" : "−"}${Math.abs(move).toFixed(2).replace(".", ",")}%`, move >= 0 ? "#8fd7a4" : "#e2808c"]],
+    t.risk && ["Risk", `${t.risk}%`, "#dfa8b0"],
+    t.tp && ["Full TP", `${t.tp}%`, "#a5dcc6"],
+    buy > 0 && ["Buy value", `Rp${dots(buy)}`],
+    sell > 0 && ["Sell value", `Rp${dots(sell)}`],
+  ] : [
+    t.risk && ["Risk", `${t.risk}%`, "#dfa8b0", at(t.risk) && [at(t.risk)]],
+    t.tp && ["Full TP", `${t.tp}%`, "#a5dcc6", at(t.tp) && [at(t.tp)]],
+  ]).filter(Boolean);
+  return (
+    <div className="jv">
+      <div className="jv-top">
+        <span className="jv-pnl">{api.current.money(t.pnl)}</span>
+        {t.rr && <span className="jv-r">{sign}{t.rr}R</span>}
+        <span style={{ flex: 1 }} />
+        <button className="jv-btn ico" onClick={onEdit} title="Edit trade" aria-label="Edit trade"><span className="msym">edit</span></button>
+      </div>
+      {bits.length > 0 && (
+        <div className="jv-sum">
+          {bits.map(([text, c], i) => <Fragment key={i}>{i > 0 && <i>·</i>}<b style={c ? { color: c } : undefined}>{text}</b></Fragment>)}
+        </div>
+      )}
+      {cells.length > 0 && (
+        <div className="jv-grid">
+          {cells.map(([k, v, c, sub]) => (
+            <div key={k} className="jv-cell">
+              <span className="jv-k">{k}</span>
+              <span className="jv-line"><span className="jv-v" style={c ? { color: c } : undefined}>{v}</span>{sub && <span className="jv-s" style={sub[1] ? { color: sub[1], fontWeight: 700 } : undefined}>{sub[0]}</span>}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {(t.pre || (t.preImgs && t.preImgs.length > 0)) && (
+        <div className="jv-note">
+          <span className="jv-k">Setup</span>
+          {t.pre && <p>{t.pre}</p>}
+          {t.preImgs && t.preImgs.length > 0 && (
+            <div className="jr-shots" data-nowarm="" style={{ marginTop: 8 }}>
+              {t.preImgs.map((id) => <span key={id} className="jr-shot" onClick={() => onView(id)} title="Open"><Shot id={id} /></span>)}
+            </div>
+          )}
+        </div>
+      )}
+      {t.note && <div className="jv-note"><span className="jv-k">Review</span><p>{t.note}</p></div>}
+      {t.imgs && t.imgs.length > 0 && (
+        <div className="jr-shots" data-nowarm="" style={{ marginTop: 12 }}>
+          {t.imgs.map((id) => <span key={id} className="jr-shot" onClick={() => onView(id)} title="Open"><Shot id={id} /></span>)}
+        </div>
+      )}
+    </div>
+  );
+});
+/* IDX analytics: the trades of the month or the year shown, added up by sector and by trade style: how many, the win
+   rate, what they made. Biggest earner first; a trade with no tag counts under "Untagged" */
+const IdxBreakdown = memo(function IdxBreakdown({ trades, year, month, api }) {
+  const [span, setSpan] = useState("month");
+  const g = useMemo(() => {
+    const pre = span === "month" ? `${year}-${pad(month + 1)}-` : `${year}-`, by = { sec: {}, style: {} };
+    for (const k in trades) {
+      if (!k.startsWith(pre)) continue;
+      for (const t of trades[k]) {
+        const r = resOf(t);
+        for (const [dim, name] of [["sec", sectorOf(t) || "Untagged"], ["style", IDX_STYLE_NAME[t.style] || "Untagged"]]) {
+          const o = (by[dim][name] ||= { name, n: 0, w: 0, pnl: 0 });
+          o.n++; if (r === "win") o.w++; o.pnl += t.pnl;
+        }
+      }
+    }
+    const list = (o) => Object.values(o).sort((a, b) => b.pnl - a.pnl);
+    return { sec: list(by.sec), style: list(by.style) };
+  }, [trades, year, month, span]);
+  const col = (title, rows) => {
+    const top = Math.max(1, ...rows.map((r) => Math.abs(r.pnl)));
+    return (
+      <div className="bk-col">
+        <div className="jv-k">{title}</div>
+        {rows.length === 0 && <div className="bk-none">No trades in this {span}.</div>}
+        {rows.map((r, i) => (
+          <div key={r.name} className="bk-row bd-item" style={{ animationDelay: `${40 + i * 30}ms` }}>
+            <span className="bk-l"><span className="bk-name">{r.name}</span><span className="bk-meta">{r.n} {r.n === 1 ? "trade" : "trades"} · {Math.round((r.w / r.n) * 100)}% win rate</span></span>
+            <span className="bk-pnl" style={{ color: r.pnl > 0 ? C_GREEN : r.pnl < 0 ? C_RED : "#e3cd77" }}>{api.current.money(r.pnl)}</span>
+            <span className="bk-track"><i style={{ width: `${Math.max(2, (Math.abs(r.pnl) / top) * 100)}%`, background: r.pnl >= 0 ? C_GREEN : C_RED }} /></span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, margin: "2px 0 12px" }}>
+        {[["month", "This month"], ["year", "This year"]].map(([id, name]) => (
+          <button key={id} className={`jr-chip${span === id ? " on" : ""}`} onClick={() => setSpan(id)}>{name}</button>
+        ))}
+      </div>
+      <div key={span} className="bk-cols">{col("By sector", g.sec)}{col("By trade style", g.style)}</div>
+    </div>
+  );
+});
+/* money put into the trading account or taken out of it, on the day it happened: it moves the balance (the analysis
+   card's asset and % charts) without counting as PnL. One line under the day's trades: he asked to enter his deposits
+   "somewhere on log trades ui". Typed in USDT, like the trades */
+const DepositBox = memo(function DepositBox({ list, api, shown }) {
+  const [out, setOut] = useState(false);                   // putting in, or taking out
+  const [amt, setAmt] = useState("");
+  const [short, setShort] = useState(null);                // what the account held, when a withdrawal asked for more
+  const [show, setShow] = useState(false);                 // shut by default: deposits are the account's books, not the journal
+  const sum = list.reduce((a, it) => a + it.amt, 0);
+  const add = () => {
+    const v = pnlOf(amt);
+    if (!v) return;
+    const res = api.current.addDep(out ? -v : v);
+    if (res === true) { setAmt(""); setShort(null); } else { setShort(res); setTimeout(() => setShort(null), 3200); }
+  };
+  return (
+    <div className="jr-cash">
+      <button className="jr-cash-head" onClick={() => setShow(!show)} title="Money put into the trading account or taken out. It moves the balance, never the PnL">
+        <span className="msym" style={{ color: "#9db7c9" }}>account_balance_wallet</span>Cash flow
+        <i>{list.length ? `${list.length} this day · ${api.current.money(sum)}` : "Deposits and withdrawals"}</i>
+        <span className={`msym jr-cash-chev${show ? " up" : ""}`}>expand_more</span>
+      </button>
+      {show && (
+    <div className="jr-dep">
+      <span className="jr-k">This day</span>
+      <span className="jr-v">
+        {[false, true].map((o) => (
+          <button key={o ? "out" : "in"} tabIndex={-1} className={`jr-chip${out === o ? " on" : ""}`} onClick={() => setOut(o)}>{o ? "Withdraw" : "Deposit"}</button>
+        ))}
+        <label className="jr-pnl dep" title={`Money put into the trading account, or taken out of it, in ${api.current.unit}. It moves the balance, not the PnL`}>
+          <span>{out ? "−$" : "+$"}</span>
+          <input inputMode="decimal" placeholder="0.00" aria-label={out ? "Withdrawal in dollars" : "Deposit in dollars"} value={amt}
+                 onChange={(e) => setAmt(sanitizeAmount(e.target.value, true))} onKeyDown={(e) => e.key === "Enter" && add()} />
+        </label>
+        <button tabIndex={-1} className="jr-chip" onClick={add} title="Add it to this day (Enter)">Add</button>
+        {short !== null && <span className="jr-dep-no">{short > 0 ? `Only ${api.current.abs(short)} in the account that day` : "Nothing in the account to take out that day"}</span>}
+        {list.map((it) => (
+          <span key={it.id} className="jr-dep-chip">
+            {it.amt < 0 ? "Withdrew" : "Deposited"}<b>{api.current.abs(Math.abs(it.amt))}</b>
+            <button className="chip-x jr-dep-x" onClick={() => api.current.delDep(it.id)} title="Delete" aria-label="Delete">×</button>
+          </span>
+        ))}
+      </span>
+    </div>
+      )}
+    </div>
+  );
+});
+// the ••• menu: how long its box takes to draw back to the dots (the buttons stay until then), and the buttons' width,
+// noted on the row as they are put there: what stands left of them in the row is slid over by it
+const JR_MENU_MS = 360;
+const jrActsW = (el) => { if (el) el.closest(".jr-sum").style.setProperty("--aw", `${el.offsetWidth}px`); };
+/* the day's journal: the sheet for a new trade, then the trades logged, one line each (a press opens a trade's own
+   sheet), then the day's deposits */
+const TradeJournal = memo(function TradeJournal({ list, deps, removing, api, ghost, shown, idx, fx }) {
   const [open, setOpen] = useState(null);
   const [seen, setSeen] = useState({});                    // sheets are built the first time they are opened
-  const toggle = (id) => { setOpen((o) => (o === id ? null : id)); setSeen((s) => (s[id] ? s : { ...s, [id]: true })); };
+  const [view, setView] = useState(null);                  // the picture opened large
+  const [edit, setEdit] = useState(null);                  // the open trade shows its form (otherwise it is only looked at)
+  const [menu, setMenu] = useState(null);                  // the row whose ••• is open
+  const [acts, setActs] = useState({});                    // the rows whose three buttons are there: the open one, and one whose box is still drawing back
+  const openMenu = (id) => { setActs((a) => ({ ...a, [id]: true })); setMenu(id); };
+  const toggle = (id) => { setEdit(null); setOpen((o) => (o === id ? null : id)); setSeen((s) => (s[id] ? s : { ...s, [id]: true })); };
+  const toEdit = (id) => { setMenu(null); setOpen(id); setEdit(id); setSeen((s) => (s[id] ? s : { ...s, [id]: true })); };
+  useEffect(() => {
+    // the buttons of a row that was shut go once its box has drawn back
+    const t = setTimeout(() => setActs((a) => (Object.keys(a).length === (menu ? 1 : 0) ? a : menu ? { [menu]: true } : {})), JR_MENU_MS);
+    if (!menu) return () => clearTimeout(t);
+    const shut = () => setMenu(null);
+    window.addEventListener("click", shut);
+    return () => { clearTimeout(t); window.removeEventListener("click", shut); };
+  }, [menu]);
   return (
     <>
-      <TradeSheet api={api} ghost={ghost} />
+      <TradeSheet api={api} ghost={ghost} active={open === null} onView={setView} idx={idx} fx={fx} />
       {list.length > 0 && <div style={{ ...S.sectionLabel, marginTop: 18 }}>Logged</div>}
       <div style={S.expList}>
-        {list.map((it, idx) => {
-          const res = resOf(it.pnl), sign = res === "win" ? "+" : res === "loss" ? "−" : "";
-          const meta = [it.rr && `${sign}${it.rr}R`, it.tp && `TP ${it.tp}%`, it.risk && `${it.risk}% risk`, it.lev && `${it.lev}x`, it.dur, it.note || it.pre].filter(Boolean).join("  ·  ");
+        {list.map((it, at) => {
+          const res = resOf(it), sign = res === "win" ? "+" : res === "loss" ? "−" : "";
+          const pips = fx ? fxPips(it) : null;
+          const meta = (fx ? [it.vol && `${it.vol} LOT`, pips !== null && `${pipsText(pips)} PIPS`, it.dur && it.dur.toUpperCase()]
+            : [it.tp && `TP ${it.tp}%`, it.risk && `RISK ${it.risk}%`, idx ? it.lots && `${it.lots} LOT` : it.lev && `${it.lev}×`, it.dur && it.dur.toUpperCase()]).filter(Boolean);
           return (
             <div key={it.id} className={`row-wrap${removing[it.id] ? " collapsing" : ""}`}>
               <div style={S.fold}>
-                <div style={{ transformOrigin: "center center", animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards` }}>
+                <div style={{ transformOrigin: "center center", animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + at * 45}ms backwards` }}>
                   <div className={`jr-item glass-soft ${res}${open === it.id ? " open" : ""}`}>
-                    <div className="jr-sum" onClick={() => toggle(it.id)} title={open === it.id ? "Close" : "Open this trade"}>
+                    <div className={`jr-sum${acts[it.id] ? " acts" : ""}${menu === it.id ? " menu" : ""}`} onClick={() => toggle(it.id)} title={open === it.id ? "Close" : "Open this trade"}>
                       <span className="jr-badge"><span className="msym">{JR_RES[res][1]}</span>{JR_RES[res][0]}</span>
-                      <span className="jr-name">{it.pair || "No pair"}{ghost && it.pair && !it.pair.includes("/") && coinOf(it.pair) === it.pair && <i>{ghost}</i>}</span>
-                      <span className={`jr-tag ${it.side}`}>{it.side === "short" ? "Short" : "Long"}</span>
-                      {it.tf && <span className="jr-tag">{it.tf}</span>}
-                      <span className="jr-meta">{meta}</span>
+                      {idx ? (
+                        // a stock: a grey $ before the ticker, and the company under it in light grey when it is one it knows
+                        <span className="jr-name tk"><span>{it.pair || "No stock"}</span>{IDX_NAME[it.pair] && <small>{IDX_NAME[it.pair]}</small>}</span>
+                      ) : <span className="jr-name">{it.pair || (fx ? "No symbol" : "No pair")}{ghost && it.pair && !it.pair.includes("/") && coinOf(it.pair) === it.pair && <i>{ghost}</i>}</span>}
+                      {idx ? it.style && <span className="jr-tag st">{IDX_STYLE_NAME[it.style]}</span>
+                        : <span className={`jr-tag ${it.side}`}>{fx ? (it.side === "short" ? "Sell" : "Buy") : it.side === "short" ? "Short" : "Long"}</span>}
+                      {it.tf && <span className="jr-tag tf" style={{ "--tf": tfTint(it.tf) }}>{it.tf}</span>}
+                      <span className="jr-meta">
+                        {it.rr && <b>{sign}{it.rr}R</b>}
+                        {meta.map((m) => <i key={m}>{m}</i>)}
+                        {(it.pre || it.note) && <em>{it.pre || it.note}</em>}
+                      </span>
+                      {shotIds(it).length > 0 && <span className="jr-pics" title={shotIds(it).length === 1 ? "1 picture" : `${shotIds(it).length} pictures`}><span className="msym">image</span>{shotIds(it).length}</span>}
                       <span className="jr-amt">{api.current.money(it.pnl)}</span>
                       <span className="msym jr-chev">expand_more</span>
-                      <button className="trash-btn" style={S.delBtn} onClick={(e) => { e.stopPropagation(); api.current.del(it.id); }} title="Delete"><TrashIcon /></button>
+                      {/* deleting is rare and can't be taken back: it waits behind ••• with Edit and Duplicate, not beside the PnL */}
+                      <span className="jr-more" onClick={(e) => e.stopPropagation()}>
+                        <span className="jr-box"><i /></span>
+                        {acts[it.id] && (
+                          <span className="jr-acts" ref={jrActsW}>
+                            <span className="jr-acts-in">
+                              <button onClick={() => toEdit(it.id)}>Edit</button>
+                              <button onClick={() => { setMenu(null); api.current.dup(it); }}>Duplicate</button>
+                              <button className="del" onClick={() => { setMenu(null); api.current.del(it.id); }}>Delete</button>
+                            </span>
+                          </span>
+                        )}
+                        <button className={`jr-dots${menu === it.id ? " on" : ""}`} title="More" aria-label="More" onClick={() => (menu === it.id ? setMenu(null) : openMenu(it.id))}><span className="msym">more_horiz</span></button>
+                      </span>
                     </div>
                     <div className="jr-fold">
-                      <div style={S.fold}>{seen[it.id] && <TradeSheet trade={it} api={api} ghost={ghost} />}</div>
+                      <div style={S.fold}>
+                        {seen[it.id] && (edit === it.id ? (
+                          <>
+                            <div className="jv-bar"><span>Editing · it saves itself</span><button className="jv-btn" onClick={() => setEdit(null)}><span className="msym">check</span>Done</button></div>
+                            <TradeSheet trade={it} api={api} ghost={ghost} active={open === it.id} onView={setView} idx={idx} fx={fx} />
+                          </>
+                        ) : <TradeView trade={it} api={api} onEdit={() => setEdit(it.id)} onView={setView} idx={idx} fx={fx} />)}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -3939,22 +7031,113 @@ const TradeJournal = memo(function TradeJournal({ list, removing, api, ghost }) 
           );
         })}
       </div>
+      {!idx && <DepositBox list={deps} api={api} shown={shown} />}
+      {view && <ShotView id={view} onClose={() => setView(null)} />}
     </>
   );
 });
 
+// what the made-up trades of the crypto journal say before and after
+const TEST_SETUPS = ["Sweep of the lows into the 0.618, long the reclaim", "Range high rejected twice, short the third tap", "4h trend up, buying the 15m pullback to VWAP",
+  "Breakout and retest of the daily level", "Funding very negative, squeeze setup", "Lower high under resistance, short with the trend", "Fib 0.5 with the 200 EMA under it",
+  "Liquidity above the equal highs, fade the wick", "News spike faded, mean reversion to the open", "Higher low after the flush, long over the last candle"];
+const TEST_SETUPS_IDX = ["Breakout of the 3-month base on rising volume", "Pullback to the MA20 in an uptrend", "Foreign net buy three days running", "Rebound from the weekly support",
+  "Earnings beat, gap held on the first pullback", "Dividend run-up into the cum date", "Sector rotation into banks, buying the leader", "Cup and handle on the daily",
+  "ARB bounce, quick intraday scalp", "Accumulation by the big brokers, bid stacked"];
+const TEST_SETUPS_FX = ["London open sweep of the Asian low, long the reclaim", "NFP spike faded back into the range", "Daily trend down, selling the 1h pullback to the 50 EMA",
+  "Break and retest of the weekly level", "Dollar index rolling over, buying the majors", "Double top at the round number, short the neckline", "Fib 0.618 with the 200 EMA under it",
+  "Liquidity above the equal highs, fade the wick", "With the trend after the rate decision, buying the dip", "Higher low after the news flush, long over the last candle"];
+// roughly where each test pair trades, and how many decimals it is quoted to
+const FX_TEST_PX = { EURUSD: [1.085, 5], GBPUSD: [1.27, 5], USDJPY: [150, 3], XAUUSD: [2650, 2], AUDUSD: [0.66, 5], USDCHF: [0.88, 5], USDCAD: [1.36, 5], NZDUSD: [0.6, 5],
+                     EURJPY: [162, 3], GBPJPY: [190, 3], EURGBP: [0.85, 5] };
+const TEST_REVIEWS = {
+  win: ["Waited for the close, entry was clean. Partial at 2R, the rest ran.", "Went as planned. Could have held the runner longer.", "Good patience. Moved the stop to entry too early, still paid.",
+        "Textbook. Size was right and I didn't touch it.", "Took profit a little early, but the plan was followed."],
+  loss: ["Stopped out at the plan's level. Nothing to change.", "Entered before the confirmation. Wait for the close next time.", "Counter-trend and I knew it. Skip these.",
+         "Stop was too tight for this coin's range.", "Revenge trade after the last one. Walk away sooner."],
+};
+/* The journal's boxes for a made-up trade, all of them, to fit its result: a time frame, how long it ran, the stop and
+   the target in %, the R it made (a loss is the 1R it risked, or less if it was cut), a setup and a review; crypto 10–100x,
+   stocks a trade style, lots, the average entry and exit and what the buy and the sell came to. About four in ten carry a
+   picture or two: a made-up chart, drawn from its number and kept nowhere. */
+const testBoxes = (journal, pnl, pair, side) => {
+  const rnd = (a, b) => a + Math.random() * (b - a), pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const win = pnl > 0, size = Math.abs(pnl);
+  const ph = () => `ph:${Math.floor(Math.random() * 1e9)}`;
+  const pics = { ...(Math.random() < 0.4 ? { imgs: Array.from({ length: Math.random() < 0.3 ? 2 : 1 }, ph) } : {}), ...(Math.random() < 0.3 ? { preImgs: [ph()] } : {}) };
+  if (journal === "fx") {
+    /* forex: a volume, prices, a swap and a commission that add up to the trade's result. One lot makes `perLot` dollars
+       per unit of price (100,000 of the base currency, gold 100 ounces, turned into dollars where the pair is quoted in
+       something else: near enough for made-up trades). The costs are only put on a trade big enough to carry them */
+    const tf = pick(TF_LIST), mins = tfMin(tf) * rnd(3, 40), plan = roundTo(rnd(1.5, 5), 1), dir = side === "short" ? -1 : 1;
+    const [px, dp] = FX_TEST_PX[pair] || [1.1, 5], open = roundTo(px * rnd(0.985, 1.015), dp);
+    const perLot = pair === "XAUUSD" ? 100 : pair.endsWith("USD") ? 1e5 : pair.startsWith("USD") ? 1e5 / px : pair.endsWith("JPY") ? 1e5 / 150 : 1e5 * 1.27;
+    const vol = Math.min(50, Math.max(0.01, roundTo(size / (px * rnd(0.0008, 0.006) * perLot), 2)));
+    const comm = size > 12 && Math.random() < 0.7 ? -roundTo(Math.min(size / 6, Math.max(0.07, vol * 7)), 2) : 0;
+    const swap = comm && Math.random() < 0.3 ? -roundTo(Math.min(size / 8, rnd(0.05, 0.9) * Math.max(1, vol * 4)), 2) : 0;
+    const gross = pnl - comm - swap, dist = Math.abs(gross) / (vol * perLot);
+    const rr = win ? roundTo(Math.random() < 0.3 ? plan : rnd(0.6, plan), 1) : Math.random() < 0.75 ? 1 : roundTo(rnd(0.3, 0.9), 1), stop = dist / rr;
+    return { tf, dur: mins < 60 ? `${Math.round(mins)}m` : mins < 1440 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.floor(mins / 1440)}D ${Math.round((mins % 1440) / 60)}h`,
+             vol, open, close: roundTo(open + dir * (gross > 0 ? dist : -dist), dp), sl: roundTo(Math.max(open * 0.5, open - dir * stop), dp), tpp: roundTo(Math.max(open * 0.5, open + dir * stop * plan), dp), rr,
+             ...(comm ? { comm } : {}), ...(swap ? { swap } : {}),
+             pre: pick(TEST_SETUPS_FX), note: pick(win ? TEST_REVIEWS.win : TEST_REVIEWS.loss).replace("coin", "pair"), ...pics };
+  }
+  if (journal === "idx") {
+    const style = pick(["intraday", "swing", "swing", "swing", "position", "invest"]);
+    const [tf, dur] = { intraday: [pick(["5m", "15m", "1h"]), `${Math.round(rnd(1, 5))}h ${Math.round(rnd(0, 59))}m`], swing: [pick(["4h", "1D", "1D"]), `${Math.round(rnd(2, 15))}D`],
+                        position: ["1D", `${Math.round(rnd(3, 10))}W`], invest: ["1W", `${Math.round(rnd(4, 14))}M`] }[style];
+    const risk = roundTo(rnd(1, 7), 1), plan = roundTo(rnd(1.5, 5), 1), price = Math.round(rnd(4, 180)) * 50, lots = Math.max(1, Math.round(rnd(5, 300)));
+    const buy = lots * 100 * price, sell = Math.max(lots * 100, buy + (win ? size : -size));
+    return { style, tf, dur, risk, tp: roundTo(risk * plan, 1), lots, entry: price, exit: Math.max(50, Math.round(sell / (lots * 100))),
+             rr: win ? roundTo(Math.random() < 0.3 ? plan : rnd(0.6, plan), 1) : Math.random() < 0.75 ? 1 : roundTo(rnd(0.3, 0.9), 1),
+             ...(IDX_SECTOR_OF[pair] ? { sec: IDX_SECTOR_OF[pair] } : {}),          // chosen, not left on Auto: the ticker's own sector
+             pre: pick(TEST_SETUPS_IDX), note: pick(win ? TEST_REVIEWS.win : TEST_REVIEWS.loss).replace("coin", "stock"), ...pics };
+  }
+  const tf = pick(TF_LIST), mins = tfMin(tf) * rnd(3, 40), risk = roundTo(rnd(0.15, 2.6), 2), plan = roundTo(rnd(1.5, 8), 1);
+  return { tf, dur: mins < 60 ? `${Math.round(mins)}m` : mins < 1440 ? `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m` : `${Math.floor(mins / 1440)}D ${Math.round((mins % 1440) / 60)}h`,
+           risk, tp: roundTo(risk * plan, 2), lev: 10 + 5 * Math.floor(Math.random() * 19),
+           rr: win ? roundTo(Math.random() < 0.3 ? plan : rnd(0.6, plan), 1) : Math.random() < 0.75 ? 1 : roundTo(rnd(0.3, 0.9), 1),
+           pre: pick(TEST_SETUPS), note: pick(win ? TEST_REVIEWS.win : TEST_REVIEWS.loss), ...pics };
+};
+/* Test trades made before a side had its journal have none of its boxes. They are given them when the trades are read
+   (6 October 2026: he asked for all the boxes of the stocks test data to be filled; a third of the test trades he had were
+   older than the stocks journal). Only what carries test: true; his own trades are never touched. Hands back the same
+   object when there was nothing to fill, so the caller can tell. */
+const fillTestBoxes = (trades, journal) => {
+  let filled = false;
+  const out = {};
+  for (const k in trades) out[k] = trades[k].map((t) => {
+    if (!t.test || t.pnl === 0) return t;
+    if (!t.pre && !t.note && !t.tf) { filled = true; return { ...t, ...testBoxes(journal, t.pnl, t.pair, t.side) }; }
+    if (journal === "idx" && !t.sec && IDX_SECTOR_OF[t.pair]) { filled = true; return { ...t, sec: IDX_SECTOR_OF[t.pair] }; }     // had its boxes, but the sector on Auto
+    return t;
+  });
+  return filled ? out : trades;
+};
 const TEST_STOCKS = ["BBCA", "BBCA", "BBCA", "BBRI", "BBRI", "BMRI", "BMRI", "TLKM", "ASII", "ANTM", "ANTM", "ADRO", "GOTO", "BREN", "AMMN", "UNVR", "MDKA", "PGAS", "BRIS"];
-/* What differs between the two trading sides: where the data is kept, the currency trades are kept in (and its
-   decimals), whether a trade has a side, and the words for things. */
+const TEST_PAIRS = ["EURUSD", "EURUSD", "EURUSD", "EURUSD", "GBPUSD", "GBPUSD", "GBPUSD", "USDJPY", "USDJPY", "USDJPY", "XAUUSD", "XAUUSD", "XAUUSD", "AUDUSD", "USDCHF", "USDCAD", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP"];
+/* What differs between the trading sides: where the data is kept, the currency trades are kept in (and its decimals),
+   whether a trade has a side, and the words for things.
+   Forex (8 October 2026: "just copy all of the crypto apps but change it to forex terms") is the crypto side in a
+   dollar account: `base` stays "USDT" (the dollar the rates and the amounts are worked in) and `unit` is what it is
+   called on screen; a trade is a Buy or a Sell (sideName) on a symbol, and its journal reads like MetaTrader's.
+   pics: how the ids of a side's pictures begin, so each side sweeps away only its own. */
 const MARKETS = {
-  crypto: { key: CRYPTO_KEY, prefsKey: CRYPTO_PREFS_KEY, base: "USDT", dp: 2, sides: true, journal: true, ghost: "USDT.P", nameOf: coinOf,
+  crypto: { key: CRYPTO_KEY, prefsKey: CRYPTO_PREFS_KEY, base: "USDT", unit: "USDT", dp: 2, sides: true, sideName: ["Long", "Short"], journal: true, pics: "", ghost: "USDT.P", nameOf: coinOf,
             hint: "Pair — e.g. BTC, ETH, SOL", small: "Pair", none: "No pair", things: "Coins", app: "flow-crypto", file: "crypto-export", word: "crypto",
+            qadd: ["Coin", "Today · BTC, ETH short"], quick: "btc 120 · eth -45 short · be sol",
             calc: "Calculator", testNames: TEST_COINS, testStep: 0.01,
             test: { bal: 1000, min: 5, max: 40, balUnit: ["USDT", 1, 100], sizeUnit: ["USDT", 1, 5] } },
-  idx: { key: "pnl-idx-idr", prefsKey: "pnl-idx-prefs", base: "IDR", dp: 0, sides: false, ghost: "", nameOf: (pair) => pair,
+  idx: { journal: "idx", pics: "idx-", key: "pnl-idx-idr", prefsKey: "pnl-idx-prefs", base: "IDR", unit: "IDR", dp: 0, sides: false, sideName: ["Long", "Short"], ghost: "", nameOf: (pair) => pair,
          hint: "Stock — e.g. BBCA, TLKM, ANTM", small: "Stock", none: "No stock", things: "Stocks", app: "flow-idx", file: "idx-export", word: "stock",
+         qadd: ["Stock", "Today · BBCA, ANTM"], quick: "antm 350 · bbri -1,2jt · kemarin tlkm 500",
          calc: "Calculator", testNames: TEST_STOCKS, testStep: 500,
          test: { bal: 100, min: 500, max: 3000, balUnit: ["jt", 1e6, 10], sizeUnit: ["Rb", 1e3, 100] } },
+  fx: { journal: "fx", pics: "fx-", key: "pnl-fx-usd", prefsKey: "pnl-fx-prefs", base: "USDT", unit: "USD", dp: 2, sides: true, sideName: ["Buy", "Sell"], ghost: "", nameOf: (pair) => pair,
+        hint: "Symbol — e.g. EURUSD, XAUUSD", small: "Symbol", none: "No symbol", things: "Pairs", app: "flow-fx", file: "fx-export", word: "forex",
+        qadd: ["Symbol", "Today · EURUSD sell"], quick: "eurusd 27.5 · xauusd -40 sell · be gbpjpy",
+        calc: "Calculator", testNames: TEST_PAIRS, testStep: 0.01,
+        test: { bal: 1000, min: 5, max: 40, balUnit: ["USD", 1, 100], sizeUnit: ["USD", 1, 5] } },
 };
 
 /* test-data presets for the trading side: what kind of trader the made-up trades come from.
@@ -4092,7 +7275,34 @@ const TradeTestCfg = ({ cfg, M, year, month, onRun, onClose }) => {
   );
 };
 
-function TradeTracker({ market, onHome }) {
+/* Import takes any Flow backup: whichever side it was made on, whoever exported it and whatever the file is called
+   (11 October 2026: "import entries from any file (and from any user)"). Nothing in a backup says whose it was and the
+   file's name is never read, so any account can take in any account's file. The side is read from what is in the file,
+   and a file of another side than the one on screen is no longer refused: it goes to the side it belongs to. */
+const backupSide = (d) => {
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  if (!isObj(d)) return null;
+  if (isObj(d.trades)) return d.app === undefined ? "crypto" : Object.keys(MARKETS).find((k) => MARKETS[k].app === d.app) || null;
+  return isObj(d.spending) || isObj(d.incomes) ? "finance" : null;
+};
+const SIDE_SAID = { finance: "finance", crypto: "crypto", idx: "stocks", fx: "forex" };
+const sideSaid = (side) => `That was a ${SIDE_SAID[side]} backup: restored on the ${SIDE_SAID[side]} side`;
+// A trading backup for a side that is not on screen: cleaned as that side cleans it and written under that side's own
+// key, which it reads when it is next opened. Gives back how to undo it; null for a backup with nothing in it, false
+// when what that side has saved can't be read (it is never written over)
+const importSide = async (side, data) => {
+  const M = MARKETS[side], trades = migrateTrades(data.trades, M.dp), deps = migrateDeps(data.deposits, M.dp);
+  if (!Object.keys(trades).length && !Object.keys(deps).length) return null;
+  let was = null;
+  try { was = await store.get(M.key); } catch (e) { /* nothing saved on that side yet */ }
+  if (was && was.value) { try { const old = JSON.parse(was.value); if (!old || typeof old !== "object") return false; } catch (e) { return false; } }
+  const mine = (id) => typeof id === "string" && (id.startsWith("ph:") || (M.pics ? id.startsWith(M.pics) : !SHOT_SIDES.some((pre) => id.startsWith(pre))));
+  for (const k in trades) trades[k] = trades[k].map((t) => (shotIds(t).some((id) => !mine(id)) ? { ...t, ...Object.fromEntries(SHOT_KEYS.filter((key) => t[key]).map((key) => [key, t[key].filter(mine)])) } : t));
+  if (M.journal && data.images && typeof data.images === "object" && !Array.isArray(data.images)) await shotUnpack(Object.fromEntries(Object.entries(data.images).filter(([id]) => mine(id))));
+  await store.set(M.key, JSON.stringify({ version: 1, trades, deps }));
+  return () => store.set(M.key, was && was.value ? was.value : JSON.stringify({ version: 1, trades: {}, deps: {} }));
+};
+function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, who }) {
   const M = MARKETS[market];
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -4102,6 +7312,7 @@ function TradeTracker({ market, onHome }) {
   const [yearRise, setYearRise] = useState(false);     // rise-in for the header year (month -> year)
   const [yearShift, setYearShift] = useState(false);
   const [trades, setTrades] = useState({});            // "2026-10-02" -> [{ id, pnl, pair, side }]
+  const [deps, setDeps] = useState({});                // money put into the account or taken out: "2026-10-02" -> [{ id, amt }]
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
@@ -4116,7 +7327,7 @@ function TradeTracker({ market, onHome }) {
   const [chartClosing, setChartClosing] = useState(false);
   const [chartMode, setChartMode] = useState("line");
   const [chartAt, setChartAt] = useState(null);        // the period the chart pop-up shows: { y, m, dir }
-  const [hoverPt, setHoverPt] = useState(null);
+  const hoverHubT = useHoverHub(), setHoverPt = hoverHubT.set;      // the chart's hover: only its tooltip redraws (HoverSlot)
   const chartWrapRef = useRef(null);
   const chartModalRef = useRef(null);
   const chartWheelLock = useRef(null);
@@ -4132,12 +7343,18 @@ function TradeTracker({ market, onHome }) {
   const [cur2Pick, setCur2Pick] = useState("IDR");        // the second currency of the calculator's results
   const [fx, setFx] = useState({ live: null, manual: {} });   // live: { IDR, MYR, at }, manual: rates typed by hand (they win)
   const [calcOpen, setCalcOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [fees, setFees] = useState(IDX_FEES);             // the broker's buy and sell fee, %, for the stock calculator
   const calcDraft = useRef({ inputs: M.sides ? CALC_BLANK : STOCK_BLANK, shown: false });
   const [an, setAn] = useState(() => cleanAn(null));      // the analysis card's time frame: { kind: 7 … 180 | "custom", from, to }
-  const [eqBase, setEqBase] = useState(null);             // the balance he typed, minus all the trades had made: null until he types one
+  /* the balance, as he typed it, with the day and the moment he typed it: { v, at, ts }, null until he types one. It is
+     tied to that moment: what is logged afterwards for that day or a later one moves it; what is logged for an earlier
+     day (a trade entered late) only rewrites the past (inBal).
+     Until 5 October 2026 it was kept as a bare offset, so a trade entered late for last week pulled today's balance
+     down with it, below zero in the end ("how can i have negative balance?"). */
+  const [balMark, setBalMark] = useState(null);
   const [ringLoss, setRingLoss] = useState(false);        // the ring on the Coins card: winnings, or losses
-  const prefsRef = useRef({ cur: M.base, cur2: "IDR", fx: { live: null, manual: {} }, calc: null, fees: IDX_FEES, an: cleanAn(null), base: null, test: cleanTradeTest(null, M.test),
+  const prefsRef = useRef({ cur: M.base, cur2: "IDR", fx: { live: null, manual: {} }, calc: null, fees: IDX_FEES, an: cleanAn(null), bal: null, test: cleanTradeTest(null, M.test),
                             quotes: [], dataAt: 0 });
   const savePrefs = (patch) => {
     prefsRef.current = { ...prefsRef.current, ...patch };
@@ -4149,7 +7366,7 @@ function TradeTracker({ market, onHome }) {
   const quoteSaved = useRef(0);
   const quoteBook = useRef(null);
   if (!quoteBook.current) quoteBook.current = {
-    market, can: typeof window !== "undefined" && !!(window.flowFX && window.flowFX.quote),
+    market, can: market !== "fx" && typeof window !== "undefined" && !!(window.flowFX && window.flowFX.quote),      // no forex prices are fetched: the app has no source for them
     get: (sym) => prefsRef.current.quotes.find((q) => q.s === sym) || null,
     put: (sym, q) => {
       const quotes = [{ ...q, s: sym }, ...prefsRef.current.quotes.filter((x) => x.s !== sym)].slice(0, QUOTE_KEEP);
@@ -4202,12 +7419,28 @@ function TradeTracker({ market, onHome }) {
 
   /* ---------- data: load once, then every change is written in order ---------- */
   const tradesRef = useRef(trades);
+  const depsRef = useRef(deps);
   const saveChain = useRef(Promise.resolve());
+  const unreadable = useRef(false);
   useEffect(() => {
     (async () => {
       try {
         const res = await store.get(M.key);
-        if (res && res.value) { const t = migrateTrades(JSON.parse(res.value).trades, M.dp); tradesRef.current = t; setTrades(t); }
+        if (res && res.value) {
+          let saved = null;
+          try { saved = JSON.parse(res.value); } catch (e) {}
+          if (!saved || typeof saved !== "object") {
+            unreadable.current = true;       // kept aside, and never saved over
+            try { await store.set(`${M.key}-unreadable-${Date.now()}`, res.value); } catch (e) {}
+            throw new Error("saved trades unreadable");
+          }
+          const read = migrateTrades(saved.trades, M.dp), dps = migrateDeps(saved.deps, M.dp);
+          const t = M.journal ? fillTestBoxes(read, M.journal) : read;        // older test trades get the journal's boxes, once
+          tradesRef.current = t; setTrades(t); depsRef.current = dps; setDeps(dps);
+          if (t !== read) persist();
+          // the pictures of trades that are gone go now, while nothing can be attaching one (never if the trades could not be read)
+          if (M.journal && saved.trades && typeof saved.trades === "object") shotSweep(t, M.pics);
+        }
       } catch (e) {}
       try {
         const res = await store.get(M.prefsKey);
@@ -4219,15 +7452,26 @@ function TradeTracker({ market, onHome }) {
           ["IDR", "MYR"].forEach((c) => { if (pf.manual && fxOk(c, pf.manual[c])) manual[c] = pf.manual[c]; });
           const calc = p.calc && typeof p.calc === "object" ? { inputs: (M.sides ? cleanCalc : cleanStock)(p.calc.inputs), shown: !!p.calc.shown } : null;
           const fee = (k) => (p.fees && p.fees[k] >= 0 && p.fees[k] <= 5 ? Number(p.fees[k]) : IDX_FEES[k]);
+          // a balance saved the old way (a bare offset, `base`) becomes the balance that offset comes to today, as if typed
+          // today. One that comes to less than nothing is dropped: he is asked for it again
+          const today = keyOf(now.getFullYear(), now.getMonth(), now.getDate());
+          const fromBase = (b, own) => {
+            if (!Number.isFinite(b) || Math.abs(b) > 2 * MAX_AMOUNT) return null;
+            let v = b;
+            for (const k in tradesRef.current) if (k <= today) for (const t of tradesRef.current[k]) if (!own || !t.test) v += t.pnl;
+            for (const k in depsRef.current) if (k <= today) for (const t of depsRef.current[k]) v += t.amt;
+            return v >= 0 ? { v: Math.round(v * 100) / 100, at: today, ts: Date.now() } : null;
+          };
           prefsRef.current = { cur: M.base === "USDT" && CUR_LIST.includes(p.cur) ? p.cur : M.base, cur2: CUR_LIST.includes(p.cur2) ? p.cur2 : "IDR",
                                fx: { live, manual }, calc, fees: { buy: fee("buy"), sell: fee("sell") },
-                               an: cleanAn(p.an), base: Number.isFinite(p.base) && Math.abs(p.base) <= 2 * MAX_AMOUNT ? p.base : null,
+                               an: cleanAn(p.an), bal: cleanBal(p.bal) || fromBase(p.base, false),
                                test: cleanTradeTest(p.test, M.test),
                                quotes: cleanQuotes(p.quotes), dataAt: p.dataAt > 0 ? Number(p.dataAt) : 0 };
           // his own balance, put aside while test data stands in for it
-          if ("baseKeep" in p) prefsRef.current.baseKeep = Number.isFinite(p.baseKeep) && Math.abs(p.baseKeep) <= 2 * MAX_AMOUNT ? p.baseKeep : null;
+          if ("balKeep" in p) prefsRef.current.balKeep = cleanBal(p.balKeep);
+          else if ("baseKeep" in p) prefsRef.current.balKeep = fromBase(p.baseKeep, true);
           setCur(prefsRef.current.cur); setCur2Pick(prefsRef.current.cur2); setFx(prefsRef.current.fx); setFees(prefsRef.current.fees);
-          setAn(prefsRef.current.an); setEqBase(prefsRef.current.base); setTestCfg(prefsRef.current.test);
+          setAn(prefsRef.current.an); setBalMark(prefsRef.current.bal); setTestCfg(prefsRef.current.test);
           if (calc) calcDraft.current = calc;
         }
       } catch (e) {}
@@ -4236,7 +7480,8 @@ function TradeTracker({ market, onHome }) {
     })();
   }, []);
   const persist = () => {
-    const snapshot = JSON.stringify({ version: 1, trades: tradesRef.current });
+    if (unreadable.current) return Promise.resolve();
+    const snapshot = JSON.stringify({ version: 1, trades: tradesRef.current, deps: depsRef.current });
     setSaving(true);
     const mine = saveChain.current.then(async () => {
       try { await store.set(M.key, snapshot); setSaveError(false); }
@@ -4249,6 +7494,11 @@ function TradeTracker({ market, onHome }) {
     if (!loaded) return Promise.resolve();
     tradesRef.current = next; setTrades(next);
     return save ? persist() : Promise.resolve();
+  };
+  const commitDeps = (next) => {
+    if (!loaded) return Promise.resolve();
+    depsRef.current = next; setDeps(next);
+    return persist();
   };
 
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -4266,6 +7516,19 @@ function TradeTracker({ market, onHome }) {
     return [...ys].sort((a, b) => a - b);
   }, [trades, year]);
   const allYears = useMemo(() => YEARS.map((y) => cryptoYear(trades, y)), [trades, YEARS]);
+  // a month box's own decoration, as on the finance side (there: the month's spending day by day): here the month's
+  // running PnL, a small line from nothing on the 1st to the month's result on its last day
+  const yearSparks = useMemo(() => {
+    const out = {};
+    YEARS.forEach((yr, yi) => allYears[yi].months.forEach((mo, m) => {
+      if (!mo.n) return;
+      const pts = [0];
+      mo.days.forEach((d) => pts.push(pts[pts.length - 1] + (d ? d.pnl : 0)));
+      const lo = Math.min(...pts), hi = Math.max(...pts);
+      if (hi - lo > 0) out[`${yr}-${m}`] = pts.map((v, i) => `${i ? "L" : "M"} ${+(2 + (i / (pts.length - 1)) * 96).toFixed(1)} ${+(27 - ((v - lo) / (hi - lo)) * 23).toFixed(1)}`).join(" ");
+    }));
+    return out;
+  }, [allYears, YEARS]);
   const yearIdx = Math.max(0, YEARS.indexOf(year));
   const ys = allYears[yearIdx];
   const pnlVsPrev = useMemo(() => {
@@ -4370,6 +7633,7 @@ function TradeTracker({ market, onHome }) {
   /* ---------- the selected day and its trades ---------- */
   const selKey = selected !== null ? keyOf(year, month, selected) : null;
   const selTrades = selKey ? trades[selKey] || NO_TRADES : NO_TRADES;
+  const selDeps = selKey ? deps[selKey] || NO_DEPS : NO_DEPS;
   const selDay = selected !== null ? ms.days[selected - 1] : null;
   // what is typed for an amount: dollars with cents, or whole rupiah grouped as on the finance side (1.250.000, and a
   // grey .000 to accept with Enter while it is under four digits)
@@ -4516,12 +7780,26 @@ function TradeTracker({ market, onHome }) {
     for (const k in trades) if (k <= anToday) for (const t of trades[k]) s += t.pnl;
     return Math.round(s * 100) / 100;
   }, [trades, anToday]);
+  // and everything put into the account or taken out of it up to today
+  const allDep = useMemo(() => {
+    let s = 0;
+    for (const k in deps) if (k <= anToday) for (const t of deps[k]) s += t.amt;
+    return Math.round(s * 100) / 100;
+  }, [deps, anToday]);
+  // what the account would hold with nothing logged at all, worked back from the balance and its day: what the charts stand on
+  const eqBase = useMemo(() => {
+    if (!balMark) return null;
+    let s = 0;
+    for (const k in trades) if (k <= balMark.at) for (const t of trades[k]) if (inBal(balMark, k, t.id)) s += t.pnl;
+    for (const k in deps) if (k <= balMark.at) for (const t of deps[k]) if (inBal(balMark, k, t.id)) s += t.amt;
+    return Math.round((balMark.v - s) * 100) / 100;
+  }, [balMark, trades, deps]);
   // handed to the card as one ref, so the card is not redrawn every time this panel is
   const anApi = useRef(null);
   anApi.current = {
     setAn: (next) => { setAn(next); savePrefs({ an: next }); },
-    // the balance is kept as what it would be without any trade, so it rises and falls with the trades logged after it
-    setBalance: (v) => { const base = v === null ? null : Math.round((v - allPnl) * 100) / 100; setEqBase(base); savePrefs({ base }); },
+    // the balance is kept with today's date and this moment: from here on it rises and falls with what is logged
+    setBalance: (v) => { const bal = v === null ? null : { v, at: anToday, ts: Date.now() }; setBalMark(bal); savePrefs({ bal }); },
   };
 
   /* ---------- the month in detail: coins, sides, best and worst trade ---------- */
@@ -4531,8 +7809,11 @@ function TradeTracker({ market, onHome }) {
     for (let d = 1; d <= daysInMonth; d++) {
       for (const t of trades[keyOf(year, month, d)] || []) {
         const coin = M.nameOf(t.pair);
-        if (!coins[coin]) coins[coin] = { coin, ...newTally() };
+        if (!coins[coin]) coins[coin] = { coin, ...newTally(), rSum: 0, rN: 0 };
         tally([t], coins[coin]); tally([t], sides[t.side === "short" ? "short" : "long"]);
+        // the R logged on it, for the name's expectancy: a win made it, a loss cost it, break-even is nothing
+        const r = Number(t.rr);
+        if (r > 0) { const res = resOf(t); coins[coin].rN++; coins[coin].rSum += res === "win" ? r : res === "loss" ? -r : 0; }
         if (t.pnl > 0 && (!best || t.pnl > best.pnl)) best = { ...t, d };
         if (t.pnl < 0 && (!worst || t.pnl < worst.pnl)) worst = { ...t, d };
       }
@@ -4544,6 +7825,31 @@ function TradeTracker({ market, onHome }) {
   // each screen of this side is filed for the next launch's warm-up (see "warm-up" at the top)
   useWarmScreen(`${market}-${view}${chartOpen ? "+chart" : calcOpen ? "+calc" : recap ? "+recap" : ""}`);
   const openRecap = (r) => { setRecapClosing(false); setRecapDetail(null); setRecapDetailOpen(false); setRecapHover(null); setRecap(r); };
+  // the sidebar, as on the finance side: the year, the month, the parts of the month, the wrapped; the calculator on top
+  const sideApi = useRef(null);
+  sideApi.current = {
+    go: (id) => {
+      if (id === "calc") { setCalcOpen(true); return; }
+      if (id === "quick") { setQuickOpen(true); return; }
+      if (id === "home") { onHome(); return; }
+      if (id === "users") { onUsers(); return; }
+      if (id === "reset") { onReset(); return; }
+      if (id === "restore") { onRestore(); return; }
+      if (id === "wrap") { openRecap(view === "month" ? { kind: "month", y: year, m: month } : { kind: "year", y: year }); return; }
+      if (id === "year") {
+        if (view === "month") { setYearRise(true); setSelected(null); setView("year"); setTimeout(() => setYearRise(false), 700); }
+        window.scrollTo({ top: 0 });
+        return;
+      }
+      const jump = () => (id === "month" ? window.scrollTo({ top: 0 }) : (warm.page || document).querySelector(SIDE_PARTS[id])?.scrollIntoView({ block: "start" }));
+      if (view === "month") { jump(); return; }
+      if (year === now.getFullYear()) setMonth(now.getMonth());
+      setSelected(null); setFromYear(true); setView("month"); setTimeout(() => setFromYear(false), 1100);
+      if (id !== "month") setTimeout(jump, 160);
+    },
+  };
+  const sideMonth = view === "month" || year !== now.getFullYear() ? month : now.getMonth();
+
   const closeRecap = () => {
     setRecapClosing(true);
     setTimeout(() => { setRecap(null); setRecapClosing(false); }, 240);
@@ -4578,7 +7884,7 @@ function TradeTracker({ market, onHome }) {
           all.push({ pnl: t.pnl, coin, side: t.side === "short" ? "short" : "long", when: `${d} ${MONTHS_SHORT[m]}` });
         });
         // the longest run of trading days in a row that ended in profit (a day without trades doesn't break it)
-        if (day.n) { tradedDays++; if (day.pnl >= 0) { greenDays++; run++; streak = Math.max(streak, run); } else run = 0; }
+        if (day.n) { tradedDays++; if (day.pnl > 0) { greenDays++; run++; streak = Math.max(streak, run); } else if (day.pnl < 0) run = 0; }
         if (kind === "month") units.push({ i: d, label: `${DOW_FULL[(new Date(y, m, d).getDay() + 6) % 7]} ${d}`, sub: `${MONTHS_SHORT[m]} ${y}`, short: String(d), value: day.pnl, has: day.n > 0, n: day.n, wins: day.wins });
       }
       if (kind === "year") units.push({ i: m, label: MONTHS_FULL[m], short: MONTHS_SHORT[m], value: mt.pnl, has: mt.n > 0, n: mt.n, wins: mt.wins });
@@ -4605,13 +7911,18 @@ function TradeTracker({ market, onHome }) {
   const [undoImport, setUndoImport] = useState(null);
   const msgTimer = useRef(0);
   const flashBackup = (m, t = 3000) => { clearTimeout(msgTimer.current); setBackupMsg(m); msgTimer.current = setTimeout(() => setBackupMsg(""), t); };
-  const exportData = () => {
-    const blob = new Blob([JSON.stringify({ app: M.app, version: 1, exportedAt: new Date().toISOString(), trades: ownEntries(trades) }, null, 2)], { type: "application/json" });
+  const exportData = async () => {
+    // his own trades, the deposits, and the pictures those trades hold (as text, so a backup stays one file)
+    const own = ownEntries(trades);
+    if (!Object.keys(own).length && !Object.keys(depsRef.current).length) { flashBackup("Nothing of your own to export yet", 3600); return; }     // (as on the finance side)
+    const images = M.journal ? await shotPack(own) : {};
+    const blob = new Blob([JSON.stringify({ app: M.app, version: 1, exportedAt: new Date().toISOString(), trades: own,
+      ...(Object.keys(depsRef.current).length ? { deposits: depsRef.current } : {}), ...(Object.keys(images).length ? { images } : {}) }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const d = new Date();
     a.href = url;
-    a.download = `${M.file}-${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}.json`;
+    a.download = `${userFilePre()}${M.file}-${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
     flashBackup(BACKUP_DONE, 2600);
@@ -4620,11 +7931,30 @@ function TradeTracker({ market, onHome }) {
     if (!file) return;
     let data;
     try { data = JSON.parse(await file.text()); } catch (e) { flashBackup("Could not read that file"); return; }
-    // only accept a backup of this same side of the app — never wipe trades with another file (crypto's dollars read as rupiah, say)
+    // a backup of this side is read here; one of another side goes to that side (crypto's dollars are never read as rupiah);
+    // anything else changes nothing
     const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
-    if (!isObj(data) || !isObj(data.trades) || (data.app || "flow-crypto") !== M.app) { flashBackup(`That isn't a ${M.word} PnL backup file, nothing was changed`, 4000); return; }
-    const prev = tradesRef.current;
-    await commit(migrateTrades(data.trades, M.dp));
+    const side = backupSide(data);
+    if (!side) { flashBackup("That isn't a Flow backup file, nothing was changed", 4000); return; }
+    if (side !== market) {
+      const got = await onOther(side, data);
+      if (!got.undo) { flashBackup(got.msg, 4000); return; }
+      const held = { other: got.undo };
+      setUndoImport(held);
+      flashBackup(got.msg, 10000);
+      setTimeout(() => setUndoImport((u) => (u === held ? null : u)), 10000);
+      return;
+    }
+    if (!Object.keys(migrateTrades(data.trades, M.dp)).length && !Object.keys(migrateDeps(data.deposits, M.dp)).length) { flashBackup("That backup is empty, nothing was changed", 4000); return; }
+    const prev = { trades: tradesRef.current, deps: depsRef.current };
+    // only this side's pictures (the stocks side's ids start "idx-"), so neither side's sweep is handed the other's
+    const mine = (id) => typeof id === "string" && (id.startsWith("ph:") || (M.pics ? id.startsWith(M.pics) : !SHOT_SIDES.some((p) => id.startsWith(p))));
+    if (M.journal && isObj(data.images)) await shotUnpack(Object.fromEntries(Object.entries(data.images).filter(([id]) => mine(id))));
+    const dps = migrateDeps(data.deposits, M.dp);
+    depsRef.current = dps; setDeps(dps);
+    const read = migrateTrades(data.trades, M.dp);
+    for (const k in read) read[k] = read[k].map((t) => (shotIds(t).some((id) => !mine(id)) ? { ...t, ...Object.fromEntries(SHOT_KEYS.filter((key) => t[key]).map((key) => [key, t[key].filter(mine)])) } : t));
+    await commit(read);
     setUndoImport(prev);
     flashBackup("Backup restored", 10000);
     setTimeout(() => setUndoImport((u) => (u === prev ? null : u)), 10000);
@@ -4633,7 +7963,9 @@ function TradeTracker({ market, onHome }) {
     if (!undoImport) return;
     const prev = undoImport;
     setUndoImport(null);
-    await commit(prev);
+    if (prev.other) { await prev.other(); flashBackup("Import undone"); return; }
+    depsRef.current = prev.deps; setDeps(prev.deps);
+    await commit(prev.trades);
     flashBackup("Import undone");
   };
 
@@ -4679,19 +8011,21 @@ function TradeTracker({ market, onHome }) {
           if (!win) size = Math.min(size, Math.max(0, eq) * 0.5);        // and nobody loses more than is in the account
           size = roundTo(Math.round(size / M.testStep) * M.testStep, M.dp);
           if (!(size > 0)) continue;
-          add.push({ id: uid(), pnl: win ? size : -size, pair: pick(M.testNames), side: M.sides && Math.random() >= 0.62 ? "short" : "long", test: true });
+          const pair = pick(M.testNames);
+          const side = M.sides && Math.random() >= 0.5 ? "short" : "long";
+          const jr = M.journal ? testBoxes(M.journal, win ? size : -size, pair, side) : {};  // the journal's boxes, all of them
+          add.push({ id: uid(), pnl: win ? size : -size, pair, side, ...jr, test: true });
           eq += win ? size : -size;
         }
         if (add.length) { next[k] = [...(next[k] || []), ...add]; n += add.length; }
       }
     }
     commit(next);
-    // the balance: `start` on 1 January, whatever earlier years made. The one he had typed is kept for Clear test data
-    let before = 0;
-    for (const k in next) if (k < `${year}-01-01`) for (const t of next[k]) before += t.pnl;
-    const base = Math.round((start - before) * 100) / 100;
-    if (!("baseKeep" in prefsRef.current)) prefsRef.current = { ...prefsRef.current, baseKeep: prefsRef.current.base };
-    setEqBase(base); savePrefs({ base });
+    // the balance: `start` as the year begins (so on the last day of the year before), whatever earlier years made.
+    // The one he had typed is kept for Clear test data
+    const bal = { v: start, at: `${year - 1}-12-31`, ts: Date.now() };
+    if (!("balKeep" in prefsRef.current)) prefsRef.current = { ...prefsRef.current, balKeep: prefsRef.current.bal };
+    setBalMark(bal); savePrefs({ bal });
     flashTest(`Added ${n} trades · ${year} starts on ${CUR_SIGN[M.base]}${M.dp ? NF0.format(start) : start.toLocaleString("id-ID")}`);
   };
   const clearTestData = () => {
@@ -4702,10 +8036,10 @@ function TradeTracker({ market, onHome }) {
       if (keep.length) next[k] = keep;
     });
     commit(next);
-    if ("baseKeep" in prefsRef.current) {
-      const { baseKeep, ...rest } = prefsRef.current;
+    if ("balKeep" in prefsRef.current) {
+      const { balKeep, ...rest } = prefsRef.current;
       prefsRef.current = rest;
-      setEqBase(baseKeep); savePrefs({ base: baseKeep });
+      setBalMark(balKeep); savePrefs({ bal: balKeep });
     }
     flashTest(n ? `Removed ${n} test trades` : "No test data to remove");
   };
@@ -4718,19 +8052,105 @@ function TradeTracker({ market, onHome }) {
   const rate = cur === M.base ? 1 : rateOf(cur), sym = cur === "USDT" ? "$" : "";
   const moneyAbs = (n) => `${sym}${curBody(cur, n * rate)}`;
   const money = (n) => `${signOf(n)}${moneyAbs(n)}`;
+  // what the crocodile at the foot of the sidebar says about today. It stands here, under `money`, which it needs: it
+  // stood above it until 8 October 2026, and a trade dated today then stopped the whole trading side from drawing
+  const sideDay = tally(trades[keyOf(now.getFullYear(), now.getMonth(), now.getDate())] || []);
+  const sideFoot = !sideDay.n ? { text: "No trades today", sub: "Nothing closed yet", ink: "#e8eaec" }
+    : { text: `${money(sideDay.pnl)} today`, sub: `${sideDay.wins}W · ${sideDay.losses}L · ${sideDay.n} trade${sideDay.n === 1 ? "" : "s"}`,
+        ink: sideDay.pnl > 0 ? "#8fd7a4" : sideDay.pnl < 0 ? "#ff8d97" : "#e3cd77", mood: sideDay.pnl > 0 ? "good" : sideDay.pnl < 0 ? "bad" : null };
   // the journal's way in (crypto day panel), handed over as one ref so the journal is not redrawn with this panel.
   // An edit replaces the trade with what its sheet holds, so a box that was emptied is gone from the trade too
   const jrApi = useRef(null);
   jrApi.current = {
-    money, del: deleteTrade,
+    money, abs: moneyAbs, del: deleteTrade, unit: M.unit,
+    dup: (t) => { const { id, test, ...f } = t; jrApi.current.add(f); },      // the same trade once more, on the same day
+    // true when it is added. A withdrawal of more than the account held at the end of that day is refused, and what it
+    // held is handed back instead (only when the balance is known)
+    addDep: (amt) => {
+      const all = depsRef.current;
+      if (amt < 0 && eqBase !== null) {
+        let held = eqBase;
+        for (const k in tradesRef.current) if (k <= selKey) for (const t of tradesRef.current[k]) held += t.pnl;
+        for (const k in all) if (k <= selKey) for (const t of all[k]) held += t.amt;
+        held = Math.max(0, Math.round(held * 100) / 100);
+        if (-amt > held) return held;
+      }
+      commitDeps({ ...all, [selKey]: [...(all[selKey] || []), { id: uid(), amt }] });
+      return true;
+    },
+    delDep: (id) => {
+      const next = { ...depsRef.current }, rest = (next[selKey] || []).filter((it) => it.id !== id);
+      if (rest.length) next[selKey] = rest; else delete next[selKey];
+      commitDeps(next);
+    },
     add: (f) => { const all = tradesRef.current; commit({ ...all, [selKey]: [...(all[selKey] || []), { id: uid(), ...f }] }); },
     edit: (id, f) => { const all = tradesRef.current; commit({ ...all, [selKey]: (all[selKey] || []).map((it) => (it.id === id ? { id, ...f, ...(it.test ? { test: true } : {}) } : it)) }); },
   };
+  /* quick add (the row on the yearly panel) and the quick log (⌘N), as on the finance side: a trade filed against today,
+     or yesterday, whatever year or month is on screen. Editing still happens on the date, in the journal */
+  const quickApi = useRef(null), quickBoxRef = useRef(null);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const closeQuick = useRef(() => setQuickOpen(false)).current;
+  quickApi.current = {
+    M, money,
+    // sign: 1 a win, -1 a loss, 0 break-even (its amount may carry a minus). Hands back the amount as shown, or null
+    put: (sign, amt, name, back, side) => {
+      if (sign && !amt) return null;
+      const t = new Date();
+      if (back) t.setDate(t.getDate() - back);
+      const k = keyOf(t.getFullYear(), t.getMonth(), t.getDate()), all = tradesRef.current, pnl = sign ? sign * Math.abs(amt) : amt;
+      commit({ ...all, [k]: [...(all[k] || []), { id: uid(), pnl, ...(!sign && pnl ? { be: true } : {}), pair: pairName(name), side: M.sides && side === "short" ? "short" : "long" }] });
+      return `${pnl > 0 ? "+" : pnl < 0 ? "−" : ""}${moneyAbs(Math.abs(pnl))}`;
+    },
+    // the yearly row: a win ("inc", the green one) or a loss, the amount as typed, and the name with its side beside it
+    add: (kind, typed, name) => {
+      // rupiah under four digits are thousands, as the grey .000 in the box says (350 is 350.000)
+      const amt = ghostOf(typed) ? parseNum(digitsOf(typed) + "000") : amtOf(typed);
+      const q = quickName(name, M.sides), shown = quickApi.current.put(kind === "inc" ? 1 : -1, amt, q.name, 0, q.side);
+      return shown && shown.slice(1);
+    },
+    today: () => { const t = new Date(); return tally(tradesRef.current[keyOf(t.getFullYear(), t.getMonth(), t.getDate())] || []); },
+    // what he trades most: the names logged at least twice in the last 90 days, most frequent first
+    often: () => {
+      const seen = new Map(), t = new Date();
+      for (let i = 0; i < 90; i++) {
+        const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() - i);
+        for (const it of tradesRef.current[keyOf(d.getFullYear(), d.getMonth(), d.getDate())] || []) if (it.pair) seen.set(it.pair, (seen.get(it.pair) || 0) + 1);
+      }
+      return [...seen].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, n]) => ({ name, n }));
+    },
+  };
+  const qaddWords = useMemo(() => ({ first: "inc", caps: true, desc: M.qadd[0],
+    exp: ["Loss", "Loss · click (or press +) for a win", M.qadd[1], "Add this loss to today"],
+    inc: ["Win", "Win · click (or press −) for a loss", M.qadd[1], "Add this win to today"] }), [M]);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "n") return;
+      e.preventDefault(); setQuickOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // a digit typed on the yearly panel, with nothing else open, lands in the quick-add amount
+  useEffect(() => {
+    if (view !== "year" || chartOpen || recap || calcOpen || testOpen || settingsOpen || quickOpen) return;
+    const onKey = (e) => {
+      if (!/^[0-9]$/.test(e.key) || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+      quickBoxRef.current?.querySelector("input")?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, chartOpen, recap, calcOpen, testOpen, settingsOpen, quickOpen]);
+  // a day tile's bar is measured against the month's biggest day, up or down
+  const dayTop = Math.max(1e-9, ...ms.days.map((d) => (d ? Math.abs(d.pnl) : 0)));
   const absLive = (n, busy, span) => `${sym}${curLive(cur, rate, n, busy, span)}`;
   const moneyLive = (n, busy, span) => `${signOf(busy && span ? span.to : n)}${absLive(n, busy, span)}`;
   const tone = (s) => (!s || !s.n ? C_MUTE : s.pnl >= 0 ? C_GREEN : C_RED);
+  // the bar is the boxes under it: green days against red days on the month, green months against red months on the year
   const grossBar = (s, key) => (
-    <SplitBar remainingVal={WARN_YELLOW} totalVal={s.profit + s.loss} frac={s.profit + s.loss > 0 ? s.profit / (s.profit + s.loss) : 0} animKey={key} />
+    <SplitBar remainingVal={WARN_YELLOW} totalVal={s.up + s.down} frac={s.up + s.down > 0 ? s.up / (s.up + s.down) : 0} animKey={key} />
   );
   // called as plain functions, never as components: a component defined in here would be remounted on every render
   const chartButton = (title) => (
@@ -4764,6 +8184,14 @@ function TradeTracker({ market, onHome }) {
     const filled = ARC * (wr / 100);
     const avgWin = ms.wins ? ms.profit / ms.wins : 0, avgLoss = ms.losses ? ms.loss / ms.losses : 0;
     const avgTop = Math.max(avgWin, avgLoss, 1e-9);
+    // expectancy: what a trade made on average, in R, so it says the same whatever the size of the trades. From the R
+    // logged on each trade: a win made it, a loss cost it, a break-even trade is nothing. Trades without an R are left out
+    let rSum = 0, rN = 0;
+    for (let d = 1; d <= ms.days.length; d++) for (const t of trades[keyOf(year, month, d)] || NO_TRADES) {
+      const r = Number(t.rr);
+      if (r > 0) { rN++; const res = resOf(t); rSum += res === "win" ? r : res === "loss" ? -r : 0; }
+    }
+    const expR = rN ? rSum / rN : 0;
     const { best, worst, sides } = detail;
     const bestTop = Math.max(best ? best.pnl : 0, worst ? -worst.pnl : 0, 1e-9);
     const sideBox = (label, s) => (s.n
@@ -4782,20 +8210,22 @@ function TradeTracker({ market, onHome }) {
     const boxes = [
       { label: "PROFIT FACTOR", value: pf === null ? "No losses" : pf.toFixed(2), note: pf === null ? null : "won per 1 lost",
         pct: pf === null ? 100 : (pf / 3) * 100, color: pf === null || pf >= 1 ? "#8fd7a4" : "#e2808c" },
-      { label: "AVG PER TRADE", value: money(ms.pnl / ms.n), note: tradesWord(ms.n), pct: (Math.abs(ms.pnl / ms.n) / avgTop) * 100, color: ms.pnl >= 0 ? "#8fd7a4" : "#e2808c" },
+      rN ? { label: "EXPECTANCY", value: `${expR > 0 ? "+" : expR < 0 ? "−" : ""}${Math.abs(expR).toFixed(2)}R`, note: `a trade · ${money(ms.pnl / ms.n)}${rN < ms.n ? ` · R on ${rN} of ${ms.n}` : ""}`,
+             pct: Math.min(100, (Math.abs(expR) / 2) * 100), color: expR > 0 ? "#8fd7a4" : expR < 0 ? "#e2808c" : "#e3cd77" }
+         : { label: "EXPECTANCY", value: money(ms.pnl / ms.n), note: "a trade · log R to see it in R", pct: (Math.abs(ms.pnl / ms.n) / avgTop) * 100, color: ms.pnl >= 0 ? "#8fd7a4" : "#e2808c" },
       { label: "AVG WIN", value: ms.wins ? money(avgWin) : "N/A", note: ms.wins ? `${ms.wins} ${ms.wins === 1 ? "win" : "wins"}` : null, pct: (avgWin / avgTop) * 100, color: ms.wins ? "#8fd7a4" : "#8a9299" },
       { label: "AVG LOSS", value: ms.losses ? money(-avgLoss) : "N/A", note: ms.losses ? `${ms.losses} ${ms.losses === 1 ? "loss" : "losses"}` : null, pct: (avgLoss / avgTop) * 100, color: ms.losses ? "#e2808c" : "#8a9299" },
       tradeBox("BEST TRADE", best, "#8fd7a4"),
       tradeBox("WORST TRADE", worst, "#e2808c"),
-      ...(M.sides ? [sideBox("LONGS", sides.long), sideBox("SHORTS", sides.short)] : [dayBox("BEST DAY", 1, "#8fd7a4"), dayBox("WORST DAY", -1, "#e2808c")]),
+      ...(M.sides ? [sideBox(`${M.sideName[0].toUpperCase()}S`, sides.long), sideBox(`${M.sideName[1].toUpperCase()}S`, sides.short)] : [dayBox("BEST DAY", 1, "#8fd7a4"), dayBox("WORST DAY", -1, "#e2808c")]),
     ];
     const summary = `You closed ${tradesWord(ms.n)}: ${ms.wins} ${ms.wins === 1 ? "winner" : "winners"} and ${ms.losses} ${ms.losses === 1 ? "loser" : "losers"}. `
       + `Winners brought in ${money(ms.profit)}, losers cost ${money(-ms.loss)}`
       + (pf !== null && ms.profit > 0 ? `, so the winners made ${pf.toFixed(2)} times what the losers cost.` : ".");
     return (
       <div className="score-card" style={{ ...S.scoreCard, borderTop: "none", paddingTop: 6 }}>
-        <div key={`gauge-${year}-${month}-${wr}`} style={{ position: "relative", width: 132, height: 132, flexShrink: 0 }}>
-          <svg viewBox="0 0 132 132" style={{ width: 132, height: 132, transform: "rotate(120deg)" }}>
+        <div key={`gauge-${year}-${month}-${wr}`} className="score-dial" style={{ position: "relative", width: 216, height: 216, flexShrink: 0, "--gc": band.color }}>
+          <svg viewBox="0 0 132 132" style={{ width: 216, height: 216, transform: "rotate(120deg)" }}>
             <defs>
               <linearGradient id="cWinGrad" x1="0" y1="1" x2="1" y2="0">
                 <stop offset="0%" stopColor="#e2808c" />
@@ -4808,7 +8238,7 @@ function TradeTracker({ market, onHome }) {
                     strokeLinecap="round" strokeDasharray={`${filled} ${C}`} />
           </svg>
           <div style={S.scoreCenter}>
-            <div style={S.scoreNum}>{wr}</div>
+            <div style={S.scoreNum}><PxFig text={wr} /></div>
             <div style={S.scoreCap}>WIN RATE</div>
           </div>
         </div>
@@ -4826,8 +8256,8 @@ function TradeTracker({ market, onHome }) {
         </div>
         <div style={{ ...S.subRow, gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
           {boxes.map((b, bi) => (
-            <div key={b.label} className="sub-box glass-soft" style={{ ...S.subBox, animationDelay: `${260 + bi * 70}ms` }}>
-              <div style={S.subLabel}>{b.label}</div>
+            <div key={b.label} className="sub-box glass-soft" style={{ ...S.subBox, "--tc": b.color, animationDelay: `${260 + bi * 70}ms` }}>
+              <div style={S.subLabel}><i style={{ display: "inline-block", width: 6, height: 6, borderRadius: 99, background: b.color, marginRight: 7, verticalAlign: "1px" }} />{b.label}</div>
               <div style={{ ...S.subValue, color: b.color, fontSize: 18, display: "flex", alignItems: "baseline", gap: 7, flexWrap: "wrap" }}>
                 {b.value}
                 {b.note && <span style={S.subNote}>{b.note}</span>}
@@ -4843,6 +8273,7 @@ function TradeTracker({ market, onHome }) {
   };
 
   /* ---------- coins: what each one made or lost this month ---------- */
+  const COIN_COLS = "minmax(150px, 230px) 66px 88px 96px 1fr 88px";      // name · win rate · expectancy · avg a trade · bar · net
   const renderCoins = () => {
     const rows = detail.coins;
     if (!rows.length) return <div style={S.flowEmpty}>No trades logged this month yet.</div>;
@@ -4850,17 +8281,27 @@ function TradeTracker({ market, onHome }) {
     return (
       <>
       <CoinRing coins={rows} cur={cur} rate={rate} label={monthLabel} none={M.none} things={M.things.toLowerCase()} loss={ringLoss} onLoss={setRingLoss} />
+      {/* which names work for him: best first, each with how often it won, what a trade on it made in R (its expectancy) and in
+          money, and what it came to. 6 October 2026: he found the card useful but wanted it reworked, and chose sharper rows under the ring */}
       <div style={{ ...S.bdList, paddingTop: 8, paddingBottom: 10 }}>
+        <div className="bd-head" style={{ ...S.bdRow, gridTemplateColumns: COIN_COLS }}>
+          <span>{M.things.slice(0, -1)}</span><span>Win rate</span><span title="What a trade on it made on average, in R: from the R logged on each trade">Expectancy</span><span>Avg / trade</span><span /><span>Net PnL</span>
+        </div>
         {rows.map((r, i) => {
-          const color = r.pnl >= 0 ? C_GREEN : C_RED;
+          const color = r.pnl >= 0 ? C_GREEN : C_RED, exp = r.rN ? r.rSum / r.rN : null;
           return (
-            <div key={r.coin || "none"} className="bd-item" style={{ ...S.bdRow, gridTemplateColumns: "minmax(150px, 230px) 76px 1fr 84px", animationDelay: `${60 + i * 55}ms` }}>
+            <div key={r.coin || "none"} className="bd-item" style={{ ...S.bdRow, gridTemplateColumns: COIN_COLS, animationDelay: `${60 + i * 55}ms` }}>
               <span style={{ ...S.bdName, display: "flex", alignItems: "center", gap: 10 }}>
                 <span className="tok" style={{ background: r.coin ? coinTint(r.coin) : "#4a5055" }}>{r.coin ? r.coin.replace(/^\d+/, "")[0] || r.coin[0] : "?"}</span>
                 {r.coin || M.none}
-                <span style={{ fontSize: 11.5, fontWeight: 500, color: "#6d757d" }}>{tradesWord(r.n)}</span>
+                <span style={{ fontSize: 11.5, fontWeight: 500, color: "#8e969e" }}>{tradesWord(r.n)}</span>
               </span>
-              <span style={{ ...S.bdPct, fontSize: 12.5, color: "#aeb5bb" }}>{winPct(r)}% win</span>
+              <span style={{ ...S.bdPct, fontSize: 12.5, fontWeight: 600, color: "#aeb5bb" }}>{winPct(r)}%</span>
+              <span style={{ ...S.bdPct, fontSize: 12.5, color: exp === null ? "#5b636b" : exp > 0 ? "#8fd7a4" : exp < 0 ? "#e2808c" : "#c9c4a8" }}
+                    title={exp === null ? "No R logged on these trades" : r.rN < r.n ? `From the ${r.rN} of ${r.n} trades with an R` : undefined}>
+                {exp === null ? "—" : `${exp > 0 ? "+" : exp < 0 ? "−" : ""}${Math.abs(exp).toFixed(2)}R`}
+              </span>
+              <span style={{ ...S.bdPct, fontSize: 12.5, fontWeight: 600, color: "#aeb5bb" }}>{money(r.pnl / r.n)}</span>
               <span style={S.bdTrack}>
                 <span className="bd-fill" style={{ width: `${Math.max(1, (Math.abs(r.pnl) / topAbs) * 100)}%`, background: color, animationDelay: `${100 + i * 55}ms` }} />
               </span>
@@ -4907,11 +8348,13 @@ function TradeTracker({ market, onHome }) {
         {!hasAny && <text x={PL + iw / 2} y={PT + ih / 2 + 14} fill="#4a5055" fontSize="44" fontWeight="800" textAnchor="middle">N/A</text>}
       </>
     );
-    const tipMark = hoverPt && (
-      <g key={hoverPt.label} className="ch-tip" pointerEvents="none">
-        <line x1={hoverPt.x} y1={PT} x2={hoverPt.x} y2={PT + ih} stroke="#4a5055" strokeWidth="1" />
-        <circle className="tip-dot" cx={hoverPt.x} cy={hoverPt.y} r="5" fill="#ffffff" />
-      </g>
+    const tipMark = (
+      <HoverSlot hub={hoverHubT} render={(hoverPt) => (
+        <g key={hoverPt.label} className="ch-tip" pointerEvents="none">
+          <line x1={hoverPt.x} y1={PT} x2={hoverPt.x} y2={PT + ih} stroke="#4a5055" strokeWidth="1" />
+          <circle className="tip-dot" cx={hoverPt.x} cy={hoverPt.y} r="5" fill="#ffffff" />
+        </g>
+      )} />
     );
 
     if (chartMode === "line") {
@@ -4983,7 +8426,9 @@ function TradeTracker({ market, onHome }) {
               {cur && <circle className="axis-fade ch-morph" cx={cur.x} cy={cur.y} r="4" fill="#c7cdd2" />}
               {pts.map((p) => (
                 <rect key={p.i} x={p.x - iw / N / 2} y={PT} width={iw / N} height={ih} fill="transparent" style={{ cursor: "pointer" }}
-                      onMouseEnter={() => setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: money(p.v) })}
+                      onMouseEnter={() => { const k = pts.indexOf(p), run = cmpOn ? cmpOn.vals.slice(0, p.i + 1).reduce((a, v) => a + (v || 0), 0) : 0;
+                        setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: money(p.v),
+                          sub: [k > 0 && `${money(p.v - pts[k - 1].v)} since ${labelOf(pts[k - 1].i)}`, cmpOn && `${cmpOn.label}: ${money(run)} · ${money(p.v - run)}`] }); }}
                       onClick={() => chartGo(isMonthMode, p.i)} />
               ))}
               {tipMark}
@@ -5018,7 +8463,8 @@ function TradeTracker({ market, onHome }) {
                     y={v >= 0 ? Y(v) : zeroY} height={Math.max(1.5, Math.abs(Y(v) - zeroY))}
                     fill={v >= 0 ? "url(#cBarPos)" : "url(#cBarNeg)"} opacity="0.92"
                     style={{ animationDelay: `${120 + i * 18}ms`, cursor: "pointer", transformOrigin: v >= 0 ? "center bottom" : "center top" }}
-                    onMouseEnter={() => setHoverPt({ x: X(i), y: v >= 0 ? Y(v) : zeroY, label: labelOf(i), value: money(v) })}
+                    onMouseEnter={() => setHoverPt({ x: X(i), y: v >= 0 ? Y(v) : zeroY, label: labelOf(i), value: money(v),
+                      sub: cmpOn && cmpOn.vals[i] != null && `${cmpOn.label}: ${money(cmpOn.vals[i])} · ${money(v - cmpOn.vals[i])}` })}
                     onClick={() => chartGo(isMonthMode, i)} />
             )))}
             {tipMark}
@@ -5055,7 +8501,7 @@ function TradeTracker({ market, onHome }) {
     } else if (recapDetail === "trades") {
       acc = "#3ddc97"; icon = "bolt"; title = "Biggest trades";
       const max = Math.max(1e-9, r.wins[0] ? r.wins[0].pnl : 0, r.losses[0] ? -r.losses[0].pnl : 0);
-      const rows = (arr) => arr.slice(0, 5).map((t) => ({ label: M.sides ? `${coinName(t.coin)} · ${t.side}` : coinName(t.coin), value: money(t.pnl), valColor: pnlCol(t.pnl), frac: Math.abs(t.pnl) / max, color: barCol(t.pnl), sub: t.when }));
+      const rows = (arr) => arr.slice(0, 5).map((t) => ({ label: M.sides ? `${coinName(t.coin)} · ${M.sideName[t.side === "short" ? 1 : 0].toLowerCase()}` : coinName(t.coin), value: money(t.pnl), valColor: pnlCol(t.pnl), frac: Math.abs(t.pnl) / max, color: barCol(t.pnl), sub: t.when }));
       body = two(rows(r.wins), rows(r.losses), "Biggest wins", "Biggest losses");
     } else if (recapDetail === "traded") {
       acc = "#b89cff"; icon = "repeat"; title = `Most traded ${M.things.toLowerCase()}`;
@@ -5103,7 +8549,7 @@ function TradeTracker({ market, onHome }) {
     );
     // the two halves of the wide tile: longs and shorts, or (stocks are only bought) the winning trades and the losing ones
     const halves = M.sides
-      ? [["Longs", r.sides.long, "#7fb6e0"], ["Shorts", r.sides.short, "#b89cff"]]
+      ? [[`${M.sideName[0]}s`, r.sides.long, "#7fb6e0"], [`${M.sideName[1]}s`, r.sides.short, "#b89cff"]]
       : [["Winners", { n: r.tot.wins, pnl: r.tot.profit }, "#8fd7a4", r.tot.wins ? `${tradesWord(r.tot.wins)} · ${money(r.tot.profit / r.tot.wins)} each` : ""],
          ["Losers", { n: r.tot.losses, pnl: -r.tot.loss }, "#e2808c", r.tot.losses ? `${tradesWord(r.tot.losses)} · ${money(-r.tot.loss / r.tot.losses)} each` : ""]];
     return (
@@ -5112,8 +8558,8 @@ function TradeTracker({ market, onHome }) {
              style={{ animation: recapClosing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .45s var(--ease) backwards" }}>
           <div style={S.modalHead}>
             <span style={S.wrKicker}>
-              <span className="msym" style={{ fontSize: 17, color: "#c7cdd2" }}>auto_awesome</span>
-              {isYear ? "Yearly" : "Monthly"} wrapped
+              <span className="msym" style={{ fontSize: 17, color: "#e6c877" }}>auto_awesome</span>
+              <span className="px-word">{isYear ? "YEARLY" : "MONTHLY"} WRAPPED</span>
             </span>
             <button className="x-btn" style={S.closeBtn} onClick={closeRecap}>✕</button>
           </div>
@@ -5121,7 +8567,7 @@ function TradeTracker({ market, onHome }) {
           {r.empty ? (
             <div className="wr-tile wr-hero" style={{ "--acc": "#6d757d", minHeight: 220, animationDelay: "100ms" }}>
               <div style={S.wrLabel}>{title}</div>
-              <div style={{ ...S.wrHeroNum, fontSize: 40, color: "#6d757d" }}>No trades yet</div>
+              <div style={{ ...S.wrHeroNum, fontSize: 40, color: "#8e969e" }}>No trades yet</div>
               <div style={S.wrHeroSub}>Log some trades for this {isYear ? "year" : "month"} and your recap will fill in.</div>
             </div>
           ) : (
@@ -5184,7 +8630,7 @@ function TradeTracker({ market, onHome }) {
                     {!isYear && <div style={S.wrSmall}>{r.worst.sub}</div>}
                     <div style={{ ...S.wrValue, color: r.worst.value >= 0 ? "#8fd7a4" : "#e2808c" }}><CountNum value={r.worst.value} duration={800} render={moneyLive} /></div>
                   </>
-                ) : <div style={{ ...S.wrBig, color: "#6d757d" }}>N/A</div>}
+                ) : <div style={{ ...S.wrBig, color: "#8e969e" }}>N/A</div>}
                 <span className="msym wr-more">arrow_outward</span>
               </div>
 
@@ -5246,7 +8692,7 @@ function TradeTracker({ market, onHome }) {
                     <>
                       <div style={S.wrBig}>{t.coin || M.none}</div>
                       <div style={{ ...S.wrValue, color: t.pnl >= 0 ? "#8fd7a4" : "#e2808c" }}><CountNum value={t.pnl} duration={800} render={moneyLive} /></div>
-                      <div style={S.wrSmall}>{M.sides ? `${t.side} · ` : ""}{t.when}{worstTrade && bestTrade ? ` · worst ${money(worstTrade.pnl)}` : ""}</div>
+                      <div style={S.wrSmall}>{M.sides ? `${M.sideName[t.side === "short" ? 1 : 0].toLowerCase()} · ` : ""}{t.when}{worstTrade && bestTrade ? ` · worst ${money(worstTrade.pnl)}` : ""}</div>
                     </>
                   );
                 })()}
@@ -5264,7 +8710,7 @@ function TradeTracker({ market, onHome }) {
 
               {/* longs against shorts */}
               <div {...tile("wr-wide", "#7fb6e0", null)}>
-                <div style={S.wrLabel}><span className="msym wr-ico">swap_vert</span>{M.sides ? "Longs vs shorts" : "Winners vs losers"}</div>
+                <div style={S.wrLabel}><span className="msym wr-ico">swap_vert</span>{M.sides ? `${M.sideName[0]}s vs ${M.sideName[1].toLowerCase()}s` : "Winners vs losers"}</div>
                 <div style={{ display: "flex", gap: 18, marginTop: 2 }}>
                   {halves.map(([name, s2, color, note]) => <Fragment key={name}>{sideLine(name, s2, color, note)}</Fragment>)}
                 </div>
@@ -5323,23 +8769,27 @@ function TradeTracker({ market, onHome }) {
                   ))}
                 </span>
               </div>
-              <div style={S.yearBarWrap}>
+              {/* the year as a poster, as on the finance side: the net result huge with a glow of its colour; beside it
+                  what the green months made and the red months lost (the two halves of the bar under it) */}
+              <div className="poster" style={{ ...S.yearBarWrap, "--hc": tone(ys) }}>
+                <div className="poster-line">
+                  <span className="poster-num"><CountNum value={ys.pnl} duration={560} render={moneyLive} /></span>
+                  <span className="poster-cap">
+                    <b>{ys.pnl >= 0 ? "net profit" : "net loss"} this year</b>
+                    <span title="What the green months made · what the red months lost">
+                      {moneyAbs(ys.up)} made · <CountNum value={ys.down} duration={560} render={absLive} /> lost
+                      {ys.n > 0 && <>{"  ·  "}{tradesWord(ys.n)} · {winPct(ys)}% win</>}
+                    </span>
+                  </span>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ flex: 1 }}>{grossBar(ys, "cy")}</div>
                   {chartButton("Yearly chart")}
                 </div>
-                <div style={S.barMeta}>
-                  <span style={{ color: tone(ys) }} title="Net PnL of the year / everything the winning trades made">
-                    <strong><CountNum value={ys.pnl} duration={560} render={moneyLive} /></strong>
-                    {" / "}{money(ys.profit)}
-                  </span>
-                  <span style={{ color: C_RED }} title="Everything the losing trades cost">
-                    {ys.n > 0 && <span style={{ color: C_MUTE }}>{tradesWord(ys.n)} · {winPct(ys)}% win{"  ·  "}</span>}
-                    <CountNum value={-ys.loss} duration={560} render={moneyLive} />
-                  </span>
-                </div>
               </div>
             </div>
+
+            <div className="qadd-row"><QuickAdd api={quickApi} cur={M.dp ? "$" : "Rp"} isMYR={!!M.dp} boxRef={quickBoxRef} w={qaddWords} /></div>
 
             <div className="year-nav glass">
               <button className="ynav-btn" title="Previous year (↑)" disabled={yearIdx === 0} onClick={() => stepYear(-1)}>
@@ -5350,7 +8800,7 @@ function TradeTracker({ market, onHome }) {
               </button>
             </div>
 
-            <div className="year-viewport">
+            <div className="year-viewport with-qadd">
               <div className={`year-track${yearShift ? " shifting" : ""}`}
                    style={{ transform: `translateY(calc(${yearIdx === 0 ? 0 : yearIdx === YEARS.length - 1 ? YEAR_PEEK : YEAR_PEEK / 2}px - var(--yb) * ${yearIdx}))` }}>
                 {YEARS.map((yr, yi) => {
@@ -5370,6 +8820,11 @@ function TradeTracker({ market, onHome }) {
                                  style={{ ...S.yearCell, background: bg, borderColor: border, animation: active ? `tileIn .42s var(--ease) ${m * 22}ms backwards` : "none" }}
                                  onClick={() => { if (active) { setYear(yr); setMonth(m); setSelected(null); setFromYear(true); setView("month"); setTimeout(() => setFromYear(false), 1100); } }}>
                               <span style={S.yearCellName}>{name}</span>
+                              {yearSparks[`${yr}-${m}`] && (
+                                <svg className="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                                  <path d={yearSparks[`${yr}-${m}`]} fill="none" stroke={tone(mo)} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinecap="butt" strokeLinejoin="miter" />
+                                </svg>
+                              )}
                               {mo.n ? (
                                 <>
                                   <span style={{ ...S.yearCellSpent, color: tone(mo) }}>
@@ -5393,7 +8848,7 @@ function TradeTracker({ market, onHome }) {
         </div>
       ) : (
         <div className={fromYear ? "month-view enter" : "month-view"}>
-          <div style={S.topRow}>
+          <div data-mv="" style={S.topRow}>
             <h1 className={`recap-link month-big${monthFlick?.cells ? flashing(monthFlick) : ""}`} style={S.title} title={`${MONTHS_FULL[month]} wrapped`}
                 onClick={() => openRecap({ kind: "month", y: year, m: month })}>
               {Array.from({ length: monthFlick?.cells ? monthFlick.cells.length : MONTHS_FULL[month].length }, (_, i) => {
@@ -5409,7 +8864,7 @@ function TradeTracker({ market, onHome }) {
               })}
             </h1>
             <div style={S.navBox}>
-              {/* the arrows stay hidden until the pointer is on the month switcher */}
+              {/* the arrows are always on show (7 October 2026: he asked for that; they used to wait for the pointer) */}
               <span className="month-nav">
                 <button className="nav-arrow" disabled={!monthAfter(year, month, -1)} title="Previous month (←)" onClick={() => nav(-1)}>‹</button>
                 <button className="month-btn" style={S.monthLabelBtn}
@@ -5418,90 +8873,110 @@ function TradeTracker({ market, onHome }) {
                 <button className="nav-arrow" disabled={!monthAfter(year, month, 1)} title="Next month (→)" onClick={() => nav(1)}>›</button>
               </span>
               {M.base === "USDT" ? (
-                <button className="cur-btn" style={S.currency} title="Click: USDT ⇄ IDR · three quick clicks: MYR" onClick={onCurClick}>
-                  <CurRoll idx={CUR_LIST.indexOf(cur)} />
+                <button className="cur-btn" style={S.currency} title={`Click: ${M.unit} ⇄ IDR · three quick clicks: MYR`} onClick={onCurClick}>
+                  <CurRoll idx={CUR_LIST.indexOf(cur)} usd={M.unit} />
                 </button>
               ) : <span style={{ ...S.currency, cursor: "default" }} title="Realised PnL, in rupiah">{M.base}</span>}
             </div>
           </div>
 
-          <div style={{ ...S.bigPnl, color: tone(ms) }}>
-            <CountNum value={ms.pnl} duration={660} render={moneyLive} />
-            <span style={S.bigPnlSub}>PnL this month</span>
-            {ms.n > 0 && (
-              <span key={`vs-${year}-${month}`} style={S.pnlVs}>
-                <span style={{ color: "#e8eaec", fontWeight: 700 }}>{winPct(ms)}%</span> win rate
-                {pnlVsPrev && (
-                  <>
-                    {"  ·  "}
-                    <span style={{ color: pnlVsPrev.pct >= 0 ? C_GREEN : C_RED, fontWeight: 700 }}>
-                      {pnlVsPrev.pct >= 0 ? "+" : "−"}{Math.abs(pnlVsPrev.pct).toFixed(1)}%
-                    </span>
-                    {" "}vs {pnlVsPrev.name}
-                  </>
-                )}
+          {/* the month at a glance, as on the finance side */}
+          <div data-mv="" className="hero" style={{ "--hc": tone(ms) }}>
+            <div className="hero-head">
+              <span className="hero-lead">
+                <span className="hero-tag"><i />PnL this month</span>
+                <InfoTip title="How the PnL works">
+                  <span>The net result of every trade closed this month: what the wins made, less what the losses cost.</span>
+                  <span><i style={{ background: C_GREEN }} />A green day ended above zero, a red day below it.</span>
+                  <span><i style={{ background: "#e3cd77" }} />A break-even trade counts as a trade and adds only what you typed for it.</span>
+                  <span><i style={{ background: "#8e969e" }} />Deposits and withdrawals move the balance, never the PnL.</span>
+                </InfoTip>
               </span>
-            )}
+              {ms.n > 0 && (
+                <span key={`vs-${year}-${month}`} className="hero-vs">
+                  <b style={{ color: "#e8eaec" }}>{winPct(ms)}%</b> win rate
+                  {pnlVsPrev && (
+                    <>
+                      {"  ·  "}
+                      <b style={{ color: pnlVsPrev.pct >= 0 ? C_GREEN : C_RED }}>
+                        {pnlVsPrev.pct >= 0 ? "+" : "−"}{Math.abs(pnlVsPrev.pct).toFixed(1)}%
+                      </b>
+                      {" "}vs {pnlVsPrev.name}
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
+            <div className="hero-num"><CountNum value={ms.pnl} duration={660} render={moneyLive} /></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>{grossBar(ms, "cm")}</div>
+              {chartButton("Monthly chart")}
+            </div>
+            <div className="hero-tiles">
+              <div className="hero-tile" style={{ "--tc": C_GREEN }} title="Winning trades / what they made">
+                <span className="ht-cap">{ms.wins === 1 ? "Win" : "Wins"}</span>
+                <span className="ht-val"><CountNum value={ms.wins} duration={560} render={(n) => Math.round(n)} /></span>
+                <span className="ht-sub" style={{ color: C_GREEN }}>+<CountNum value={ms.profit} duration={560} render={absLive} /></span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": C_RED }} title="Losing trades / what they cost">
+                <span className="ht-cap">{ms.losses === 1 ? "Loss" : "Losses"}</span>
+                <span className="ht-val"><CountNum value={ms.losses} duration={560} render={(n) => Math.round(n)} /></span>
+                <span className="ht-sub" style={{ color: C_RED }}>-<CountNum value={ms.loss} duration={560} render={absLive} /></span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": C_GREEN }} title="Green days / what they made">
+                <span className="ht-cap">{ms.greenDays === 1 ? "Green day" : "Green days"}</span>
+                <span className="ht-val"><CountNum value={ms.greenDays} duration={560} render={(n) => Math.round(n)} /></span>
+                <span className="ht-sub" style={{ color: C_GREEN }}>+<CountNum value={ms.greenSum} duration={560} render={absLive} /></span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": C_RED }} title="Red days / what they cost">
+                <span className="ht-cap">{ms.redDays === 1 ? "Red day" : "Red days"}</span>
+                <span className="ht-val"><CountNum value={ms.redDays} duration={560} render={(n) => Math.round(n)} /></span>
+                <span className="ht-sub" style={{ color: C_RED }}>-<CountNum value={-ms.redSum} duration={560} render={absLive} /></span>
+              </div>
+            </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ flex: 1 }}>{grossBar(ms, "cm")}</div>
-            {chartButton("Monthly chart")}
-          </div>
-          <div style={S.barMeta}>
-            <span style={{ color: C_GREEN }} title="Winning trades / what they made">
-              <strong><CountNum value={ms.wins} duration={560} render={(n) => Math.round(n)} /> {ms.wins === 1 ? "win" : "wins"}</strong>
-              {" / +"}<CountNum value={ms.profit} duration={560} render={absLive} />
-            </span>
-            <span style={{ color: C_RED }} title="Losing trades / what they cost">
-              <CountNum value={ms.losses} duration={560} render={(n) => Math.round(n)} /> {ms.losses === 1 ? "loss" : "losses"}
-              {" / -"}<CountNum value={ms.loss} duration={560} render={absLive} />
-            </span>
-          </div>
-          <div style={S.dayStats}>
-            <span style={{ color: C_GREEN }} title="Green days / what they made">
-              <CountNum value={ms.greenDays} duration={560} render={(n) => Math.round(n)} /> {ms.greenDays === 1 ? "green day" : "green days"}
-              {" / +"}<CountNum value={ms.greenSum} duration={560} render={absLive} />
-            </span>
-            <span style={{ color: C_RED }} title="Red days / what they cost">
-              <CountNum value={ms.redDays} duration={560} render={(n) => Math.round(n)} /> {ms.redDays === 1 ? "red day" : "red days"}
-              {" / -"}<CountNum value={-ms.redSum} duration={560} render={absLive} />
-            </span>
-          </div>
-
-          <div className="cal-wrap">
+          <div data-mv="" className="cal-wrap">
             <div key={`grid-${year}-${month}`} style={S.grid}>
               {DOW.map((d, i) => <div key={i} style={S.dowCell}>{d}</div>)}
               {cells.map((d, i) => {
                 if (d === null) return <div key={"e" + i} />;
                 const day = ms.days[d - 1];
                 const list = trades[keyOf(year, month, d)] || [];
-                const up = day && day.pnl >= 0;
-                const bg = !day ? "#26292c" : up ? "rgba(61,220,151,0.10)" : "rgba(255,93,108,0.12)";
-                const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : !day ? "#33373b" : up ? "#1e4436" : "#5a2830";
+                // green above zero, red below, yellow at exactly zero (a day that held a win can still come to nothing);
+                // the tile itself only carries a faint wash of it
+                const net = !day ? 0 : day.pnl > 0 ? 1 : day.pnl < 0 ? -1 : 0;
+                const ink = net > 0 ? C_GREEN : net < 0 ? C_RED : "#e3cd77";
+                const bg = !day ? "#26292c" : net > 0 ? "rgba(61,220,151,0.055)" : net < 0 ? "rgba(255,93,108,0.06)" : "#292c2f";
+                const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : !day ? "#33373b" : net > 0 ? "#234236" : net < 0 ? "#4f2a30" : "#3d4045";
+                const beSum = day ? day.pnl - day.profit + day.loss : 0;
                 return (
-                  <div key={d} className={`cell${i < 7 ? " tip-below" : ""}`}
+                  <div key={d} className={`cell${i < 7 ? " tip-below" : ""}${d === todayNum ? " today" : ""}${net < 0 ? " over" : ""}`}
                        style={{ ...S.cell, background: bg, borderColor: border, animation: `tileIn .4s var(--ease) ${d * 12}ms backwards` }}
                        onClick={() => { setSelected(d); setAmtEdit(null); setDraft({ win: "", winPair: "", loss: "", lossPair: "" }); }}>
+                    {/* as on the finance side: the day's result as a bar rising behind its figure, in its colour */}
+                    {net !== 0 && <i className="cbar" style={{ "--bd": `${90 + d * 4}ms`, "--h": `${Math.round(Math.min(1, Math.abs(day.pnl) / dayTop) * 78)}%`, color: ink }} />}
                     <span className="cell-tip glass" style={S.cellTip}>
                       <span style={S.cellTipDate}>{d} {monthLabelFull}</span>
                       <span style={S.cellTipRow}>
-                        <span style={{ color: C_GREEN }}>+ {moneyAbs(day ? day.profit : 0)}</span>
-                        <span style={{ color: C_RED }}>− {moneyAbs(day ? day.loss : 0)}</span>
+                        <span style={{ color: C_GREEN }}>W +{moneyAbs(day ? day.profit : 0)}</span>
+                        <span style={{ color: C_RED }}>L −{moneyAbs(day ? day.loss : 0)}</span>
+                        {day && day.n > day.wins + day.losses && <span style={{ color: "#e3cd77" }}>BE {money(beSum)}</span>}
                       </span>
                     </span>
                     <span style={S.cellDay}>{d}</span>
                     {list.length > 0 && (
                       <span style={{ ...S.dotGrid, gridTemplateColumns: `repeat(${Math.min(list.length, DOTS_PER_ROW)}, 4px)` }}>
                         {list.map((t, k) => (
-                          <span key={`${t.pnl > 0 ? "g" : t.pnl < 0 ? "r" : "b"}-${k}`} className="dot-in" style={{ ...S.dot, background: t.pnl > 0 ? C_GREEN : t.pnl < 0 ? C_RED : "#8a9299" }} />
+                          <span key={`${resOf(t)}-${k}`} className="dot-in" style={{ ...S.dot, background: resOf(t) === "win" ? C_GREEN : resOf(t) === "loss" ? C_RED : "#8a9299" }} />
                         ))}
                       </span>
                     )}
+                    {deps[keyOf(year, month, d)] && <span className="msym" style={S.cellDep}>account_balance_wallet</span>}
                     {day ? (
                       <>
-                        <span style={{ ...S.cellSpent, color: up ? C_GREEN : C_RED }}>{money(day.pnl)}</span>
-                        <span style={{ ...S.cellPnlSmall, color: up ? "#a5efcd" : "#ffb3bb" }}>{day.wins}W · {day.losses}L{day.n > day.wins + day.losses ? ` · ${day.n - day.wins - day.losses}BE` : ""}</span>
+                        <span style={{ ...S.cellSpent, color: ink }}>{money(day.pnl)}</span>
+                        <span style={{ ...S.cellPnlSmall, color: net > 0 ? "#a5efcd" : net < 0 ? "#ffb3bb" : "#c9c4a8" }}>{day.wins}W · {day.losses}L{day.n > day.wins + day.losses ? ` · ${day.n - day.wins - day.losses}BE` : ""}</span>
                       </>
                     ) : <span style={S.cellEmpty}>·</span>}
                   </div>
@@ -5510,7 +8985,9 @@ function TradeTracker({ market, onHome }) {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateRows: selected !== null && !panelClosing ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+          {/* as wide as the calendar and the cards under it (he found it "proportionally smaller" than the other boxes): the
+              margins are on this outer box, so the panel is not cut at the sides while it opens */}
+          <div data-mv="" style={{ display: "grid", gridTemplateRows: selected !== null && !panelClosing ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)", margin: "0 -14px" }}>
             <div style={{ overflow: panelAnim ? "hidden" : "visible", minHeight: 0 }}>
               {selected !== null && (
                 <div key={`panel-${selKey}`} className="glass" style={{ ...S.panel, opacity: panelClosing ? 0 : 1, transition: "opacity .24s ease" }}>
@@ -5523,7 +9000,7 @@ function TradeTracker({ market, onHome }) {
                     <button className="x-btn" style={S.closeBtn} onClick={closePanel}>✕</button>
                   </div>
 
-                  {M.journal ? <TradeJournal list={selTrades} removing={removing} api={jrApi} ghost={M.ghost} shown={`${cur}${rate}`} /> : [1, -1].map((sign) => {
+                  {M.journal ? <TradeJournal list={selTrades} deps={selDeps} removing={removing} api={jrApi} ghost={M.ghost} shown={`${cur}${rate}`} idx={M.journal === "idx"} fx={M.journal === "fx"} /> : [1, -1].map((sign) => {
                     const win = sign > 0;
                     const rows = selTrades.filter((it) => (it.pnl > 0) === win);
                     const delay = win ? 0.04 : 0.1;
@@ -5579,7 +9056,7 @@ function TradeTracker({ market, onHome }) {
 
           <FoldCard title="PnL analysis" name="PnL analysis" runKey="an"
                       sub={<><span style={{ color: anTot.n ? (anTot.pnl >= 0 ? "#5ee3a9" : "#ff8d97") : undefined }}>{money(anTot.pnl)}</span> · {dayText(anFrom)} – {dayText(anTo)}</>}>
-            <PnlAnalysis trades={trades} an={an} start={anFrom} end={anTo} cur={cur} rate={rate} base={eqBase} allPnl={allPnl} unit={M.base} dp={M.dp} api={anApi} />
+            <PnlAnalysis trades={trades} deps={deps} an={an} start={anFrom} end={anTo} cur={cur} rate={rate} base={eqBase} allPnl={allPnl} allDep={allDep} unit={M.base} unitName={M.unit} dp={M.dp} api={anApi} />
           </FoldCard>
           <FoldCard title="Performance" name="performance" runKey={`${year}-${month}`} sub={monthLabel}>
             {renderPerf()}
@@ -5587,6 +9064,11 @@ function TradeTracker({ market, onHome }) {
           <FoldCard title={M.things} name={M.things.toLowerCase()} runKey={`${year}-${month}`} sub={detail.coins.length ? `${detail.coins.length} traded · ${monthLabel}` : monthLabel}>
             {renderCoins()}
           </FoldCard>
+          {M.journal === "idx" && (
+            <FoldCard title="Breakdown" name="breakdown" runKey={`${year}-${month}`} sub="By sector and trade style">
+              <IdxBreakdown trades={trades} year={year} month={month} api={jrApi} />
+            </FoldCard>
+          )}
         </div>
       )}
 
@@ -5633,8 +9115,8 @@ function TradeTracker({ market, onHome }) {
             </div>
             <div style={{ position: "relative" }}>
               {renderChartSvg(view === "year" ? "year" : "month")}
-              {hoverPt && <GlassTip key={hoverPt.label} W={720} H={380} x={Math.min(Math.max(hoverPt.x, 64 + 64), 720 - 20 - 64)}
-                                    y={hoverPt.y} below={hoverPt.y < 24 + 62} label={hoverPt.label} value={hoverPt.value} />}
+              <HoverSlot hub={hoverHubT} render={(hoverPt) => <GlassTip key={hoverPt.label} W={720} H={380} x={Math.min(Math.max(hoverPt.x, 64 + 64), 720 - 20 - 64)}
+                                    y={hoverPt.y} below={hoverPt.y < 24 + 62} label={hoverPt.label} value={hoverPt.value} sub={hoverPt.sub} />} />
             </div>
             <div key={`legend-${chartMode}`} style={S.legend}>
               {chartMode === "line"
@@ -5647,6 +9129,7 @@ function TradeTracker({ market, onHome }) {
       )}
 
       {recap && renderRecap()}
+      {quickOpen && <TradeQuickLog api={quickApi} onClose={closeQuick} />}
       {testOpen && <TradeTestCfg cfg={testCfg} M={M} year={year} month={month} onRun={runTestCfg} onClose={() => setTestOpen(false)} />}
 
       {/* the position calculator: its button never moves with the page. Above the year arrows, or in the corner */}
@@ -5657,24 +9140,73 @@ function TradeTracker({ market, onHome }) {
         <StockCalc draft={calcDraft} onSaved={(inputs, shown) => savePrefs({ calc: { inputs, shown } })} onClose={() => setCalcOpen(false)} fees={fees} onFees={setFee} live={quoteBook.current} />
       )}
       {calcOpen && M.sides && (
-        <PositionCalc draft={calcDraft} onSaved={(inputs, shown) => savePrefs({ calc: { inputs, shown } })} onClose={() => setCalcOpen(false)}
+        <PositionCalc fxm={M.journal === "fx"} draft={calcDraft} onSaved={(inputs, shown) => savePrefs({ calc: { inputs, shown } })} onClose={() => setCalcOpen(false)}
                       cur={cur} cur2={cur2} onCurClick={onCurClick} onCur2Click={onCur2Click} rateOf={rateOf} fx={fx} canFetch={canFetch} onRate={setRate} live={quoteBook.current} />
       )}
+
+      {settingsOpen && (
+        <SettingsPop onClose={() => setSettingsOpen(false)}>
+          {M.base === "USDT" ? (
+            <>
+              <div className="set-row">
+                <span className="set-k"><b>Currency shown</b><small>Trades are always kept in {M.unit}</small></span>
+                <span className="wr-seg">
+                  {CUR_LIST.map((c) => <button key={c} className={cur === c ? "on" : ""} onClick={() => { setCur(c); savePrefs({ cur: c }); refreshFx(); }}>{c === "USDT" ? M.unit : c}</button>)}
+                </span>
+              </div>
+              {["IDR", "MYR"].map((c) => (
+                <div key={c} className="set-row">
+                  <span className="set-k"><b>1 {M.unit} in {c}</b>
+                    <small>{fx.manual[c] ? "Typed by hand. Empty the box to go back to the live rate" : fx.live ? `Live rate, fetched ${stampText(fx.live.at)}` : "Built-in rate, until a live one is fetched"}</small></span>
+                  <SetNum value={String(+rateOf(c).toFixed(c === "IDR" ? 2 : 4))} dp={4} unit={c} onPick={(v) => setRate(c, numOf(v))} />
+                </div>
+              ))}
+            </>
+          ) : [["buy", "Broker fee on a buy"], ["sell", "Broker fee on a sell"]].map(([k, name]) => (
+            <div key={k} className="set-row">
+              <span className="set-k"><b>{name}</b><small>Of the trade's value{k === "sell" ? ", with the 0.1% tax" : ""}. Empty the box to go back to {IDX_FEES[k]}%</small></span>
+              <SetNum value={String(fees[k])} dp={3} unit="%" onPick={(v) => setFee(k, v === "" ? null : numOf(v))} />
+            </div>
+          ))}
+        </SettingsPop>
+      )}
+
+      <SideNav api={sideApi} foot={sideFoot} spy={SIDE_SPY[market]} spyKey={view === "month" ? `${market}-${year}-${month}` : ""}
+               act={SIDE_ACT.trade}
+               rows={[
+                 { head: "Overview" },
+                 { id: "year", icon: "grid_view", text: "Year", tail: year, on: view === "year" },
+                 { id: "month", icon: "calendar_month", text: "Month", tail: MONTHS_SHORT[sideMonth], on: view === "month" },
+                 { head: MONTHS_FULL[sideMonth] },
+                 { id: "cal", icon: "calendar_today", text: "Calendar", sub: true },
+                 { id: "an", icon: "show_chart", text: "PnL analysis", sub: true },
+                 { id: "perf", icon: "speed", text: "Performance", sub: true },
+                 { id: "names", icon: "paid", text: M.things, sub: true },
+                 ...(market === "idx" ? [{ id: "kinds", icon: "category", text: "Breakdown", sub: true }] : []),
+                 { head: "Recap" },
+                 { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
+                 { head: "Account" },
+                 { id: "users", pic: who ? who.pic : "", img: who ? who.img : undefined, bg: who ? who.bg : undefined, bgImg: who ? who.bgImg : undefined, text: who ? who.first : "", tail: "Switch", tip: "Change account" },
+                 ...(SHOW_TEST_TOOLS ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." },
+                   ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : [])] : []),
+               ]} />
 
       <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
           <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
           {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="The trades could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
-          <button className="bk-btn ico" onClick={exportData} title="Export: save a backup of every trade" aria-label="Export"><span className="msym">download</span></button>
-          <button className="bk-btn ico" onClick={() => fileRef.current?.click()} title="Import: restore trades from a backup file" aria-label="Import"><span className="msym">upload</span></button>
+          <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves your trades to the exports folder" : "Downloads a backup of every trade"} /></button>
+          <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings trades back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
           {backupMsg && <span className="bk-msg">{backupMsg}</span>}
           {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the trades you had before this import">Undo</button>}
+          <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
+          <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {SHOW_TEST_TOOLS && <>
             <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
-            <button className="bk-btn ico test" onClick={onTestDataClick} title="Add test data · click: with your saved settings · double-click: change the settings" aria-label="Add test data"><span className="msym">science</span></button>
-            <button className="bk-btn ico" onClick={clearTestData} title="Clear test data: remove only the generated test trades, and put your own balance back" aria-label="Clear test data"><span className="msym">delete_sweep</span></button>
+            <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
+            <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated trades only" /></button>
             {testMsg && <span className="bk-msg" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
         </span>
@@ -5724,11 +9256,17 @@ export default function PnlCalendar() {
   const [selected, setSelected] = useState(null);
   const [newAmt, setNewAmt] = useState("");
   const [newDesc, setNewDesc] = useState("");
+  // several items in one expense: what the lines being typed come to (null while that list is shut), a number that
+  // gives every opening a fresh list, and the logged expense whose items are on show
+  const [split, setSplit] = useState(null);
+  const [splitRun, setSplitRun] = useState(0);
+  const [partsOpen, setPartsOpen] = useState(null);
   const [newIncAmt, setNewIncAmt] = useState("");
   const [newIncDesc, setNewIncDesc] = useState("");
   const [incomeDraft, setIncomeDraft] = useState("");
   const [showIncomeList, setShowIncomeList] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [chartClosing, setChartClosing] = useState(false);
   const [chartMode, setChartMode] = useState("both");
   // the period the chart pop-up is showing: { y, m, dir }. It browses on its own, so the panel behind never moves
@@ -5740,11 +9278,13 @@ export default function PnlCalendar() {
   const [panelAnim, setPanelAnim] = useState(false);
   const [catView, setCatView] = useState(null); // category id shown in the breakdown modal
   const [catViewClosing, setCatViewClosing] = useState(false);
+  const [scoreView, setScoreView] = useState(null); // "open" | "closing": the pop-up that shows how the score is worked out
   const [hoverBtn, setHoverBtn] = useState(null);
   const [suppressBtn, setSuppressBtn] = useState(null);
   /* goals: global savings targets that carry across every month */
   const [goals, setGoals] = useState([]);
   const [debts, setDebts] = useState([]);              // what he owes and is owed: see Debts
+  const [plans, setPlans] = useState([]);              // what he means to spend on a day to come: see WeekPlans
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalName, setNewGoalName] = useState("");
   const [newGoalTarget, setNewGoalTarget] = useState("");
@@ -5755,14 +9295,87 @@ export default function PnlCalendar() {
   const [insOpen, setInsOpen] = useState(false);
   const [insClosing, setInsClosing] = useState(false);
   const [insRun, setInsRun] = useState(0);
-  const [weekHover, setWeekHover] = useState(null);
+  const weekHub = useHoverHub(), setWeekHover = weekHub.set;          // the weekly chart's hover (HoverSlot)
   const [removing, setRemoving] = useState({});
-  const [hoverPt, setHoverPt] = useState(null);
+  const hoverHubP = useHoverHub(), setHoverPt = hoverHubP.set;        // the chart pop-up's hover (HoverSlot)
   const [catMenu, setCatMenu] = useState(null); // { id, stage: 'cats'|'other'|'icons', closing }
   const [otherDesc, setOtherDesc] = useState("");
   const [aiCats, setAiCats] = useState({}); // id -> category from AI
   const aiTried = useRef({});
   const [loaded, setLoaded] = useState(false);
+  /* accounts: who is using the app this session (see "accounts" at the top of the file). Nothing is loaded before an
+     account is chosen; the entries are read when `user` is set, and changing account loads the page again */
+  const [acc, setAcc] = useState(null);          // { list, last }, once it is read
+  const [user, setUser] = useState(null);        // the account chosen
+  const [gate, setGate] = useState(null);        // "new": the login · "pick": the select acc panel · "gone": chosen, the cover is fading · "done"
+  const accFirst = useRef(false);
+  const accApi = useRef(null);
+  accApi.current = {
+    erase: userErase,
+    save: (next) => { setAcc(next); rawStore.set(USERS_KEY, JSON.stringify(next)).catch(() => {}); },
+    enter: (u, next, quiet) => {
+      const st = { ...next, last: u.id };
+      userChoose(u); setAcc(st); setUser(u);
+      rawStore.set(USERS_KEY, JSON.stringify(st)).catch(() => {});
+      try { sessionStorage.removeItem(PICK_FLAG); } catch (e) {}
+      if (quiet) { setGate("done"); return; }
+      setGate("gone"); setTimeout(() => setGate("done"), 640);
+    },
+  };
+  useEffect(() => { (async () => {
+    let got = null, again = null;
+    ASIDE = await asideRead();
+    try {
+      const raw = JSON.parse((await rawStore.get(USERS_KEY)).value);
+      got = cleanUsers(raw);
+      if (got && got.list.some((u) => u.id === raw.login)) again = raw.login;
+    } catch (e) {}
+    if (!got) {
+      // no accounts yet. Entries saved before there were any are his own: they become the first account, under the
+      // name the cards always carried (he said so: "first name is Rassam, last name is Mawardi"), without a question
+      let had = false;
+      for (const k of [STORE_KEY, MARKETS.crypto.key, MARKETS.idx.key, MARKETS.fx.key]) { try { if ((await rawStore.get(k)).value) had = true; } catch (e) {} }
+      if (had) got = { list: [{ id: "main", first: "Rassam", last: "Mawardi", pic: AVATARS[0].id }], last: "main" };
+    }
+    // nothing saved at all: the very first launch, and the login
+    if (!got) { accFirst.current = true; setAcc({ list: [], last: null }); setGate("new"); return; }
+    // "Reset account" was pressed: the login again, for that account (its entries are aside: see userAside)
+    if (again) { accFirst.current = again; setAcc(got); setGate("new"); return; }
+    // the select acc panel only when he asked to change account; otherwise straight in as whoever was last
+    let ask = false;
+    try { ask = sessionStorage.getItem(PICK_FLAG) === "1"; } catch (e) {}
+    if (ask) { setAcc(got); setGate("pick"); return; }
+    accApi.current.enter(got.list.find((u) => u.id === got.last) || got.list[0], got, true);
+  })(); }, []);
+  // "Switch" in the sidebar: the page is loaded again and stops at the select acc panel, before the selections panel
+  const switchUser = () => { try { sessionStorage.setItem(PICK_FLAG, "1"); } catch (e) {} setTimeout(() => window.location.reload(), 90); };
+  // "Reset account" in the sidebar (a test tool; 11 October 2026: "reset my account fully and become new to the app"):
+  // the account starts over as somebody new at the next start, which is now: the first launch's preparation, the
+  // login, the introduction, and nothing entered. What it had saved is put aside, never erased (userAside), and
+  // "Restore my entries" brings it back. From here on nothing more is saved by this page (USER.pre): a late save
+  // would put the old entries back under the emptied keys.
+  const resetting = useRef(false);
+  const resetUser = async () => {
+    if (!user || !acc || resetting.current) return;
+    resetting.current = true;
+    const pre = USER.pre;
+    USER.pre = null;
+    if (!(await userAside(user).catch(() => false))) { USER.pre = pre; resetting.current = false; return; }
+    try { localStorage.setItem(PRIME_AGAIN, "1"); sessionStorage.removeItem(PRIME_KEY); sessionStorage.removeItem(PICK_FLAG); } catch (e) {}
+    await rawStore.set(USERS_KEY, JSON.stringify({ ...acc, login: user.id })).catch(() => {});
+    window.location.reload();
+  };
+  // "Restore my entries": what the reset put aside is back, with the name and the picture the account had
+  const restoreUser = async () => {
+    if (!user || !acc || resetting.current) return;
+    resetting.current = true;
+    const pre = USER.pre;
+    USER.pre = null;
+    const was = await userBack(user.id).catch(() => null);
+    if (!was) { USER.pre = pre; resetting.current = false; return; }
+    await rawStore.set(USERS_KEY, JSON.stringify({ list: acc.list.map((x) => (x.id === user.id ? was : x)), last: user.id })).catch(() => {});
+    window.location.reload();
+  };
   const [saving, setSaving] = useState(false);
 
   const isMYR = currency === "MYR";
@@ -5850,35 +9463,45 @@ export default function PnlCalendar() {
   const isCurrentMonth = year === now.getFullYear() && month === now.getMonth();
   const todayNum = isCurrentMonth ? now.getDate() : -1;
 
+  const unreadable = useRef(false);   // saved data that could not be read: kept aside, and never saved over
   useEffect(() => {
+    if (!user) return;
     (async () => {
       try {
         const res = await store.get(STORE_KEY);
         if (res && res.value) {
-          const data = JSON.parse(res.value);
+          let data = null;
+          try { data = JSON.parse(res.value); } catch (e) {}
+          if (!data || typeof data !== "object") {
+            unreadable.current = true;
+            try { await store.set(`${STORE_KEY}-unreadable-${Date.now()}`, res.value); } catch (e) {}
+            throw new Error("saved data unreadable");
+          }
           setSpending(migrateSpending(data.spending || {}));
-          setLimits(data.limits || {});
-          if (data.currency) setCurrency(data.currency);
+          setLimits(cleanLimits(data.limits));
+          if (data.currency === "MYR" || data.currency === "IDR") setCurrency(data.currency);
           let inc = data.incomes || {};
           if (!data.incomes && data.monthlyIncome) {
             inc = { [monthKeyOf(now.getFullYear(), now.getMonth())]: [{ id: uid(), amount: data.monthlyIncome, desc: "", day: null }] };
           }
           setIncomes(migrateIncomes(inc));
-          if (Array.isArray(data.goals)) setGoals(data.goals);
+          if (Array.isArray(data.goals)) setGoals(cleanGoals(data.goals));
           setDebts(cleanDebts(data.debts));
+          setPlans(cleanPlans(data.plans));
         }
       } catch (e) {}
       setLoaded(true);
     })();
-  }, []);
+  }, [user]);
 
   /* Saving: every call merges into the newest known data (never a stale snapshot from an older render),
      writes run strictly in order, and a failed write is shown to the user instead of being swallowed. */
   const latestData = useRef(null);
-  latestData.current = { spending, incomes, limits, currency, goals, debts, ...(latestData.pending || {}) };
+  latestData.current = { spending, incomes, limits, currency, goals, debts, plans, ...(latestData.pending || {}) };
   const saveChain = useRef(Promise.resolve());
   const [saveError, setSaveError] = useState(false);
   const persist = (next = {}) => {
+    if (unreadable.current) return Promise.resolve();
     latestData.pending = { ...(latestData.pending || {}), ...next };
     const snapshot = JSON.stringify({ ...latestData.current, ...latestData.pending });
     setSaving(true);
@@ -5891,25 +9514,29 @@ export default function PnlCalendar() {
   };
   // the Debts section's way in (a ref, so the section isn't redrawn every time this panel is)
   const debtApi = useRef(null);
-  debtApi.current = { fmt, fmtLive, toIDR: amtToIDR, list: () => latestData.current.debts, save: (next) => { setDebts(next); persist({ debts: next }); } };
+  debtApi.current = { fmt, fmtLive, toIDR: amtToIDR, typed: dispStr, list: () => latestData.current.debts, save: (next) => { setDebts(next); persist({ debts: next }); } };
 
   /* ---------- backup: export / import the whole dataset ---------- */
   const fileRef = useRef(null);
   const [backupMsg, setBackupMsg] = useState("");
 
   const exportData = () => {
+    const own = { spending: ownEntries(spending), incomes: ownEntries(incomes), plans,
+                  goals: goals.filter((g) => !g.test).map((g) => ({ ...g, deposits: (g.deposits || []).filter((d) => !d.test) })), debts: debts.filter((x) => !x.test) };
+    // an account with nothing of his own in it writes no file (11 October 2026: after Reset account he exported the
+    // emptied account, and that file then "restored" nothing)
+    if (EMPTY_BACKUP(own)) { flashBackup("Nothing of your own to export yet", 3600); return; }
     const blob = new Blob([JSON.stringify({
       version: 1,
       exportedAt: new Date().toISOString(),
-      spending: ownEntries(spending), incomes: ownEntries(incomes), limits, currency,
-      goals: goals.filter((g) => !g.test).map((g) => ({ ...g, deposits: (g.deposits || []).filter((d) => !d.test) })),
-      debts: debts.filter((x) => !x.test),
+      spending: own.spending, incomes: own.incomes, limits, currency, goals: own.goals, debts: own.debts,
+      ...(plans.length ? { plans } : {}),
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const d = new Date();
     a.href = url;
-    a.download = `pnl-export-${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}.json`;
+    a.download = `${userFilePre()}pnl-export-${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
     setBackupMsg(BACKUP_DONE);
@@ -5922,38 +9549,55 @@ export default function PnlCalendar() {
   const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
   const applyData = async (d) => {
     setGoals(d.goals); setDebts(d.debts); setSpending(d.spending); setIncomes(d.incomes); setLimits(d.limits); setCurrency(d.currency);
+    if (d.plans) setPlans(d.plans);
     await persist(d);
   };
   const importData = async (file) => {
     if (!file) return;
     let data;
     try { data = JSON.parse(await file.text()); } catch (e) { flashBackup("Could not read that file"); return; }
+    // a finance backup is read here, a trading side's goes to that side (backupSide); anything else changes nothing
+    const side = backupSide(data);
+    if (!side) { flashBackup("That isn't a Flow backup file, nothing was changed", 4000); return; }
+    const got = side === "finance" ? await takeFinance(data) : await takeSide(side, data);
+    if (!got.undo) { flashBackup(got.msg, 4000); return; }
+    setUndoImport(got);
+    flashBackup(side === "finance" ? "Backup restored" : got.msg, 10000);
+    setTimeout(() => setUndoImport((u) => (u === got ? null : u)), 10000);
+  };
+  // a trading side's backup handed to another side's Import: under that side's own key (importSide)
+  const takeSide = async (side, data) => {
+    const undo = await importSide(side, data);
+    return undo === null ? { msg: "That backup is empty, nothing was changed" } : undo === false ? { msg: `The ${SIDE_SAID[side]} side's saved trades can't be read, nothing was changed` } : { msg: sideSaid(side), undo };
+  };
+  // a finance backup, from this side's Import or handed over by a trading side's: { msg } when nothing was changed, else how to undo it
+  const takeFinance = async (data) => {
     // only accept something that actually looks like a backup from this app — never wipe data with a random file
     const looksRight = isObj(data) && (isObj(data.spending) || isObj(data.incomes))
       && (data.spending === undefined || isObj(data.spending)) && (data.incomes === undefined || isObj(data.incomes))
       && (data.limits === undefined || isObj(data.limits)) && (data.goals === undefined || Array.isArray(data.goals))
       && (data.debts === undefined || Array.isArray(data.debts));
-    if (!looksRight) { flashBackup("That isn't a PnL backup file, nothing was changed", 4000); return; }
-    const prev = { spending, incomes, limits, currency, goals, debts };
+    if (!looksRight) return { msg: "That isn't a PnL backup file, nothing was changed" };
+    const prev = { spending, incomes, limits, currency, goals, debts, plans };
     const next = {
       debts: cleanDebts(data.debts),
+      plans: cleanPlans(data.plans),
       spending: migrateSpending(data.spending || {}),
       incomes: migrateIncomes(data.incomes || {}),
-      limits: data.limits || {},
+      limits: cleanLimits(data.limits),
       currency: data.currency === "MYR" || data.currency === "IDR" ? data.currency : currency,
-      goals: (data.goals || []).filter((g) => isObj(g) && g.id && typeof g.name === "string")
-        .map((g) => ({ ...g, target: Number(g.target) || 0, deposits: Array.isArray(g.deposits) ? g.deposits.filter((x) => isObj(x) && typeof x.amount === "number") : [] })),
+      goals: cleanGoals(data.goals),
     };
+    // a backup with nothing in it would only empty the app, and say "Backup restored"
+    if (EMPTY_BACKUP(next)) return { msg: "That backup is empty, nothing was changed" };
     await applyData(next);
-    setUndoImport(prev);
-    flashBackup("Backup restored", 10000);
-    setTimeout(() => setUndoImport((u) => (u === prev ? null : u)), 10000);
+    return { msg: sideSaid("finance"), undo: () => applyData(prev) };
   };
   const revertImport = async () => {
     if (!undoImport) return;
     const prev = undoImport;
     setUndoImport(null);
-    await applyData(prev);
+    await prev.undo();
     flashBackup("Import undone");
   };
 
@@ -5968,9 +9612,9 @@ export default function PnlCalendar() {
   const [cfgDraft, setCfgDraft] = useState(null);           // true while the pop-up is open
   const [cfgClosing, setCfgClosing] = useState(false);
   const testClickTimer = useRef(0);
-  useEffect(() => { (async () => {
+  useEffect(() => { if (user) (async () => {
     try { const r = await store.get(TEST_CFG_KEY); if (r?.value) setTestCfg(cleanTestCfg(JSON.parse(r.value))); } catch (e) {}
-  })(); }, []);
+  })(); }, [user]);
   // single click adds with the saved settings; a double click opens the settings instead of adding twice
   const onTestDataClick = (e) => {
     clearTimeout(testClickTimer.current);
@@ -6012,9 +9656,10 @@ export default function PnlCalendar() {
         if (!(nextSp[k] || []).length) { nextSp[k] = [tag({ amount: 0, desc: "No spend day", zero: true })]; nZ++; }
       });
     }
-    const nextDebts = cfg.debts ? [...baseDebts, ...[["Budi", 1_500_000, 500_000, "owe"], ["Kartu kredit", 4_200_000, 1_200_000, "owe"], ["Sari", 800_000, 0, "owed"], ["Andi", 2_000_000, 750_000, "owed"]]
+    const addDebts = cfg.debts && !baseDebts.some((x) => x.test);     // one set of sample debts, not one more a click
+    const nextDebts = addDebts ? [...baseDebts, ...[["Budi", 1_500_000, 500_000, "owe"], ["Kartu kredit", 4_200_000, 1_200_000, "owe"], ["Sari", 800_000, 0, "owed"], ["Andi", 2_000_000, 750_000, "owed"]]
       .map(([name, amount, paid, dir]) => tag({ name, amount, paid, dir }))] : baseDebts;
-    const said = `Added ${nE} expenses, ${nZ} no-spend days, ${nI} incomes${cfg.debts ? ", 4 debts" : ""}`;
+    const said = `Added ${nE} expenses, ${nZ} no-spend days, ${nI} incomes${addDebts ? ", 4 debts" : ""}`;
     const styleName = SPEND_STYLES[cfg.style] ? SPEND_STYLES[cfg.style].label.toLowerCase() : "custom";
     // goals: monthly deposits from January up to this month (or the whole year if it's a future year)
     const lastM = ty < now.getFullYear() ? 11 : ty === now.getFullYear() ? now.getMonth() : 11;
@@ -6165,6 +9810,12 @@ export default function PnlCalendar() {
   const monthLabelFull = `${MONTHS_FULL[month]} ${year}`;
 
   const dayTotal = (d) => (spending[keyOf(year, month, d)] || []).reduce((s, it) => s + it.amount, 0);
+  // the month's biggest day over the limit: the red bars are measured against it (see the day tiles)
+  const overTop = useMemo(() => {
+    let top = 0;
+    for (let d = 1; d <= daysInMonth; d++) { const v = dayTotal(d); if (v > dailyLimit) top = Math.max(top, v); }
+    return top;
+  }, [spending, year, month, dailyLimit]);
 
   const stats = useMemo(() => {
     let spent = 0, greenDays = 0, greenSum = 0, redDays = 0, redSum = 0;
@@ -6207,6 +9858,25 @@ export default function PnlCalendar() {
     [...Object.keys(spending), ...Object.keys(incomes)].forEach((k) => { const y = parseInt(k.slice(0, 4), 10); if (y > 1900 && y < 3000) ys.add(y); });
     return [...ys].sort((a, b) => a - b);
   }, [spending, incomes, year, dayTick]);
+  // a month box's own decoration: that month's spending day by day, as a small line (the data is the picture)
+  const yearSparks = useMemo(() => {
+    const out = {};
+    YEARS.forEach((yr) => {
+      for (let m = 0; m < 12; m++) {
+        const dim = new Date(yr, m + 1, 0).getDate(), v = [];
+        let max = 0;
+        for (let d = 1; d <= dim; d++) { const t = (spending[keyOf(yr, m, d)] || []).reduce((a, it) => a + it.amount, 0); v.push(t); if (t > max) max = t; }
+        if (max > 0) {
+          // a chart's line with its corners: straight from day to day, each day evened out once with its neighbours, so
+          // one big buy is a peak and not a needle. It was evened out three times and drawn as a curve (he had asked for
+          // no sharp edges), which he then found too smooth: low round bumps that "looked like pimples"
+          const w = v.map((t, i) => ((v[i - 1] ?? t) + 2 * t + (v[i + 1] ?? t)) / 4), top = Math.max(...w);
+          out[`${yr}-${m}`] = w.map((t, i) => `${i ? "L" : "M"} ${+(2 + (i / (dim - 1)) * 96).toFixed(1)} ${+(27 - (t / top) * 23).toFixed(1)}`).join(" ");
+        }
+      }
+    });
+    return out;
+  }, [spending, YEARS.join()]);
   const allYearStats = useMemo(() => YEARS.map((y) => statsForYear(y)), [spending, incomes, limits, YEARS]);
 
   const pnlVsPrev = useMemo(() => {
@@ -6421,13 +10091,13 @@ export default function PnlCalendar() {
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
       const tag = (e.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
-      if (chartOpen || catView) return;
+      if (chartOpen || catView || scoreView) return;
       e.preventDefault();
       nav(e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [launched, view, year, month, chartOpen, catView, YEARS]);
+  }, [launched, view, year, month, chartOpen, catView, scoreView, YEARS]);
 
   // one month forward or back, staying inside the years that exist (YEARS): past December it goes to the next year
   // in the list, before January to the previous one, and at either end of the list there is nowhere to go (null)
@@ -6475,18 +10145,50 @@ export default function PnlCalendar() {
   // double-clicking the minus button files a 0Rb "no spend" day
   const addZeroDay = async () => {
     if (selKey === null) return;
-    if (selItems.some((it) => it.zero)) return;
-    const next = { ...spending, [selKey]: [...selItems, { id: uid(), amount: 0, desc: "No spend day", zero: true }] };
+    // only a day with nothing on it (11 October 2026): the first press of a double click files what is typed, and the
+    // mark then went in beside that expense
+    if (selItems.length) return;
+    const next = { ...spending, [selKey]: [{ id: uid(), amount: 0, desc: "No spend day", zero: true }] };
     setSpending(next); setNewAmt(""); setNewDesc("");
     await persist({ spending: next });
   };
 
+  // with the items list open, the expense is what its lines come to and keeps them (`parts`)
+  const splitParts = useRef([]);
+  const descBox = useRef(null);
+  useLayoutEffect(() => { setSplit(null); }, [selKey, isMYR]);
+  const toggleSplit = () => {
+    if (split !== null) { setSplit(null); return; }
+    splitParts.current = []; setSplitRun((n) => n + 1); setSplit(0);
+  };
   const addExpense = async () => {
-    const amt = amtToIDR(newAmt);
+    const parts = split !== null ? splitParts.current : null;
+    const amt = parts ? split : amtToIDR(newAmt);
     if (!amt) return;
-    const next = { ...spending, [selKey]: [...selItems.filter((it) => !it.zero), { id: uid(), amount: amt, desc: newDesc.trim() }] };
-    setSpending(next); setNewAmt(""); setNewDesc("");
+    const next = { ...spending, [selKey]: [...selItems.filter((it) => !it.zero), { id: uid(), amount: amt, desc: newDesc.trim(), ...(parts ? { parts } : {}) }] };
+    setSpending(next); setNewDesc(""); setSplit(null);
+    if (!parts) setNewAmt("");
     await persist({ spending: next });
+  };
+  // PartLines' way in (a ref, so the lines aren't redrawn every time this panel is)
+  const partsApi = useRef(null);
+  partsApi.current = {
+    toIDR: amtToIDR, disp: dispStr, ghost: (v) => needsGhost(v),
+    change: (id, parts, save) => {
+      const sum = Math.min(parts.reduce((a, p) => a + p.amount, 0), MAX_AMOUNT);
+      if (id === null) { splitParts.current = parts; setSplit(sum); return; }
+      // a logged expense: its amount follows its items (emptied of them all, it keeps the amount it had)
+      const next = { ...spending, [selKey]: selItems.map((it) => (it.id === id ? { ...it, parts, ...(parts.length ? { amount: sum } : {}) } : it)) };
+      setSpending(next);
+      if (save) persist({ spending: next });
+    },
+    commit: (id) => { if (id !== null) commitEdits(); },
+    // Enter on the empty line: the list of a logged expense shuts; the one being added is filed, once it has a name
+    done: (id) => {
+      if (id !== null) { setPartsOpen(null); return; }
+      descBox.current?.focus();
+      if (newDesc.trim()) addExpense();
+    },
   };
   const editExpense = (id, field, value) => {
     setSpending({
@@ -6497,8 +10199,9 @@ export default function PnlCalendar() {
   const deleteExpense = (id) => {
     setRemoving((r) => ({ ...r, [id]: true }));
     setTimeout(async () => {
-      const rem = selItems.filter((it) => it.id !== id);
-      const next = { ...spending };
+      // what is saved now, not what was when the bin was pressed: another row may have been moved or removed meanwhile
+      const all = latestData.current.spending, rem = (all[selKey] || []).filter((it) => it.id !== id);
+      const next = { ...all };
       if (rem.length === 0) delete next[selKey]; else next[selKey] = rem;
       setSpending(next);
       setRemoving((r) => { const c = { ...r }; delete c[id]; return c; });
@@ -6524,10 +10227,12 @@ export default function PnlCalendar() {
   const quickApi = useRef(null);
   const quickBoxRef = useRef(null);
   quickApi.current = {
-    add: (kind, typed, desc) => {
-      const amount = amtToIDR(typed);
+    add: (kind, typed, desc) => quickApi.current.put(kind, amtToIDR(typed), desc, 0),
+    // the same, with the amount already in rupiah and the day counted back from today (the quick log: 1 is yesterday)
+    put: (kind, amount, desc, back) => {
       if (!amount) return null;
       const t = new Date();
+      if (back) t.setDate(t.getDate() - back);
       if (kind === "inc") {
         const k = monthKeyOf(t.getFullYear(), t.getMonth());
         const next = { ...incomes, [k]: [...(incomes[k] || []), { id: uid(), amount, desc, day: t.getDate() }] };
@@ -6538,6 +10243,82 @@ export default function PnlCalendar() {
         setSpending(next); persist({ spending: next });
       }
       return fmt(amount);
+    },
+    fmt, toIDR: amtToIDR,
+    // today's spending against that month's daily limit
+    today: () => {
+      const t = new Date();
+      return { spent: (spending[keyOf(t.getFullYear(), t.getMonth(), t.getDate())] || []).reduce((a, it) => a + it.amount, 0),
+               limit: limits[monthKeyOf(t.getFullYear(), t.getMonth())] || DEFAULT_LIMIT };
+    },
+    // what he logs most: the names entered at least twice in the last 90 days, most frequent first, each with the
+    // amount it most often had (the latest one when none repeats)
+    often: () => {
+      const seen = new Map(), t = new Date();
+      for (let i = 0; i < 90; i++) {
+        const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() - i);
+        for (const it of spending[keyOf(d.getFullYear(), d.getMonth(), d.getDate())] || []) {
+          const name = (it.desc || "").trim();
+          if (!name || it.zero || !it.amount) continue;
+          // "snack" and "snacks" are one thing (11 October 2026): a plural s does not make another name. The chip
+          // carries the spelling he used most, the latest one when they are level
+          const low = name.toLowerCase().replace(/\s+/g, " "), k = low.length > 3 && low.endsWith("s") && !low.endsWith("ss") ? low.slice(0, -1) : low;
+          const e = seen.get(k) || { n: 0, amts: new Map(), says: new Map() };
+          e.n++; e.amts.set(it.amount, (e.amts.get(it.amount) || 0) + 1); e.says.set(name, (e.says.get(name) || 0) + 1); seen.set(k, e);
+        }
+      }
+      const most = (m) => [...m].sort((a, b) => b[1] - a[1])[0][0];
+      return [...seen.values()].filter((e) => e.n >= 2).sort((a, b) => b.n - a.n).slice(0, 6).map((e) => ({ desc: most(e.says), amount: most(e.amts) }));
+    },
+  };
+  // the quick log: ⌘N from anywhere on the finance side, or the button on top of the sidebar
+  const [quickOpen, setQuickOpen] = useState(false);
+  const closeQuick = useRef(() => setQuickOpen(false)).current;
+  useEffect(() => {
+    if (!launched || view === "trade") return;
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "n") return;
+      e.preventDefault(); setQuickOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [launched, view]);
+  // split bill: from the sidebar or the button on the Expenses row. His share is filed against the day that is open, else today
+  const [billOpen, setBillOpen] = useState(false);
+  const closeBill = useRef(() => setBillOpen(false)).current;
+  const billDay = view === "month" && selKey ? selKey : null;
+  const billApi = useRef(null);
+  billApi.current = {
+    toIDR: amtToIDR, disp: dispStr, ghost: (v) => needsGhost(v),
+    day: () => (billDay ? `${selected} ${MONTHS_SHORT[month]}` : "today"),
+    add: (amount, desc, cat) => {
+      const t = new Date(), k = billDay || keyOf(t.getFullYear(), t.getMonth(), t.getDate());
+      const next = { ...spending, [k]: [...(spending[k] || []).filter((it) => !it.zero), { id: uid(), amount, desc, ...(cat ? { cat } : {}) }] };
+      setSpending(next); persist({ spending: next });
+    },
+  };
+  // the sidebar: the year, the month, the parts of the month, the wrapped. A part asked for from the yearly panel
+  // opens the month first (this month in the current year, else the one last looked at) and is scrolled to once it is there
+  const sideApi = useRef(null);
+  sideApi.current = {
+    go: (id) => {
+      if (id === "quick") { setQuickOpen(true); return; }
+      if (id === "bill") { setBillOpen(true); return; }
+      if (id === "home") { goHome(); return; }
+      if (id === "users") { switchUser(); return; }
+      if (id === "reset") { resetUser(); return; }
+      if (id === "restore") { restoreUser(); return; }
+      if (id === "wrap") { openRecap(view === "month" ? { kind: "month", y: year, m: month } : { kind: "year", y: year }); return; }
+      if (id === "year") {
+        if (view === "month") { setYearRise(true); setView("year"); setTimeout(() => setYearRise(false), 700); }
+        window.scrollTo({ top: 0 });
+        return;
+      }
+      const jump = () => (id === "month" ? window.scrollTo({ top: 0 }) : (warm.page || document).querySelector(SIDE_PARTS[id])?.scrollIntoView({ block: "start" }));
+      if (view === "month") { jump(); return; }
+      if (year === now.getFullYear()) setMonth(now.getMonth());
+      setSelected(null); setFromYear(true); setView("month"); setTimeout(() => setFromYear(false), 1100);
+      if (id !== "month") setTimeout(jump, 160);
     },
   };
 
@@ -6559,13 +10340,48 @@ export default function PnlCalendar() {
   const deleteIncome = (id) => {
     setRemoving((r) => ({ ...r, [id]: true }));
     setTimeout(async () => {
-      const rem = monthIncomes.filter((it) => it.id !== id);
-      const next = { ...incomes };
+      const all = latestData.current.incomes, rem = (all[mKey] || []).filter((it) => it.id !== id);      // (as deleteExpense)
+      const next = { ...all };
       if (rem.length === 0) delete next[mKey]; else next[mKey] = rem;
       setIncomes(next);
       setRemoving((r) => { const c = { ...r }; delete c[id]; return c; });
       await persist({ incomes: next });
     }, 260);
+  };
+
+  /* A logged row dragged by its bar onto another day of this month (rowDrag). At the drop the row folds away where it
+     is (removing[id] is "move": it fades from its dimmed state, it does not pop like a deleted one); once it has, the
+     entry itself goes over exactly as it is, with its id, category, symbol and items: an expense to the other day's
+     list (a no-spend mark there goes, as when an expense is added), an income by its day. `land` is always the one
+     of the latest drawing, so it reads what is saved at that moment. */
+  const calGrid = useRef(null);
+  const moveApi = useRef(null);
+  moveApi.current = {
+    drop: (kind, id, to) => {
+      if (selected === null || to === selected) return;
+      const at = { kind, id, to, y: year, m: month, from: selected };
+      setRemoving((r) => ({ ...r, [id]: "move" }));
+      setTimeout(() => moveApi.current.land(at), 270);
+    },
+    land: async ({ kind, id, to, y, m, from }) => {
+      setRemoving((r) => { const c = { ...r }; delete c[id]; return c; });
+      setPartsOpen((p) => (p === id ? null : p));
+      setCatMenu((c) => (c && c.id === id ? null : c));
+      if (kind === "inc") {
+        const mk = monthKeyOf(y, m), list = incomes[mk] || [];
+        if (!list.some((it) => it.id === id && it.day === from)) return;
+        const next = { ...incomes, [mk]: list.map((it) => (it.id === id ? { ...it, day: to } : it)) };
+        setIncomes(next);
+        await persist({ incomes: next });
+        return;
+      }
+      const a = keyOf(y, m, from), b = keyOf(y, m, to), it = (spending[a] || []).find((x) => x.id === id);
+      if (!it || it.zero || a === b) return;
+      const rest = spending[a].filter((x) => x.id !== id), next = { ...spending, [b]: [...(spending[b] || []).filter((x) => !x.zero), it] };
+      if (rest.length) next[a] = rest; else delete next[a];
+      setSpending(next);
+      await persist({ spending: next });
+    },
   };
 
   /* ---------- categories ---------- */
@@ -6628,14 +10444,14 @@ export default function PnlCalendar() {
 
   // triple-click "Daily limit" → copy this month's limit to every month of the year
   const [limitFlash, setLimitFlash] = useState(0);
-  const applyLimitToYear = async () => {
+  const applyLimitToYear = async (quiet) => {      // quiet: from the settings, which say it themselves; the flash belongs to the month's header
     const next = { ...limits };
     for (let m = 0; m < 12; m++) {
       const k = monthKeyOf(year, m);
       if (dailyLimit === DEFAULT_LIMIT) delete next[k]; else next[k] = dailyLimit;
     }
     setLimits(next);
-    setLimitFlash((n) => n + 1);
+    if (quiet !== true) setLimitFlash((n) => n + 1);
     await persist({ limits: next });
   };
 
@@ -6765,6 +10581,11 @@ export default function PnlCalendar() {
   const cmpGone = cmpWas && cmpWas.per === `${view}|${cY}|${cM}` ? cmpWas : null;
 
   /* ---------- weekly expense chart ---------- */
+  // the weekly chart stepped to another week with its two arrows (11 October 2026: "go to the next week on expenses
+  // chart"): so many weeks from the one it would show. Back to that one whenever the day or the month looked at changes
+  const weekSpot = `${year}-${month}-${selected}`;
+  const [weekAt, setWeekAt] = useState({ spot: "", n: 0 });
+  const weekStep = weekAt.spot === weekSpot ? weekAt.n : 0;
   const weekData = useMemo(() => {
     // Monday-first week containing today (or the 1st of the shown month)
     const base = selected !== null
@@ -6772,23 +10593,43 @@ export default function PnlCalendar() {
       : isCurrentMonth ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
                        : new Date(year, month, 1);
     const dow = (base.getDay() + 6) % 7;
-    const monday = new Date(base.getFullYear(), base.getMonth(), base.getDate() - dow);
+    const monday = new Date(base.getFullYear(), base.getMonth(), base.getDate() - dow + 7 * weekStep);
     const days = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
-      const items = spending[keyOf(d.getFullYear(), d.getMonth(), d.getDate())] || [];
+      const dk = keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+      const items = spending[dk] || [];
       const total = items.reduce((sum, it) => sum + it.amount, 0);
+      // what is planned for that day (WeekPlans), from today on only
+      const plan = dk >= dayKeyOf(now) ? plans.reduce((sum, x) => (x.date === dk ? sum + x.amount : sum), 0) : 0;
       const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
       const isSel = selected !== null && d.getFullYear() === year && d.getMonth() === month && d.getDate() === selected;
       const future = d > now;
-      days.push({ label: DOW_FULL[i], total, isToday, isSel, future, date: d });
+      days.push({ label: DOW_FULL[i], total, plan, isToday, isSel, future, date: d });
     }
     let lastIdx = -1;
     days.forEach((d, i) => { if (!d.future || d.total > 0) lastIdx = i; });
     const first = days[0].date, last = days[6].date;
     const range = `${first.getDate()} ${MONTHS_SHORT[first.getMonth()]} – ${last.getDate()} ${MONTHS_SHORT[last.getMonth()]}`;
-    return { days, lastIdx, range, total: days.reduce((s, d) => s + d.total, 0) };
-  }, [spending, year, month, isCurrentMonth, selected, dayTick]);
+    // home: the week it shows unstepped (the card is only put there afresh when that changes, not on a step)
+    return { days, lastIdx, range, total: days.reduce((s, d) => s + d.total, 0), planned: days.reduce((s, d) => s + d.plan, 0),
+             home: new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 7 * weekStep).getTime() };
+  }, [spending, plans, year, month, isCurrentMonth, selected, dayTick, weekStep]);
+  // a day's note on the weekly chart, pressed open (WeekPin): { i: the day of the week, shut: on its way out }
+  const weekPin = useHoverHub();
+  const shutWeekPin = () => {
+    const v = weekPin.v;
+    if (!v || v.shut) return;
+    weekPin.set({ ...v, shut: true });
+    setTimeout(() => { if (weekPin.v && weekPin.v.shut) weekPin.set(null); }, 180);
+  };
+  // the planned-expenses box's way in (a ref, so the box isn't redrawn every time this panel is)
+  const planApi = useRef(null);
+  planApi.current = { fmt, toIDR: amtToIDR, ghost: (v) => needsGhost(v),
+    add: (x) => { const next = [...latestData.current.plans, x]; setPlans(next); persist({ plans: next }); },
+    remove: (id) => { const next = latestData.current.plans.filter((x) => x.id !== id); setPlans(next); persist({ plans: next }); },
+    // it happened: an expense of today (as the quick log files one), and out of the plan
+    log: (id) => { const x = latestData.current.plans.find((y) => y.id === id); if (!x) return; quickApi.current.put("exp", x.amount, x.desc, 0); planApi.current.remove(id); } };
   // compare on the weekly chart (the symbol at its top right): the week before (-1) or after (1) the one shown, as a
   // ghost line (see "Compare"). 0 = off
   const [weekCmp, setWeekCmp] = useState(0);
@@ -6817,7 +10658,7 @@ export default function PnlCalendar() {
     const iw = W - PL - PR, ih = H - PT - PB;
     const weekLimit = Math.max(...weekData.days.map((d) =>
       limits[monthKeyOf(d.date.getFullYear(), d.date.getMonth())] || DEFAULT_LIMIT));
-    const maxV = Math.max(...weekData.days.map((d) => d.total), ...(weekOn ? weekOn.vals : []), weekLimit, 1) * 1.15;
+    const maxV = Math.max(...weekData.days.map((d) => d.total + d.plan), ...(weekOn ? weekOn.vals : []), weekLimit, 1) * 1.15;
     const X = (i) => PL + (i / 6) * iw;
     const Y = (v) => PT + ih - (v / maxV) * ih;
 
@@ -6836,6 +10677,27 @@ export default function PnlCalendar() {
     const area = pts.length > 1 ? `${line} L ${X(pts.length - 1)} ${PT + ih} L ${X(0)} ${PT + ih} Z` : "";
     const yTicks = [0, 0.33, 0.66, 1].map((f) => f * maxV);
     const endIdx = pts.length - 1;
+    // what is planned (WeekPlans): a dashed line that carries on from the last point drawn, each day at what it
+    // already holds plus what is planned for it; a planned day at or before that point gets an upright of its own
+    const upTo = weekData.days.reduce((e, d, i) => (d.plan > 0 ? i : e), -1), planTop = (i) => Y(weekData.days[i].total + weekData.days[i].plan);
+    const tone = (v) => (v > weekLimit ? "#ff5d6c" : v > weekLimit * WARN_FRAC ? "#ffd069" : "#3ddc97");
+    const weekOk = (dir) => {            // a week with a day in a year the app has
+      const m = weekData.days[0].date, a = new Date(m.getFullYear(), m.getMonth(), m.getDate() + dir * 7), b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 6);
+      return YEARS.includes(a.getFullYear()) || YEARS.includes(b.getFullYear());
+    };
+    const dayNote = (i) => { const d = weekData.days[i]; return !d.future || d.total > 0 || d.plan > 0 ? { i, x: X(i), y: Y(d.total + d.plan), d } : null; };
+    const planLine = (() => {
+      if (upTo < 0) return "";
+      let d = "";
+      weekData.days.forEach((x, i) => { if (x.plan > 0 && i <= endIdx) d += ` M ${X(i)} ${Y(x.total)} L ${X(i)} ${planTop(i)}`; });
+      if (upTo > endIdx) {
+        const first = endIdx >= 0 ? endIdx : weekData.days.findIndex((x) => x.plan > 0);
+        let x0 = X(first), y0 = endIdx >= 0 ? (weekData.days[first].plan > 0 ? planTop(first) : Y(weekData.days[first].total)) : planTop(first);
+        d += ` M ${x0} ${y0}`;
+        for (let k = first + 1; k <= upTo; k++) { const x1 = X(k), y1 = planTop(k), dx = (x1 - x0) / 2; d += ` C ${x0 + dx} ${y0}, ${x1 - dx} ${y1}, ${x1} ${y1}`; x0 = x1; y0 = y1; }
+      }
+      return d.trim();
+    })();
 
     return (
       <div style={{ position: "relative" }}>
@@ -6891,6 +10753,8 @@ export default function PnlCalendar() {
 
         {weekOn && <GhostLine key={`g${weekOn.label}`} pts={weekOn.vals.map((v, i) => ({ x: X(i), y: Y(v), v }))} />}
         {weekGone && <GhostLine key={`g${weekGone.label}`} pts={weekGone.vals.map((v, i) => ({ x: X(i), y: 0, v }))} gone into={pts.map((d, i) => ({ x: X(i), y: Y(d.total) }))} />}
+        {/* the week's own marks are put there afresh when the chart is stepped to another week; the axes stay */}
+        <g key={weekData.range}>
         {pts.length > 1 && (
           <>
             <path className="axis-fade ch-morph" d={area} fill="url(#weekFill)" />
@@ -6898,6 +10762,13 @@ export default function PnlCalendar() {
                   strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
                   style={{ animationDuration: ".8s" }} />
           </>
+        )}
+        {/* what is planned: the expenses' own line, coloured by its height like theirs, in long dashes (dashed is "planned") */}
+        {planLine && (
+          <g className="axis-fade" style={{ animationDelay: "480ms" }}>
+            <path className="ch-morph" d={planLine} fill="none" stroke="url(#weekLine)" strokeWidth="2.4" strokeLinecap="butt" strokeLinejoin="round" strokeDasharray="13 7" />
+            {weekData.days.map((d, i) => d.plan > 0 && <circle key={`pl${i}`} className="ch-morph" cx={X(i)} cy={planTop(i)} r="4.5" fill="#1e2124" stroke={tone(d.total + d.plan)} strokeWidth="2" strokeDasharray="3.6 2.4" />)}
+          </g>
         )}
         {pts.length > 0 && (() => {
           const todayInWeek = weekData.days.findIndex((d) => d.isToday);
@@ -6908,20 +10779,23 @@ export default function PnlCalendar() {
                     fill="#1e2124" stroke="#e8eaec" strokeWidth="2.2" />
           );
         })()}
+        </g>
 
         {/* hover targets */}
         {weekData.days.map((d, i) => (
           <rect key={`h${i}`} x={X(i) - iw / 12} y={PT - 6} width={iw / 6} height={ih + 6}
-                fill="transparent" style={{ cursor: d.future && d.total === 0 ? "default" : "pointer" }}
-                onMouseEnter={() => (!d.future || d.total > 0) && setWeekHover({ i, x: X(i), y: Y(d.total), d })}
-                onMouseLeave={() => setWeekHover(null)} />
+                fill="transparent" style={{ cursor: dayNote(i) ? "pointer" : "default" }}
+                onMouseEnter={() => !weekPin.v && dayNote(i) && setWeekHover(dayNote(i))}
+                onMouseMove={() => { if (!weekPin.v && dayNote(i) && (!weekHub.v || weekHub.v.i !== i)) setWeekHover(dayNote(i)); }}
+                onMouseLeave={() => setWeekHover(null)}
+                onClick={() => { if (weekPin.v || !dayNote(i)) return; setWeekHover(null); weekPin.set({ i }); }} />
         ))}
-        {weekHover && (
+        <HoverSlot hub={weekHub} render={(weekHover) => (
           <g key={`wk-${weekHover.i}`} className="wk-tip" pointerEvents="none">
             <line x1={weekHover.x} y1={PT} x2={weekHover.x} y2={PT + ih} stroke="#3a3f44" strokeWidth="1" />
             <circle className="tip-dot" cx={weekHover.x} cy={weekHover.y} r="5" fill="#ffffff" />
           </g>
-        )}
+        )} />
       </svg>
       {/* compare: a symbol at the chart's top right corner, in line with the top of the y-axis and the end of the x-axis */}
       {(() => {
@@ -6935,11 +10809,39 @@ export default function PnlCalendar() {
           </button>
         );
       })()}
-      {weekHover && (
+      {/* the chart stepped a week back or on: two arrows beside the compare symbol */}
+      {[-1, 1].map((dir) => (
+        <button key={dir} className="wk-cmp wk-step" disabled={!weekOk(dir)} style={{ right: `calc(${(PR / W) * 100}% + ${dir < 0 ? 56 : 30}px)`, top: `${((PT - 4) / H) * 100}%` }}
+                title={dir < 0 ? "The week before" : "The week after"} aria-label={dir < 0 ? "The week before" : "The week after"}
+                onClick={() => setWeekAt({ spot: weekSpot, n: weekStep + dir })}>
+          <span className="msym">{dir < 0 ? "chevron_left" : "chevron_right"}</span>
+        </button>
+      ))}
+      {/* a day's note pressed open: under the figure, what was spent that day and what is planned for it. A press
+          anywhere else, or Esc, shuts it and the notes follow the pointer again */}
+      <HoverSlot hub={weekPin} render={(pin) => {
+        const d = weekData.days[pin.i], at = dayNote(pin.i);
+        if (!at) return null;
+        const dk = dayKeyOf(d.date), spent = (spending[dk] || []).filter((it) => !it.zero), due = d.plan > 0 ? plans.filter((x) => x.date === dk) : [];
+        return (
+          <WeekPin key={`${weekData.range}-${pin.i}`} left={`${(Math.min(Math.max(at.x, PL + 58), W - PR - 58) / W) * 100}%`} top={`${(at.y / H) * 100}%`} shut={pin.shut} onShut={shutWeekPin}>
+            <span className="glass-tip-label">{d.label} {d.date.getDate()} {MONTHS_SHORT[d.date.getMonth()]}</span>
+            <span className="glass-tip-value" style={{ color: d.total > weekLimit ? "#ff8d97" : d.total > weekLimit * WARN_FRAC ? "#ffd98a" : "#9df0c9" }}>{fmt(d.total)}</span>
+            {d.plan > 0 && <span className="glass-tip-sub">+{fmt(d.plan)} planned</span>}
+            <span className={`wkp-list${spent.length + due.length > 6 ? " many" : ""}`}>
+              {spent.map((it) => <span key={it.id} className="wkp-row"><span className="msym">{iconOf(it)}</span><span>{it.desc || "No description"}</span><b>{fmt(it.amount)}</b></span>)}
+              {due.map((x) => <span key={x.id} className="wkp-row plan"><span className="msym">schedule</span><span>{x.desc || "Planned expense"}</span><b>{fmt(x.amount)}</b></span>)}
+              {!spent.length && !due.length && <span className="wkp-none">Nothing spent that day</span>}
+            </span>
+          </WeekPin>
+        );
+      }} />
+      <HoverSlot hub={weekHub} render={(weekHover) => (
         <GlassTip key={`wkg-${weekHover.i}`} W={W} H={H} x={Math.min(Math.max(weekHover.x, PL + 58), W - PR - 58)}
                   y={weekHover.y} below={weekHover.y < PT + 56} label={`${weekHover.d.label} ${weekHover.d.date.getDate()}`} value={fmt(weekHover.d.total)}
+                  sub={weekHover.d.plan > 0 ? `+${fmt(weekHover.d.plan)} planned` : undefined}
                   color={weekHover.d.total > weekLimit ? "#ff8d97" : weekHover.d.total > weekLimit * WARN_FRAC ? "#ffd98a" : "#9df0c9"} />
-      )}
+      )} />
       </div>
     );
   };
@@ -7232,6 +11134,27 @@ export default function PnlCalendar() {
   const catBreakdown = useMemo(() => {
     if (!catView) return { rows: [], total: 0 };
     const map = {};
+    if (catView === "left") {
+      // what is left of the month's income, split into what went into each goal this month and what is still free.
+      // The money in the goals is part of what is left over, not on top of it
+      const left = Math.max(0, totalIncome - stats.spent);
+      const mS = keyOf(year, month, 1), mE = keyOf(year, month, daysInMonth);
+      const rows = [];
+      goals.forEach((g) => {
+        const a = (g.deposits || []).filter((d) => d.date >= mS && d.date <= mE).reduce((x, d) => x + d.amount, 0);
+        if (a > 0) rows.push({ key: g.id, label: g.name, amount: a, icon: goalIconOf(g) });
+      });
+      rows.sort((a, b) => b.amount - a.amount);
+      const inGoals = rows.reduce((x, r) => x + r.amount, 0);
+      const free = Math.max(0, left - inGoals);
+      if (free > 0) rows.push({ key: "__free__", label: "Not in a goal", amount: free, color: "#8a9299", icon: "account_balance_wallet" });
+      const total = Math.max(left, inGoals);
+      const pv = new Date(year, month - 1, 1), pvy = pv.getFullYear(), pvm = pv.getMonth();
+      let prevSp = 0;
+      for (let d = 1, n = new Date(pvy, pvm + 1, 0).getDate(); d <= n; d++) (spending[keyOf(pvy, pvm, d)] || []).forEach((it) => { prevSp += it.amount; });
+      const prevLeft = (incomes[monthKeyOf(pvy, pvm)] || []).reduce((x, it) => x + it.amount, 0) - prevSp;
+      return { rows, total, inGoals, free, vsPct: prevLeft > 0 ? ((left - prevLeft) / prevLeft) * 100 : null };
+    }
     if (catView === "income") {
       monthIncomes.forEach((it) => {
         const raw = (it.desc || "").trim();
@@ -7270,7 +11193,7 @@ export default function PnlCalendar() {
     }
     const vsPct = prevTotal > 0 ? ((total - prevTotal) / prevTotal) * 100 : null;
     return { rows, total, vsPct };
-  }, [catView, spending, incomes, year, month, daysInMonth, aiCats]);
+  }, [catView, spending, incomes, year, month, daysInMonth, aiCats, goals, aiGoalIcons, totalIncome, stats.spent]);
 
   const closeCatView = () => {
     setCatViewClosing(true);
@@ -7282,7 +11205,7 @@ export default function PnlCalendar() {
   const [bdHeight, setBdHeight] = useState("auto");
   useLayoutEffect(() => {
     if (!catView || !bdRef.current) return;
-    const h = bdRef.current.getBoundingClientRect().height;
+    const h = bdRef.current.offsetHeight;   // not the drawn box: the pop-up is still scaled down while it comes in
     setBdHeight(`${h}px`);
   }, [catView, catBreakdown]);
 
@@ -7372,10 +11295,10 @@ export default function PnlCalendar() {
             <rect className="flow-bar" style={{ animationDelay: `${r.t1}ms` }} x={xR} y={r.yR} width={barW} height={r.hR} rx={5} fill={r.color} />
             <foreignObject x={xR + 18} y={r.yR + r.hR / 2 - 14} width="260" height="30">
               <div xmlns="http://www.w3.org/1999/xhtml" className="flow-tag" style={{ animationDelay: `${r.t1 + 70}ms` }}>
-                <div className={r.key === "left" ? "" : "flow-label"}
-                     onClick={r.key === "left" ? undefined : () => setCatView(r.key)}
+                <div className="flow-label"
+                     onClick={() => setCatView(r.key)}
                      style={{ display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "Inter, sans-serif",
-                              padding: "3px 7px", borderRadius: 7, cursor: r.key === "left" ? "default" : "pointer" }}>
+                              padding: "3px 7px", borderRadius: 7, cursor: "pointer" }}>
                   <span className="msym" style={{ fontSize: 18, color: r.color }}>{r.icon}</span>
                   <span style={{ fontSize: 13, fontWeight: 600, color: "#e8eaec" }}>{r.label}</span>
                   <span style={{ fontSize: 12, color: "#8a9299", fontVariantNumeric: "tabular-nums" }}>
@@ -7415,7 +11338,7 @@ export default function PnlCalendar() {
     const consPts = (1 - cv) * 25;
     return {
       score: Math.round(savingsPts + discPts + consPts),
-      savings, disc, cv, spent, inc, green, red, days: days.length, lim,
+      savings, disc, cv, spent, inc, green, red, days: days.length, lim, mean, sd,
     };
   };
   const scoreNow = useMemo(() => scoreFor(year, month), [spending, incomes, limits, year, month]);
@@ -7507,8 +11430,8 @@ export default function PnlCalendar() {
 
     return (
       <div className="score-card" style={S.scoreCard}>
-        <div key={`gauge-${year}-${month}-${savePct}`} style={{ position: "relative", width: 132, height: 132, flexShrink: 0 }}>
-          <svg viewBox="0 0 132 132" style={{ width: 132, height: 132, transform: "rotate(120deg)" }}>
+        <div key={`gauge-${year}-${month}-${savePct}`} className="score-dial" style={{ position: "relative", width: 216, height: 216, flexShrink: 0, "--gc": band.color }}>
+          <svg viewBox="0 0 132 132" style={{ width: 216, height: 216, transform: "rotate(120deg)" }}>
             <defs>
               <linearGradient id="scoreGrad" x1="0" y1="1" x2="1" y2="0">
                 <stop offset="0%" stopColor="#e2808c" />
@@ -7522,13 +11445,15 @@ export default function PnlCalendar() {
                     strokeLinecap="round" strokeDasharray={`${filled} ${C}`} />
           </svg>
           <div style={S.scoreCenter}>
-            <div style={S.scoreNum}>{hasInc ? `${savePct}` : "—"}</div>
-            <div style={S.scoreCap}>SCORE</div>
+            <div className="score-hit" title="How this score is worked out" onClick={() => setScoreView("open")}>
+              <div style={S.scoreNum}><PxFig text={hasInc ? savePct : "—"} /></div>
+              <div style={S.scoreCap}>SCORE</div>
+            </div>
           </div>
         </div>
 
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="score-row" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span style={{ ...S.scoreWord, color: band.color }}>
               {band.star ? "★ " : ""}{band.word}
             </span>
@@ -7539,15 +11464,28 @@ export default function PnlCalendar() {
               <span style={{ width: 7, height: 7, borderRadius: 99, background: cond.color, display: "inline-block", marginRight: 7 }} />
               {cond.text}
             </span>
+            {/* what each figure on this card is and where it comes from, a line each (12 October 2026: the PnL's
+                information symbol; first under the score in the dial, then, at his word, to the right of the trend
+                tag). Every line says what the code above works out, no more. Its note hangs under this whole line,
+                from the rating's left end (.score-row), so it is inside the card at any width */}
+            <InfoTip title="What the scores mean">
+              <span><i style={{ background: band.color }} /><b>Score</b> How much of this month's income you kept, from 0 to 100: income minus spending, divided by income.</span>
+              <span><i style={{ background: band.color }} /><b>Rating</b> The word for that score: Awful up to 15, Moderate to 35, Balanced to 50, Good to 60, Great to 75, Excellent to 90, Exceptional above.</span>
+              <span><i style={{ background: cond.color }} /><b>Trend</b> The score against the average of your last 3 months with income. 3 points higher is Improving, 3 lower is Declining, in between is Stable. New means no earlier month.</span>
+              <span><i style={{ background: boxes[0].color }} /><b>Vs last month</b> Money left this month minus money left last month.</span>
+              <span><i style={{ background: discColor }} /><b>Limit discipline</b> Days at or under your daily limit ({fmt(scoreNow.lim)}), out of the days you logged.</span>
+              <span><i style={{ background: cons.color }} /><b>Consistency</b> How even your daily spending is, from most to least: Steady, Consistent, Variable, Inconsistent, Erratic.</span>
+              <span className="info-foot">Only Score makes the number. Press the number for every sum.</span>
+            </InfoTip>
           </div>
           <div style={S.scoreLabel}>MONEY EFFICIENCY</div>
           <p style={S.scoreText}>{summary}</p>
         </div>
 
-        <div style={S.subRow}>
+        <div className="score-orbit" style={S.subRow}>
           {boxes.map((b, bi) => (
-            <div key={b.label} className="sub-box glass-soft" style={{ ...S.subBox, animationDelay: `${260 + bi * 90}ms` }}>
-              <div style={S.subLabel}>{b.label}</div>
+            <div key={b.label} className="sub-box glass-soft" style={{ ...S.subBox, "--tc": b.color, animationDelay: `${260 + bi * 90}ms` }}>
+              <div style={S.subLabel}><i style={{ display: "inline-block", width: 6, height: 6, borderRadius: 99, background: b.color, marginRight: 7, verticalAlign: "1px" }} />{b.label}</div>
               <div style={{ ...S.subValue, color: b.color, fontSize: b.label === "CONSISTENCY" || b.label === "VS LAST MONTH" ? 18 : 22, display: "flex", alignItems: "baseline", gap: 7 }}>
                 {b.value}
                 {b.note && <span style={S.subNote}>{b.note}</span>}
@@ -7562,14 +11500,98 @@ export default function PnlCalendar() {
     );
   };
 
+  /* ---------- how the score is worked out (the number in the ring, pressed) ----------
+     Every figure the score card shows, with the sum behind it. Only the first part makes the number itself. */
+  const closeScoreView = () => { setScoreView("closing"); setTimeout(() => setScoreView(null), 190); };
+  const renderScoreInfo = () => {
+    if (!scoreNow) return null;
+    const closing = scoreView === "closing";
+    const st = scoreNow, hasInc = st.inc > 0;
+    const kept = st.inc - st.spent;
+    const savePct = hasInc ? Math.max(0, Math.round(st.savings * 100)) : 0;
+    const band = hasInc ? scoreBand(savePct) : { word: "No income", color: "#8a9299" };
+    const cond = hasInc ? trendOf(savePct) : { text: "NO INCOME", color: "#8a9299", delta: null };
+    const cons = consistencyOf(st.cv);
+    const pts = (n) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)} pts`;
+    const BANDS = [[0, 15], [16, 35], [36, 50], [51, 60], [61, 75], [76, 90], [91, 100]];
+    const CONS = [["Steady", "up to 22%", 0.1], ["Consistent", "22–40%", 0.3], ["Variable", "40–60%", 0.5], ["Inconsistent", "60–80%", 0.7], ["Erratic", "over 80%", 0.9]];
+    const head = { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", color: "#8e969e", margin: "16px 0 7px" };
+    const row = { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14, fontSize: 13.5, color: "#aab1b8", padding: "3px 0" };
+    const val = { fontWeight: 600, color: "#e8eaec", fontVariantNumeric: "tabular-nums", textAlign: "right" };
+    const sum = { ...row, marginTop: 4, paddingTop: 7, borderTop: "1px solid #33373b" };
+    const note = { fontSize: 12, color: "#747c84", lineHeight: 1.5, margin: "6px 0 0" };
+    const chips = { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 };
+    const chip = (on, color) => ({ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 8, fontVariantNumeric: "tabular-nums",
+      color: on ? color : "#6d757d", background: on ? "rgba(255,255,255,0.06)" : "none", border: `1px solid ${on ? color : "#33373b"}` });
+    const Row = (label, value, color) => (
+      <div style={row}><span>{label}</span><span style={color ? { ...val, color } : val}>{value}</span></div>
+    );
+    return (
+      <div style={{ ...S.backdrop, animation: closing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={closeScoreView}>
+        <div className="glass" style={{ ...S.modal, width: "min(520px, 94vw)", maxHeight: "90vh", overflowY: "auto", animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }}
+             onClick={(e) => e.stopPropagation()}>
+          <div style={S.modalHead}>
+            <span style={{ ...S.panelTitle, display: "inline-flex", alignItems: "center", gap: 9 }}>
+              <span className="msym" style={{ fontSize: 20, color: band.color }}>speed</span>
+              How the score is worked out
+            </span>
+            <button className="x-btn" style={S.closeBtn} onClick={closeScoreView}>✕</button>
+          </div>
+
+          <div style={{ ...head, marginTop: 2 }}>THE SCORE · {MONTHS_FULL[month].toUpperCase()} {year}</div>
+          {Row("Income", fmt(st.inc))}
+          {Row("Spent", `− ${fmt(st.spent)}`)}
+          <div style={sum}><span>Kept</span><span style={{ ...val, color: kept >= 0 ? "#8fd7a4" : "#e2808c" }}>{kept < 0 ? "− " : ""}{fmt(Math.abs(kept))}</span></div>
+          {hasInc
+            ? <div style={row}><span>Kept ÷ income = {fmt(Math.abs(kept))} ÷ {fmt(st.inc)}</span><span style={{ ...val, fontSize: 20, fontWeight: 800, color: band.color }}>{savePct}</span></div>
+            : <p style={note}>No income is logged this month, so there is no score yet.</p>}
+          <p style={note}>The score is the share of the month's income you kept, from 0 to 100. Spending more than you earned gives 0. Money put into a goal is not spending, so it counts as kept.</p>
+          <div style={chips}>
+            {BANDS.map(([lo, hi]) => { const b = scoreBand(hi), on = hasInc && savePct >= lo && savePct <= hi;
+              return <span key={lo} style={chip(on, b.color)}>{lo}–{hi} {b.word}</span>; })}
+          </div>
+
+          <div style={head}>TREND · <span style={{ color: cond.color }}>{cond.text}</span></div>
+          {Row("This month", hasInc ? `${savePct}` : "—")}
+          {Row("Average of the last months with income (3 at most)", savingsTrend === null ? "none yet" : savingsTrend.toFixed(1))}
+          {cond.delta !== null && cond.delta !== undefined && <div style={sum}><span>Difference</span><span style={{ ...val, color: cond.color }}>{pts(cond.delta)}</span></div>}
+          <p style={note}>3 points or more above the average is Improving, 3 or more below is Declining, in between is Stable.</p>
+
+          <div style={head}>VS LAST MONTH</div>
+          {Row("Kept this month", `${kept < 0 ? "− " : ""}${fmt(Math.abs(kept))}`)}
+          {Row("Kept last month", prevMonthSaved === null ? "nothing logged" : `${prevMonthSaved < 0 ? "− " : ""}${fmt(Math.abs(prevMonthSaved))}`)}
+          {prevMonthSaved !== null && <div style={sum}><span>Difference</span>
+            <span style={{ ...val, color: kept - prevMonthSaved >= 0 ? "#8fd7a4" : "#e2808c" }}>{kept - prevMonthSaved >= 0 ? "+ " : "− "}{fmt(Math.abs(kept - prevMonthSaved))}</span></div>}
+
+          <div style={head}>LIMIT DISCIPLINE</div>
+          {Row("Daily limit", fmt(st.lim))}
+          {Row("Days with spending logged", st.days)}
+          {Row("At or under the limit", st.green, "#8fd7a4")}
+          {Row("Over the limit", st.red, st.red ? "#e2808c" : undefined)}
+          <div style={sum}><span>{st.green} ÷ {st.days}</span><span style={{ ...val, color: "#e3cd77" }}>{Math.round(st.disc * 100)}%</span></div>
+
+          <div style={head}>CONSISTENCY · <span style={{ color: cons.color }}>{cons.word}</span></div>
+          {Row("Average spent on a logged day", fmt(Math.round(st.mean)))}
+          {Row("Usual swing from that average", `± ${fmt(Math.round(st.sd))}`)}
+          <div style={sum}><span>Swing ÷ average</span><span style={{ ...val, color: cons.color }}>{Math.round(st.sd / (st.mean || 1) * 100)}%</span></div>
+          <div style={chips}>
+            {CONS.map(([w, range, mid]) => { const c = consistencyOf(mid), on = c.word === cons.word;
+              return <span key={w} style={chip(on, c.color)}>{w} {range}</span>; })}
+          </div>
+          <p style={note}>Trend, last month, limit discipline and consistency are shown beside the score. They don't change the number.</p>
+        </div>
+      </div>
+    );
+  };
+
   /* ---------- month-end projection (money flow, between the efficiency score and the insights) ----------
      Only for the month we are in: how much will be left on its last day (projectMonth, above). */
   const projHour = now.getHours();
   const projection = useMemo(() => {
     if (view !== "month" || !isCurrentMonth) return null;
     const catOf = (it) => { const c = it.cat || inferCat(it.desc) || aiCats[it.id] || "other"; return c in CATS ? c : "other"; };
-    return projectMonth({ spending, incomes, limits, y: now.getFullYear(), m: now.getMonth(), d: now.getDate(), hour: projHour, catOf });
-  }, [spending, incomes, limits, aiCats, view, isCurrentMonth, dayTick, projHour]);
+    return projectMonth({ spending, incomes, limits, y: now.getFullYear(), m: now.getMonth(), d: now.getDate(), hour: projHour, catOf, plans });
+  }, [spending, incomes, limits, plans, aiCats, view, isCurrentMonth, dayTick, projHour]);
 
   // how it did at this same point of the three months before: each is worked out again from only what was entered by
   // that day, and set against how the month's spending really ended
@@ -7634,6 +11656,8 @@ export default function PnlCalendar() {
       tip: "Bills that come back every month and aren't paid yet this month: " + p.billsDue.map((b) => `${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around ${b.day} ${MONTHS_SHORT[month]}`).join(" · ") });
     if (p.big >= 1000) tiles.push({ label: "BIG BUYS", value: `≈ ${fmt(p.big)}`, note: p.bigMonths >= 4 ? `${p.bigNow} made, about ${p.bigMore.toFixed(1).replace(".0", "")} more` : `about ${p.bigPerMonth >= 1.5 ? Math.round(p.bigPerMonth) : "1"} a month`,
       tip: `One-off buys of ${fmt(p.bigFrom)} or more follow no weekday. You make about ${p.bigPerMonth.toFixed(1).replace(".0", "")} a month at ${fmt(p.bigEach)} each, read from the last year. ${p.bigMonths >= 4 ? `Going by how many each of the last ${p.bigMonths} months had and the ${p.bigNow} made so far this month, about ${p.bigMore.toFixed(1)} more should come.` : "The days left carry this much of them."}` });
+    if (p.planSum > 0) tiles.push({ label: "PLANNED", value: fmt(p.planSum), note: p.planDue.length === 1 ? prettyName(p.planDue[0].desc || "planned expense") : `${p.planDue.length} to come`, color: "#ff8d97",
+      tip: "What you planned in Weekly expenses for today or later this month: " + p.planDue.map((x) => `${prettyName(x.desc || "planned expense")} ${fmt(x.amount)} on ${x.day} ${MONTHS_SHORT[month]}`).join(" · ") + ". Counted as it stands, on top of the everyday spending. A planned big buy is one of the big buys expected, not one more." });
     if (p.planned > 0) tiles.push({ label: "ALREADY ENTERED", value: fmt(p.planned), note: `on ${p.daysLeft - p.openDays} later day${p.daysLeft - p.openDays === 1 ? "" : "s"}`,
       tip: "Expenses already written on later days of this month. Those days are taken as written; only the empty days are projected." });
     if (p.paySum > 0) tiles.push({ label: "INCOME DUE", value: `+${fmt(p.paySum)}`, note: names(p.payDue).replace(/No description/g, "Income"), color: "#8fd7a4",
@@ -7681,16 +11705,17 @@ export default function PnlCalendar() {
 
   // Esc closes whichever pop-up is on top
   useEffect(() => {
-    if (!cfgDraft && !catView && !chartOpen) return;
+    if (!cfgDraft && !catView && !chartOpen && !scoreView) return;
     const onKey = (e) => {
       if (e.key !== "Escape" || recap) return;
       if (cfgDraft) closeTestCfg();
+      else if (scoreView) closeScoreView();
       else if (catView) closeCatView();
       else if (chartOpen) closeChart();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cfgDraft, catView, chartOpen, recap]);
+  }, [cfgDraft, catView, chartOpen, recap, scoreView]);
 
   /* ---------- test-data settings pop-up ---------- */
   /* ---------- recap modal ---------- */
@@ -7793,8 +11818,8 @@ export default function PnlCalendar() {
              style={{ animation: recapClosing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .45s var(--ease) backwards" }}>
           <div style={S.modalHead}>
             <span style={S.wrKicker}>
-              <span className="msym" style={{ fontSize: 17, color: "#c7cdd2" }}>auto_awesome</span>
-              {isYear ? "Yearly" : "Monthly"} wrapped
+              <span className="msym" style={{ fontSize: 17, color: "#e6c877" }}>auto_awesome</span>
+              <span className="px-word">{isYear ? "YEARLY" : "MONTHLY"} WRAPPED</span>
             </span>
             <button className="x-btn" style={S.closeBtn} onClick={closeRecap}>✕</button>
           </div>
@@ -7802,7 +11827,7 @@ export default function PnlCalendar() {
           {r.empty ? (
             <div className="wr-tile wr-hero" style={{ "--acc": "#6d757d", minHeight: 220, animationDelay: "100ms" }}>
               <div style={S.wrLabel}>{title}</div>
-              <div style={{ ...S.wrHeroNum, fontSize: 40, color: "#6d757d" }}>Nothing logged yet</div>
+              <div style={{ ...S.wrHeroNum, fontSize: 40, color: "#8e969e" }}>Nothing logged yet</div>
               <div style={S.wrHeroSub}>Add some expenses or income for this {isYear ? "year" : "month"} and your recap will fill in.</div>
             </div>
           ) : (
@@ -7869,7 +11894,7 @@ export default function PnlCalendar() {
                       <CountNum value={r.worst.value} duration={800} render={signed} />
                     </div>
                   </>
-                ) : <div style={{ ...S.wrBig, color: "#6d757d" }}>N/A</div>}
+                ) : <div style={{ ...S.wrBig, color: "#8e969e" }}>N/A</div>}
                 <span className="msym wr-more">arrow_outward</span>
               </div>
 
@@ -7926,7 +11951,7 @@ export default function PnlCalendar() {
                       ))}
                     </div>
                   </>
-                ) : <div style={{ ...S.wrBig, color: "#6d757d" }}>No expenses</div>}
+                ) : <div style={{ ...S.wrBig, color: "#8e969e" }}>No expenses</div>}
                 <span className="msym wr-more">arrow_outward</span>
               </div>
 
@@ -7940,7 +11965,7 @@ export default function PnlCalendar() {
                     <div style={S.wrSmall}>{Math.round((r.src.v / (r.incTot || 1)) * 100)}% of income</div>
                     <span className="msym wr-more">arrow_outward</span>
                   </>
-                ) : <div style={{ ...S.wrBig, color: "#6d757d" }}>No income</div>}
+                ) : <div style={{ ...S.wrBig, color: "#8e969e" }}>No income</div>}
               </div>
 
               {/* most visited */}
@@ -7987,44 +12012,83 @@ export default function PnlCalendar() {
       setTimeout(() => { setInsOpen(false); setInsClosing(false); }, 300);
     } else { setInsOpen(true); setInsRun((n) => n + 1); }
   };
-  const renderInsights = () => (
-    <div className="ins-box">
-      <button className="ins-head" onClick={toggleIns}>
-        <span className="msym" style={{ fontSize: 18, color: "#c7cdd2" }}>lightbulb</span>
-        <span style={S.insTitle}>Insights</span>
-        {insights.length > 0 && <span className="ins-count">{insights.length}</span>}
-        <span style={{ flex: 1 }} />
-        <span className={`plain-arrow chev${insOpen && !insClosing ? " up" : ""}`}><Chevron /></span>
-      </button>
-      <div style={{ display: "grid", gridTemplateRows: insOpen && !insClosing ? "1fr" : "0fr",
-                    transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
-        <div style={S.fold}>
-          <div key={`ins-${insRun}-${year}-${month}`} style={{ padding: "4px 2px 6px",
-               opacity: insClosing ? 0 : 1, transform: insClosing ? "translateY(-10px)" : "none",
-               transition: "opacity .24s ease, transform .28s cubic-bezier(0.4,0,0.2,1)" }}>
-            {insights.length === 0 ? (
-              <div style={S.insEmpty}>Not enough data yet. Insights appear once you've logged a few days.</div>
-            ) : insights.map((it, i) => (
-              <div key={it.key} className="ins-row" style={{ animationDelay: `${60 + i * 55}ms` }}>
-                <span className="ins-ico" style={{ color: TONE[it.tone], background: `${TONE[it.tone]}1f` }}>
-                  <span className="msym" style={{ fontSize: 17 }}>{it.icon}</span>
-                </span>
-                <span style={S.insText}>{it.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+  // the three that matter most stay on show; the rest wait behind "View all". What decides: a budget or income that is
+  // short, days over the limit, a category that jumped, a goal's date, then the month against the last one
+  const insRank = (it) => {
+    const k = it.key.startsWith("cat-") ? "cat" : it.key.startsWith("eta-") ? "eta" : it.key;
+    const bad = it.tone === "bad" || it.tone === "warn";
+    return k === "budget" ? (bad ? 0 : 6) : k === "income" ? 1 : k === "over" ? 2 : k === "cat" ? (bad ? 3 : 8) : k === "eta" ? 4
+      : k === "mom" ? 5 : k === "avg" ? 7 : k === "weekend" ? 9 : k === "streak" ? 10 : 20;
+  };
+  const insRow = (it, i) => (
+    <div key={it.key} className="ins-row" style={{ animationDelay: `${60 + i * 55}ms` }}>
+      <span className="ins-ico" style={{ color: TONE[it.tone], background: `${TONE[it.tone]}1f` }}>
+        <span className="msym" style={{ fontSize: 17 }}>{it.icon}</span>
+      </span>
+      <span style={S.insText}>{it.text}</span>
     </div>
   );
+  const renderInsights = () => {
+    // one of a kind among the three (one category, one goal), so they say three different things
+    const seen = {}, main = [];
+    [...insights].sort((x, y) => insRank(x) - insRank(y)).forEach((it) => {
+      const kind = it.key === "income" ? "budget" : it.key.split("-")[0];
+      if (main.length < 3 && !seen[kind]) { seen[kind] = 1; main.push(it); }
+    });
+    const rest = insights.filter((it) => !main.includes(it));
+    const shown = insOpen && !insClosing;
+    return (
+      <div className="ins-box">
+        <div className="ins-head">
+          <span className="msym" style={{ fontSize: 18, color: "#c7cdd2" }}>lightbulb</span>
+          <span style={S.insTitle}>Insights</span>
+        </div>
+        <div key={`ins-main-${year}-${month}`}>
+          {insights.length === 0
+            ? <div style={S.insEmpty}>Not enough data yet. Insights appear once you've logged a few days.</div>
+            : main.map(insRow)}
+        </div>
+        {rest.length > 0 && (
+          <>
+            <div style={{ display: "grid", gridTemplateRows: shown ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
+              <div style={S.fold}>
+                {insOpen && (
+                  <div key={`ins-${insRun}-${year}-${month}`} style={{ opacity: insClosing ? 0 : 1, transform: insClosing ? "translateY(-10px)" : "none",
+                       transition: "opacity .24s ease, transform .28s cubic-bezier(0.4,0,0.2,1)" }}>
+                    {rest.map(insRow)}
+                  </div>
+                )}
+              </div>
+            </div>
+            <button className="ins-more" onClick={toggleIns}>
+              {shown ? "Show fewer" : `View all ${insights.length} insights`}
+              <span className={`plain-arrow chev${shown ? " up" : ""}`}><Chevron /></span>
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
 
   /* ---------- goals ---------- */
   const renderGoals = () => {
     const mStart = keyOf(year, month, 1), mEnd = keyOf(year, month, daysInMonth);
     const isDone = (g) => g.target > 0 && goalSaved(g) >= g.target;
     const active = goals.filter((g) => !isDone(g)), completed = goals.filter(isDone);
+    // the month a goal is on pace for: its average over the last 6 months, gaps included (as the insight reckons it)
+    const pc0 = new Date(now.getFullYear(), now.getMonth() - 5, 1), paceCut = keyOf(pc0.getFullYear(), pc0.getMonth(), 1);
+    const goalPace = (g, saved) => {
+      if (!g.target || saved >= g.target) return null;
+      const byMonth = {};
+      (g.deposits || []).forEach((d) => { if (d.date >= paceCut) byMonth[d.date.slice(0, 7)] = (byMonth[d.date.slice(0, 7)] || 0) + d.amount; });
+      const months = Object.values(byMonth), pace = months.reduce((a, b) => a + b, 0) / 6;
+      if (months.length < 2 || pace <= 0) return null;
+      const n = Math.ceil((g.target - saved) / pace);
+      return { n, pace, need: (g.target - saved) / 12, when: new Date(now.getFullYear(), now.getMonth() + n, 1) };
+    };
     const renderGoalRow = (g, gi, list) => {
           const saved = goalSaved(g);
+          const eta = goalPace(g, saved);
           const pct = g.target > 0 ? (saved / g.target) * 100 : 0;
           const done = pct >= 100;
           const thisMonth = (g.deposits || []).filter((d) => d.date >= mStart && d.date <= mEnd).reduce((a, d) => a + d.amount, 0);
@@ -8032,6 +12096,9 @@ export default function PnlCalendar() {
           return (
             <div key={g.id} className={`goal-row${goalLeaving === g.id ? " leaving" : ""}`}
                  style={{ animationDelay: `${gi * 60}ms`, position: "relative", zIndex: goalIconMenu === g.id ? 20 : "auto" }}>
+              <GoalRing pct={pct} delay={120 + gi * 60} color={done ? "#e6c877" : eta && eta.n <= 12 ? "#8fd7a4" : eta ? "#8fa3b8" : "#6d7780"}>
+                <CountNum value={Math.floor(Math.min(999, pct))} duration={600} render={(n) => `${Math.round(n)}%`} />
+              </GoalRing>
               <div style={S.goalTop}>
                 <span style={{ ...S.goalName, display: "inline-flex", alignItems: "center", gap: 8 }}>
                   <span className="goal-sym-wrap">
@@ -8061,7 +12128,8 @@ export default function PnlCalendar() {
                   ) : (
                     <span className={`goal-name-text${done ? " done" : ""}`} title="Click to rename" onClick={() => startRename(g)}>{g.name}</span>
                   )}
-                  {done && <span className="msym" style={{ fontSize: 15, color: "#8fd7a4", marginLeft: -2 }}>check_circle</span>}
+                  {done && <span className="msym" style={{ fontSize: 15, color: "#e6c877", marginLeft: -2 }}>check_circle</span>}
+                  {eta && <span className="tag-pill" style={{ "--tc": eta.n <= 12 ? "#8fd7a4" : "#8fa3b8" }}>{eta.n <= 12 ? "ON TRACK" : "SLOW"}</span>}
                   {thisMonth !== 0 && (
                     <span style={{ ...S.goalNote, color: thisMonth > 0 ? "#8fd7a4" : "#e2808c" }}>
                       {thisMonth > 0 ? "+" : "−"}{fmt(Math.abs(thisMonth))} in {MONTHS_SHORT[month]}
@@ -8069,10 +12137,6 @@ export default function PnlCalendar() {
                   )}
                 </span>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  <span style={S.goalAmt}>
-                    <CountNum value={saved} duration={600} render={fmtLive} />
-                    <span style={{ color: "#6d757d" }}> / {fmt(g.target)}</span>
-                  </span>
                   <button className="goal-icon-btn" title={open ? "Close" : "Add or withdraw funds"}
                           onClick={() => { setFundGoal(open ? null : g.id); setFundAmt(""); }}>
                     <span className="msym" style={{ fontSize: 18, transform: open ? "rotate(45deg)" : "none", transition: "transform .3s cubic-bezier(0.34,1.3,0.64,1)" }}>add</span>
@@ -8080,10 +12144,12 @@ export default function PnlCalendar() {
                   <button className="trash-btn" style={{ ...S.delBtn, marginLeft: 2 }} title="Delete goal" onClick={() => deleteGoal(g.id)}><TrashIcon /></button>
                 </span>
               </div>
-              <div style={S.goalBarRow}>
-                <GoalBar key={g.id} pct={pct} done={done} delay={120 + gi * 60} />
-                <span style={{ ...S.goalPct, color: done ? "#8fd7a4" : "#c7cdd2" }}>
-                  <CountNum value={Math.floor(Math.min(999, pct))} duration={600} render={(n) => `${Math.round(n)}%`} />
+              <div className="goal-lines">
+                <span className="goal-amt"><CountNum value={saved} duration={600} render={fmtLive} /> <span>of {fmt(g.target)}</span></span>
+                <span className="goal-pred">
+                  {done ? <b style={{ color: "#e6c877" }}>Fully funded</b>
+                    : eta ? <>On pace for <b>{MONTHS_FULL[eta.when.getMonth()]} {eta.when.getFullYear()}</b> at about {fmt(Math.round(eta.pace))} a month{eta.n > 12 ? <> · <b>{fmt(Math.round(eta.need))}</b> a month would finish it in a year</> : ""}</>
+                    : "No date yet: it needs deposits in two of the last six months"}
                 </span>
               </div>
               <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
@@ -8180,8 +12246,8 @@ export default function PnlCalendar() {
   const renderChart = (mode) => (
     <div style={{ position: "relative" }}>
       {renderChartSvg(mode)}
-      {hoverPt && <GlassTip key={hoverPt.label} W={720} H={380} x={Math.min(Math.max(hoverPt.x, 64 + 64), 720 - 20 - 64)}
-                            y={hoverPt.y} below={hoverPt.y < 24 + 62} label={hoverPt.label} value={hoverPt.value} />}
+      <HoverSlot hub={hoverHubP} render={(hoverPt) => <GlassTip key={hoverPt.label} W={720} H={380} x={Math.min(Math.max(hoverPt.x, 64 + 64), 720 - 20 - 64)}
+                            y={hoverPt.y} below={hoverPt.y < 24 + 62} label={hoverPt.label} value={hoverPt.value} />} />
     </div>
   );
   const renderChartSvg = (mode) => {
@@ -8335,7 +12401,7 @@ export default function PnlCalendar() {
                       onMouseEnter={() => setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: fmt(p.v) })}
                       onClick={() => chartGo(isMonthMode, p.i)} />
               ))}
-              {hoverPt && <Tooltip key={hoverPt.label} {...hoverPt} />}
+              <HoverSlot hub={hoverHubP} render={(hoverPt) => <Tooltip key={hoverPt.label} {...hoverPt} />} />
             </Fragment>
           )}
         </svg>
@@ -8416,7 +12482,7 @@ export default function PnlCalendar() {
                     onMouseEnter={() => setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: fmt(p.v) })}
                     onClick={() => chartGo(isMonthMode, p.i)} />
             ))}
-            {hoverPt && <Tooltip key={hoverPt.label} {...hoverPt} />}
+            <HoverSlot hub={hoverHubP} render={(hoverPt) => <Tooltip key={hoverPt.label} {...hoverPt} />} />
           </Fragment>
         )}
       </svg>
@@ -8440,8 +12506,15 @@ export default function PnlCalendar() {
   const targetSpot = useRef({ x: 50, y: 50 });
   const [hoverCard, setHoverCard] = useState(false);
   const [phase, setPhase] = useState(1);   // 1 = wallet, 2 = card pulled out
+  // until when a card is on its way out or back in: for that long the tilt is let go of and the pointer left alone,
+  // so the pocket card and the big card lie flat when one takes over from the other
+  const flyUntil = useRef(0), floatRef = useRef(null);
+  // a card pressed while its wallet is still sliding into the middle is handed over late (cardCt: the usual point),
+  // when the wallet has arrived and the two cards are on the same spot again
+  const cardCt = useRef(0.55), cardLate = useRef(false), walletAt = useRef(0);
   const [picked, setPicked] = useState("platinum");
   const [activeWallet, setActiveWallet] = useState(HOME_WALLET);
+  useLayoutEffect(() => { walletAt.current = performance.now(); }, [activeWallet]);
   // the wallet the selections panel shows, and the wallets panel opens on: the current year's at app start, then the
   // one of the year he came home from (he asked for the cards to follow the year: home from 2027 shows the 2027 wallet)
   const [homeWallet, setHomeWallet] = useState(HOME_WALLET);
@@ -8454,10 +12527,12 @@ export default function PnlCalendar() {
   const picking = choice === null;
   const inMarkets = choice === "markets";
   const [pickFocus, setPickFocus] = useState("wallet");   // which of the two is in the middle of the selections panel: "wallet" or "coin"
-  const [marketFocus, setMarketFocus] = useState("crypto");   // the same for the trading selection: "crypto" (the coin) or "idx" (the globe)
+  const [marketFocus, setMarketFocus] = useState("crypto");   // the same for the trading selection: "crypto" (the coin), "idx" (the globe) or "fx" (the forex coin, on the very right)
   const [tradeKind, setTradeKind] = useState("crypto");       // which trading panel was entered
   const coinFocused = (picking && pickFocus === "coin") || (inMarkets && marketFocus === "crypto");
   const globeFocused = inMarkets && marketFocus === "idx";
+  const fxFocused = inMarkets && marketFocus === "fx";
+  const [hoverFx, setHoverFx] = useState(false);
   const [hoverGlobe, setHoverGlobe] = useState(false);
   const [globeLive, setGlobeLive] = useState(false);      // the 3D globe is set up and has taken over from the flat logo
   const [hoverCoin, setHoverCoin] = useState(false);
@@ -8478,7 +12553,7 @@ export default function PnlCalendar() {
     const tr = `rotateX(${c.rx.toFixed(3)}deg) rotateY(${c.ry.toFixed(3)}deg)`;
     root.querySelectorAll(".wallet-unit").forEach((u) => {
       const w = u.querySelector(".wallet-3d");
-      if (w) w.style.transform = u.classList.contains("active") && phaseRef.current === 1 ? tr : "none";
+      if (w) w.style.transform = u.classList.contains("active") && (phaseRef.current === 1 || performance.now() < flyUntil.current) ? tr : "none";
     });
     const ct = root.querySelector(".card-tilt");
     if (ct) ct.style.transform = tr;
@@ -8493,7 +12568,9 @@ export default function PnlCalendar() {
   };
   const stepTilt = () => {
     const c = tiltCur.current, tt = targetTilt.current, ts = targetSpot.current;
-    c.rx += (tt.rx - c.rx) * 0.06; c.ry += (tt.ry - c.ry) * 0.06;
+    // while a card is leaving or coming back the tilt is let go of quickly, so both cards lie flat when one takes over from the other
+    const ease = performance.now() < flyUntil.current ? 0.3 : 0.06;
+    c.rx += (tt.rx - c.rx) * ease; c.ry += (tt.ry - c.ry) * ease;
     c.sx += (ts.x - c.sx) * 0.09;  c.sy += (ts.y - c.sy) * 0.09;
     const done = Math.abs(tt.rx - c.rx) < 0.008 && Math.abs(tt.ry - c.ry) < 0.008
               && Math.abs(ts.x - c.sx) < 0.05 && Math.abs(ts.y - c.sy) < 0.05;
@@ -8506,23 +12583,34 @@ export default function PnlCalendar() {
   useLayoutEffect(() => { phaseRef.current = phase; hoverRef.current = hoverCard; writeTilt(); });
   // the coin on the selections panel tilts the same way, on its own small loop: its tilt, plus the lustre on its
   // face, which turns as the coin tilts
-  const coinTiltRef = useRef(null), coinLustreRef = useRef(null);
-  const coinTarget = useRef({ rx: 0, ry: 0 }), coinCur = useRef({ rx: 0, ry: 0 }), coinRaf = useRef(0);
-  const writeCoin = () => {
-    const c = coinCur.current;
-    if (coinTiltRef.current) coinTiltRef.current.style.transform = `rotateX(${c.rx.toFixed(3)}deg) rotateY(${c.ry.toFixed(3)}deg)`;
-    if (coinLustreRef.current) coinLustreRef.current.style.transform = `rotate(${(c.ry * 4 + c.rx * 2.2).toFixed(2)}deg)`;
+  // On the trading panel (coin and globe) it faces forward and the pointer does more: it leans further, so the thick
+  // edge swings into view, lifts towards the viewer, a light follows the pointer over its face and its shadow slides
+  // away under it. All of it is transforms on layers that are already there.
+  const coinTiltRef = useRef(null), coinLustreRef = useRef(null), coinGlareRef = useRef(null), coinShadowRef = useRef(null);
+  const coinTarget = useRef({ ...COIN_STILL }), coinCur = useRef({ ...COIN_STILL }), coinRaf = useRef(0), coinEase = useRef(0.06);
+  const flipWas = useRef(NaN);      // the line the last coin toss's first turn tumbled along, degrees (none yet: any will do)
+  // the forex coin moves the same way, with figures and a loop of its own (g is one coin's set of them)
+  const fxTiltRef = useRef(null), fxLustreRef = useRef(null), fxGlareRef = useRef(null), fxShadowRef = useRef(null);
+  const fxTarget = useRef({ ...COIN_STILL }), fxCur = useRef({ ...COIN_STILL }), fxRaf = useRef(0), fxEase = useRef(0.06);
+  const goldRig = { tilt: coinTiltRef, lustre: coinLustreRef, glare: coinGlareRef, shadow: coinShadowRef, target: coinTarget, cur: coinCur, raf: coinRaf, ease: coinEase };
+  const fxRig = { tilt: fxTiltRef, lustre: fxLustreRef, glare: fxGlareRef, shadow: fxShadowRef, target: fxTarget, cur: fxCur, raf: fxRaf, ease: fxEase };
+  const writeCoin = (g) => {
+    const c = g.cur.current;
+    if (g.tilt.current) g.tilt.current.style.transform = `translateZ(${c.lift.toFixed(2)}px) rotateX(${c.rx.toFixed(3)}deg) rotateY(${c.ry.toFixed(3)}deg)`;
+    if (g.lustre.current) g.lustre.current.style.transform = `rotate(${(c.ry * 4 + c.rx * 2.2).toFixed(2)}deg)`;
+    if (g.glare.current) g.glare.current.style.transform = `translate3d(${c.gx.toFixed(1)}px, ${c.gy.toFixed(1)}px, 0)`;
+    if (g.shadow.current) g.shadow.current.style.transform = `translate3d(${(6 + c.sx).toFixed(1)}px, ${(36 + c.sy).toFixed(1)}px, 0) scale(0.94, 1)`;
   };
-  const stepCoin = () => {
-    const c = coinCur.current, t = coinTarget.current;
-    c.rx += (t.rx - c.rx) * 0.06; c.ry += (t.ry - c.ry) * 0.06;
-    const done = Math.abs(t.rx - c.rx) < 0.008 && Math.abs(t.ry - c.ry) < 0.008;
-    if (done) { c.rx = t.rx; c.ry = t.ry; }
-    writeCoin();
-    coinRaf.current = done ? 0 : requestAnimationFrame(stepCoin);
+  const stepCoin = (g) => {
+    const c = g.cur.current, t = g.target.current;
+    let done = true;
+    for (const k in t) { c[k] += (t[k] - c[k]) * g.ease.current; if (Math.abs(t[k] - c[k]) >= 0.008) done = false; }
+    if (done) Object.assign(c, t);
+    writeCoin(g);
+    g.raf.current = done ? 0 : requestAnimationFrame(() => stepCoin(g));
   };
-  const kickCoin = () => { if (!coinRaf.current) coinRaf.current = requestAnimationFrame(stepCoin); };
-  useEffect(() => () => { cancelAnimationFrame(coinRaf.current); coinRaf.current = 0; }, []);
+  const kickCoin = (g = goldRig) => { if (!g.raf.current) g.raf.current = requestAnimationFrame(() => stepCoin(g)); };
+  useEffect(() => () => { cancelAnimationFrame(coinRaf.current); coinRaf.current = 0; cancelAnimationFrame(fxRaf.current); fxRaf.current = 0; }, []);
   // the IDX globe: one loop works out how far it is turned and draws it. The turn is the pointer's pull (eased, like
   // the tilts), plus a slow sway to and fro while it floats idle, plus the full turn when it is pressed.
   const globeCanvasRef = useRef(null), globeGL = useRef(null), globeRaf = useRef(0);
@@ -8561,6 +12649,17 @@ export default function PnlCalendar() {
   // timed from the moment they come in, so the splash itself is exactly as long as it was.
   const [openGo, setOpenGo] = useState(false);
   const openGoAt = useRef(0);
+  // the installed app's first launch, or the first after a macOS update: the graphics programs are built first (see warmPrime)
+  const [prep, setPrep] = useState(() => (gfxCold() ? "on" : null));
+  const prepBar = useRef(null);
+  // "Switch account" loaded the page again: the opening is not played a second time, the select acc panel comes at once
+  const [skipOpen, setSkipOpen] = useState(() => { try { return !prep && sessionStorage.getItem(PICK_FLAG) === "1"; } catch (e) { return false; } });
+  useEffect(() => {
+    if (!skipOpen || !gate) return;
+    // two frames after the panel is there, so its pieces come in on their transitions as they do behind the opening
+    let r = requestAnimationFrame(() => { r = requestAnimationFrame(() => setOpenPanel("done")); });
+    return () => cancelAnimationFrame(r);
+  }, [skipOpen, !!gate]);
   useEffect(() => {
     let done = false;
     const go = () => {
@@ -8569,9 +12668,35 @@ export default function PnlCalendar() {
       // two frames on, so what was just loaded is laid out and drawn before anything moves
       requestAnimationFrame(() => requestAnimationFrame(() => { openGoAt.current = performance.now(); setOpenGo(true); }));
     };
+    if (typeof indexedDB !== "undefined") warm.all = warmAll();       // read now, in hand when the warm-up starts
+    warmGL();                         // (the fonts are being read meanwhile: this adds nothing to the wait)
+    if (skipOpen) { setWalletsReady(true); warmFonts().catch(() => {}); warmQueue().then(warmRest, () => {}); return; }
+    if (prep) {
+      let live = true;
+      // the first panel is built now, behind the backdrop, so that its programs are built with the rest; so is the
+      // login of somebody new (AccountGate's `shown`), which goes back to how it was before the opening plays
+      setWalletsReady(true);
+      // the bar's last tenth is the AI helper's own one-time setup (the shell's settle), which can outlast the screens
+      const tell = (p) => { if (prepBar.current) prepBar.current.style.transform = `scaleX(${p.toFixed(3)})`; };
+      const settle = () => Promise.resolve(GFX && GFX.settle ? GFX.settle() : null).catch(() => {});
+      // the screens, then the panels before an app with all that moves on them (stageTour)
+      const draw = () => warmPrime((p) => tell(p * 0.68)).then((shown) => (shown ? stageTour((p) => tell(0.68 + p * 0.22)).then(() => shown, () => shown) : shown));
+      warmFonts().catch(() => {}).then(() => Promise.all([draw(), settle()])).then(([shown]) => {
+        tell(1);
+        // All those screens, drawn and thrown away, are a lot of rubbish. Left alone it was cleared a moment later,
+        // in the middle of the first presses (measured: the page held up for 42 and 25ms as the app was entered,
+        // 50 and 60ms on the first press of the coin). It is cleared here, while nothing moves (window.gc is there
+        // on such a launch only: the shell asks for it).
+        warm.all = null;
+        try { if (typeof window.gc === "function") window.gc(); } catch (e) { /* cleared later, as before */ }
+        if (!shown) return;
+        try { sessionStorage.setItem(PRIME_KEY, "1"); localStorage.removeItem(PRIME_AGAIN); } catch (e) { /* done again after a change of account, no more */ }
+        if (GFX && GFX.primed) GFX.primed();
+      }, () => {}).then(() => { if (live) { setPrep("off"); setTimeout(go, PRIME_FADE_MS); } });
+      return () => { live = false; done = true; };
+    }
     const cap = setTimeout(go, OPEN_READY_MAX_MS);
     warmFonts().then(go, go);
-    if (typeof indexedDB !== "undefined") warm.all = warmAll();       // read now, in hand when the warm-up starts
     return () => { done = true; clearTimeout(cap); };
   }, []);
   useEffect(() => {
@@ -8590,7 +12715,7 @@ export default function PnlCalendar() {
   // App start only: once the splash's pieces have all but landed, the screens filed at earlier launches are drawn
   // under it (see "warm-up" at the top), and cleared away before the outro starts
   useEffect(() => {
-    if (!openGo) return;
+    if (!openGo || prep || openRun) return;       // (a first launch has just drawn every one of them)
     const t = setTimeout(() => warmReplay(openGoAt.current + OPEN_HOLD_MS - OPEN_WARM_CLEAR_MS), OPEN_WARM_AT_MS);
     return () => clearTimeout(t);
   }, [openGo]);
@@ -8616,40 +12741,66 @@ export default function PnlCalendar() {
     : choice === null ? (pickFocus === "coin" ? "pick-coin" : null) : choice === "wallet" ? (phase === 2 ? "card" : "wallets")
     : choice === "markets" ? "markets" : null;
   const warmPanel = !launched || greetOn || yearIntro || tradeIn || view === "trade" ? null
-    : `${view}${chartOpen ? "+chart" : recap ? "+recap" : catView ? "+cat" : ""}`;
+    : `${view}${chartOpen ? "+chart" : recap ? "+recap" : catView ? "+cat" : scoreView ? "+score" : ""}`;
   useWarmScreen(warmStage || warmPanel, warmStage ? 0 : undefined);
+  // nothing is drawn behind his back while the opening, the login, a way into an app or its greeting is playing (warmRest)
+  // (launchExit stays on for as long as he is inside an app: it only counts until the app is there). Written on
+  // every render, so the render that ends it is the moment the wait afterwards is counted from
+  const held = openPanel !== "done" || (launchExit && !launched) || greetOn || yearIntro || tradeIn || !!(gate && gate !== "done");
+  if (held || warm.hold) warm.until = performance.now() + WARM_SETTLE_MS;
+  warm.hold = held;
   useLayoutEffect(() => { if (!launched) placeBg(window.innerWidth * 0.5, window.innerHeight * 0.42); }, [launched, openPanel, walletsReady]);
+  const sideTilt = useRef([]);
   const onVeilMove = (e) => {
     bgNext.current = [e.clientX, e.clientY];
     if (bgRaf.current) return;
     bgRaf.current = requestAnimationFrame(() => {
       bgRaf.current = 0;
       placeBg(bgNext.current[0], bgNext.current[1]);
+      // the side title leans after the pointer, like the wallet and the coin under it (eased by its own transition)
+      const tx = (bgNext.current[0] / window.innerWidth - 0.5) * 30, ty = -(bgNext.current[1] / window.innerHeight - 0.5) * 20;
+      sideTilt.current.forEach((el) => { if (el) el.style.transform = `perspective(700px) rotateX(${ty.toFixed(2)}deg) rotateY(${tx.toFixed(2)}deg)`; });
     });
   };
   const onCardMove = (e) => {
+    if (performance.now() < flyUntil.current) return;
     const r = cardRef.current?.getBoundingClientRect();
     if (!r) return;
+    setHoverCard(true);       // also here: an "enter" while the card was on its way is not taken
     const px = (e.clientX - r.left) / r.width;
     const py = (e.clientY - r.top) / r.height;
     targetTilt.current = { ry: (px - 0.5) * 12, rx: -(py - 0.5) * 8.5 };
     targetSpot.current = { x: px * 100, y: py * 100 };
     kickTilt();
   };
-  const onCardEnter = () => { setHoverCard(true); };
+  const onCardEnter = () => { if (performance.now() >= flyUntil.current) setHoverCard(true); };
   const onCoinMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
-    coinTarget.current = { ry: ((e.clientX - r.left) / r.width - 0.5) * 22, rx: -((e.clientY - r.top) / r.height - 0.5) * 16 };
+    const px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+    coinEase.current = inMarkets ? 0.1 : 0.06;
+    coinTarget.current = inMarkets
+      ? { ry: px * 58, rx: -py * 46, gx: px * COIN_D, gy: py * COIN_D, lift: 44, sx: -px * 46, sy: 14 - py * 30 }
+      : { ...COIN_STILL, ry: px * 22, rx: -py * 16 };
     setHoverCoin(true);       // also here: if it slid under a resting pointer, no "enter" was ever sent
     kickCoin();
   };
-  const onCoinLeave = () => { setHoverCoin(false); coinTarget.current = { rx: 0, ry: 0 }; kickCoin(); };
+  const onCoinLeave = () => { setHoverCoin(false); coinEase.current = 0.06; coinTarget.current = { ...COIN_STILL }; kickCoin(); };
+  // the forex coin is only ever in focus on the trading panel, where a coin leans, lifts and carries the light
+  const onFxMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+    fxEase.current = 0.1;
+    fxTarget.current = { ry: px * 58, rx: -py * 46, gx: px * COIN_D, gy: py * COIN_D, lift: 44, sx: -px * 46, sy: 14 - py * 30 };
+    setHoverFx(true);
+    kickCoin(fxRig);
+  };
+  const onFxLeave = () => { setHoverFx(false); fxEase.current = 0.06; fxTarget.current = { ...COIN_STILL }; kickCoin(fxRig); };
   // selections panel: bring the wallet or the coin into the middle (a press on the tucked one, or the scroll wheel)
   const focusPick = (which) => { setPickFocus(which); onCardLeave(); onCoinLeave(); };
   const chooseWallet = () => { setChoice("wallet"); onCardLeave(); onCoinLeave(); };
   // back to the selections panel, with the thing just left in the middle: the wallet (from the wallets panel) or
   // the coin (from the trading selection)
-  const backToChoice = (focus = "wallet") => { setChoice(null); setPickFocus(focus); setActiveWallet(homeWallet); onCardLeave(); onCoinLeave(); onGlobeLeave(); };
+  const backToChoice = (focus = "wallet") => { setChoice(null); setPickFocus(focus); setActiveWallet(homeWallet); onCardLeave(); onCoinLeave(); onGlobeLeave(); onFxLeave(); };
   // trading selection: the coin stays in the middle as "crypto", and the IDX globe comes in beside it
   const onGlobeMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -8659,8 +12810,39 @@ export default function PnlCalendar() {
   };
   const onGlobeLeave = () => { setHoverGlobe(false); globeAnim.current.target = 0; kickGlobe(); };
   const openMarkets = () => { setChoice("markets"); setMarketFocus("crypto"); onCardLeave(); onCoinLeave(); };
-  const focusMarket = (which) => { setMarketFocus(which); onCoinLeave(); onGlobeLeave(); };
-  const openCard = (which) => { setPicked(which); setPhase(2); onCardLeave(); };
+  const focusMarket = (which) => { setMarketFocus(which); onCoinLeave(); onGlobeLeave(); onFxLeave(); };
+  // the scroll wheel goes one along the row and stops at its ends: coin, globe, forex coin
+  const stepMarket = (dir) => {
+    setMarketFocus((f) => MARKET_ROW[Math.max(0, Math.min(MARKET_ROW.length - 1, MARKET_ROW.indexOf(f) + dir))]);
+    onCoinLeave(); onGlobeLeave(); onFxLeave();
+  };
+  // The card goes out and comes back as one move that can be turned round at any moment (see the styles): no timers,
+  // and no press is ever ignored.
+  const openCard = (which) => {
+    // another card is still on its way back in: the big card lets go of it and starts from this one's pocket
+    const bc = cardRef.current;
+    if (bc && which !== picked) {
+      bc.style.transition = "none"; bc.style.setProperty("--cp", "0");
+      void bc.offsetWidth;
+      bc.style.transition = ""; bc.style.removeProperty("--cp");
+    }
+    cardLate.current = performance.now() - walletAt.current < 700;
+    fitCard();
+    flyUntil.current = performance.now() + CARD_OUT_MS;
+    setPicked(which); setPhase(2); onCardLeave();
+  };
+  // the big card's size against the pocket card's (384 × 242): the pocket card's face is laid out at the big card's
+  // size and scaled by these, and the big card starts its way out scaled by them
+  const fitCard = () => {
+    const el = launchRef.current;
+    if (!el) return;
+    el.style.setProperty("--csx", String(384 / Math.min(560, window.innerWidth * 0.84)));
+    el.style.setProperty("--csy", String(242 / Math.min(340, window.innerHeight * 0.44)));
+    // how far along its way the card is clear of the pocket in front of it: there the big card takes over
+    cardCt.current = Math.min(0.9, 286 / (window.innerHeight / 2 + 68) + 0.04);
+    el.style.setProperty("--ct", (cardLate.current ? 0.97 : cardCt.current).toFixed(3));
+  };
+  useEffect(() => { window.addEventListener("resize", fitCard); return () => window.removeEventListener("resize", fitCard); }, []);
   const walletLock = useRef(false);
   const stepWallet = (dir) => {
     setActiveWallet((cur) => {
@@ -8677,7 +12859,7 @@ export default function PnlCalendar() {
       if (walletLock.current) return;
       walletLock.current = true;
       if (choice === null) focusPick(e.deltaY > 0 ? "coin" : "wallet");     // selections panel: wallet ↔ coin
-      else if (choice === "markets") focusMarket(e.deltaY > 0 ? "idx" : "crypto");     // trading selection: coin ↔ globe
+      else if (choice === "markets") stepMarket(e.deltaY > 0 ? 1 : -1);     // trading selection: coin · globe · forex coin
       else stepWallet(e.deltaY > 0 ? 1 : -1);
       setTimeout(() => { walletLock.current = false; }, 620);
     };
@@ -8720,7 +12902,17 @@ export default function PnlCalendar() {
     globeGL.current = null;
     setGlobeLive(false);
   }, [launched]);
-  const closeCard = () => { setPhase(1); onCardLeave(); };
+  const closeCard = () => {
+    // the idle float is held where it is and eased out, so the big card is on the pocket card's spot when that takes over
+    const fl = floatRef.current;
+    if (fl) {
+      const m = getComputedStyle(fl).transform;
+      fl.style.transition = "none"; fl.style.transform = m === "none" ? "" : m;
+      requestAnimationFrame(() => { fl.style.transition = "transform .14s ease-out"; fl.style.transform = "none"; });
+    }
+    flyUntil.current = performance.now() + CARD_IN_MS;
+    setPhase(1); onCardLeave();
+  };
   const onCardLeave = () => {
     setHoverCard(false);
     targetTilt.current = { rx: 0, ry: 0 };
@@ -8729,6 +12921,8 @@ export default function PnlCalendar() {
   };
   const enterApp = () => {
     setLaunchExit(true);
+    // (the first launch's rehearsal, stageTour: the stage's way out is played and taken back, nothing is entered)
+    if (warm.tour) { warm.tour.undo = () => setLaunchExit(false); return; }
     setTimeout(() => {
       setGreetOn(true);
       setYear(now.getFullYear() + (WALLETS[activeWallet]?.year || 0));
@@ -8747,8 +12941,42 @@ export default function PnlCalendar() {
     if (!inMarkets || marketFocus !== kind) return;
     setTradeKind(kind);
     setChoice("trade");
-    onCardLeave(); onCoinLeave(); onGlobeLeave();
+    onCardLeave(); onCoinLeave(); onGlobeLeave(); onFxLeave();
+    coinEase.current = fxEase.current = 0.3;      // the lean and the lift under the pointer go at once: the toss spins about a level axis
     if (kind === "idx") { globeAnim.current.spinAt = performance.now(); kickGlobe(); }
+    else if (launchRef.current) {
+      // The toss is three whole turns, and every one of them is rolled for itself (7 October 2026, his words: "it is
+      // not a random rotation that is fixed for all the spins, but each spin is a random rotation angle"): which way
+      // across the screen that turn's axis points (any way round: end over end, sideways like a revolving door, on any
+      // slant between), how far the axis leans out of the screen (the share that turns the coin like a wheel), and
+      // which way round it goes. A turn's line is never within 40° of the turn before it, nor the first turn's of the
+      // last toss's first, so no two in a row look alike. Whole turns, so it lands facing forward whatever is rolled.
+      // The first turn goes either way round. Each one after it goes the way that carries on from the turn before
+      // (the two turnings less than a right angle apart): rolled the other way too, the coin sometimes had to brake
+      // almost to a stop and go back the way it came inside a tenth of a second, a jolt (measured: its speed fell from
+      // 3.8 turns a second to under 2 and back; carrying on, it never falls below about 3).
+      const el = launchRef.current, rad = Math.PI / 180;
+      let was = flipWas.current, smear = 0, going = null;
+      for (let i = 1; i <= 3; i++) {
+        let a;
+        do { a = Math.random() * 180; } while (Math.min(Math.abs(a - was), 180 - Math.abs(a - was)) < 40);
+        if (i === 1) flipWas.current = a;
+        // the motion blur is turned to each turn's axis in its time, the short way round from the turn before
+        smear = i === 1 ? a : smear + ((((a - was) % 180) + 270) % 180) - 90;
+        was = a;
+        const x = Math.cos(a * rad), y = Math.sin(a * rad), z = (Math.random() * 2 - 1) * 0.6;
+        let way = Math.random() < 0.5 ? -1 : 1;
+        if (going && (going[0] * x + going[1] * y + going[2] * z) * way < 0) way = -way;
+        going = [x * way, y * way, z * way];
+        el.style.setProperty(`--f${i}x`, x.toFixed(3));
+        el.style.setProperty(`--f${i}y`, y.toFixed(3));
+        el.style.setProperty(`--f${i}z`, z.toFixed(3));
+        el.style.setProperty(`--f${i}d`, `${way * 360}deg`);
+        el.style.setProperty(`--fa${i}`, `${smear.toFixed(1)}deg`);
+      }
+    }
+    // (the first launch's rehearsal, stageTour: the toss is played and then the trading panel is back, nothing is entered)
+    if (warm.tour) { warm.tour.undo = () => setChoice("markets"); return; }
     const hold = kind === "idx" ? IDX_REVEAL_MS : TRADE_FLIP_MS;
     setTimeout(() => setLaunchExit(true), hold);
     setTimeout(() => { setView("trade"); setLaunched(true); setTradeIn(true); }, hold + 620);
@@ -8760,6 +12988,7 @@ export default function PnlCalendar() {
   useEffect(() => () => clearTimeout(homeTimer.current), []);
   const goHome = () => {
     if (openPanel !== "done") return;
+    if (skipOpen) { setSkipOpen(false); setOpenGo(true); }     // (after a change of account the opening has not played yet)
     setWalletsReady(false);
     setOpenPanel("in");
     setOpenRun((n) => n + 1);
@@ -8776,13 +13005,17 @@ export default function PnlCalendar() {
     targetTilt.current = { rx: 0, ry: 0 }; targetSpot.current = { x: 50, y: 50 };
     writeTilt();
     cancelAnimationFrame(coinRaf.current); coinRaf.current = 0;
-    coinCur.current = { rx: 0, ry: 0 }; coinTarget.current = { rx: 0, ry: 0 };
+    coinCur.current = { ...COIN_STILL }; coinTarget.current = { ...COIN_STILL };
+    cancelAnimationFrame(fxRaf.current); fxRaf.current = 0;
+    fxCur.current = { ...COIN_STILL }; fxTarget.current = { ...COIN_STILL };
+    setHoverFx(false);
     cancelAnimationFrame(globeRaf.current); globeRaf.current = 0;
     globeAnim.current = { cur: 0, target: 0, sway: 0, idle: false, spinAt: 0 };
     setHoverGlobe(false);
     setLaunchExit(false);
     setLaunched(false);
     setPhase(1);
+    flyUntil.current = 0;
     // home from the finance panels: the wallet of the year that was on screen (a year with no wallet: the current year's).
     // Home from a trading panel leaves it as it was
     const ofYear = WALLETS.findIndex((w) => (w.year || 0) === year - now.getFullYear());
@@ -8819,22 +13052,30 @@ export default function PnlCalendar() {
         :root {
           --ease: cubic-bezier(0.22, 1, 0.36, 1);
           --ease-soft: cubic-bezier(0.32, 0.72, 0.24, 1);
-          --glass: rgba(42, 46, 51, 0.52);
+          --glass: rgba(43, 44, 46, 0.55);
           --glass-hi: rgba(255, 255, 255, 0.10);
           --glass-line: rgba(255, 255, 255, 0.09);
         }
 
         /* everything cascades in when a month is opened from the year panel */
-        .month-view.enter > * { animation: mvIn .62s var(--ease) backwards; }
-        .month-view.enter > *:nth-child(1) { animation-delay: .00s; }
-        .month-view.enter > *:nth-child(2) { animation-delay: .05s; }
-        .month-view.enter > *:nth-child(3) { animation-delay: .09s; }
-        .month-view.enter > *:nth-child(4) { animation-delay: .13s; }
-        .month-view.enter > *:nth-child(5) { animation-delay: .17s; }
-        .month-view.enter > *:nth-child(6) { animation-delay: .20s; }
-        .month-view.enter > *:nth-child(7) { animation-delay: .23s; }
-        .month-view.enter > *:nth-child(8) { animation-delay: .26s; }
-        .month-view.enter > *:nth-child(n+9) { animation-delay: .30s; }
+        /* Two speeds (6 October 2026, his rule): cinematic moves (changing years, opening Wrapped, entering the wallet)
+           may take 500–900ms; utility ones were cut to 150–300ms for a few hours, which he found way too quick.
+           A month comes in over about 0.9s again, as it did before */
+        /* Each part of the month carries data-mv (FoldCard puts it on itself), and the rules name it. They said
+           "> *" until 9 October 2026: with a rule that can match anything, taking "enter" off again 1.1s after the
+           month opened made the engine work out the style of everything in the month afresh (1558 elements, 17ms in
+           one go, on every month opened). Named, it looks at the parts and the tiles only. :where() keeps the rules
+           exactly as strong as they were. A new part of the month needs data-mv to come in with the others. */
+        .month-view.enter > :where([data-mv]) { animation: mvIn .62s var(--ease) backwards; }
+        .month-view.enter > :where([data-mv]):nth-child(1) { animation-delay: .00s; }
+        .month-view.enter > :where([data-mv]):nth-child(2) { animation-delay: .05s; }
+        .month-view.enter > :where([data-mv]):nth-child(3) { animation-delay: .09s; }
+        .month-view.enter > :where([data-mv]):nth-child(4) { animation-delay: .13s; }
+        .month-view.enter > :where([data-mv]):nth-child(5) { animation-delay: .17s; }
+        .month-view.enter > :where([data-mv]):nth-child(6) { animation-delay: .20s; }
+        .month-view.enter > :where([data-mv]):nth-child(7) { animation-delay: .23s; }
+        .month-view.enter > :where([data-mv]):nth-child(8) { animation-delay: .26s; }
+        .month-view.enter > :where([data-mv]):nth-child(n+9) { animation-delay: .30s; }
         @keyframes mvIn {
           from { opacity: 0; transform: translateY(18px); }
           to   { opacity: 1; transform: translateY(0); }
@@ -8931,11 +13172,17 @@ export default function PnlCalendar() {
         .side-chip .msym { font-size: 16px; transition: transform .3s var(--ease); }
         .side-chip.short .msym { transform: scaleY(-1); }
         .side-chip.big { height: 38px; min-width: 88px; justify-content: center; margin-left: 0; border-radius: 11px; background: rgba(255,255,255,0.04); }
-        .pair-ghost { position: absolute; left: 0; top: 0; height: 100%; display: flex; align-items: center; font-size: 14px; pointer-events: none; white-space: pre; }
+        /* the hidden copy of what is typed pushes the grey text to its end, so it has to be as wide as the typed text:
+           every box has even-width digits (tabular-nums), and without them here the copy was narrower by 2–3px for
+           every "1" typed: "10x" and "1000CATUSDT.P" ran into each other (he sent a picture) */
+        .pair-ghost { position: absolute; left: 0; top: 0; height: 100%; display: flex; align-items: center; font-size: 14px; pointer-events: none; white-space: pre;
+                      font-variant-numeric: tabular-nums; }
+        .pair-tail { position: absolute; top: 0; height: 100%; display: flex; align-items: center; color: #8e969e; font-size: 12.5px; pointer-events: none;
+                     white-space: nowrap; font-variant-numeric: tabular-nums; animation: fadeIn .2s ease backwards; }
         .pair-ghost i { visibility: hidden; font-style: normal; }
-        .pair-ghost b { font-weight: 400; color: #6d757d; }
+        .pair-ghost b { font-weight: 400; color: #8e969e; }
         /* trading journal (crypto day panel): a trade as a page of properties. The icons are tinted, muted on purpose;
-           of the text only the result, the position, the time frame, the full TP and the R carry a colour */
+           of the text only the result, the position, the time frame, the full TP, the risk and the R carry a colour */
         .jr-sheet, .jr-item { --tone: #8fd7a4; --tone-bg: rgba(61,220,151,0.10); --tone-bd: rgba(61,220,151,0.34); }
         .jr-sheet.loss, .jr-item.loss { --tone: #e2808c; --tone-bg: rgba(255,93,108,0.10); --tone-bd: rgba(255,93,108,0.34); }
         .jr-sheet.be, .jr-item.be { --tone: #d6c88f; --tone-bg: rgba(227,205,119,0.09); --tone-bd: rgba(227,205,119,0.30); }
@@ -8953,7 +13200,6 @@ export default function PnlCalendar() {
         .jr-pnl:focus-within { border-color: var(--tone-bd); box-shadow: 0 0 0 3px var(--tone-bg); }
         .jr-pnl input { flex: 1; min-width: 0; padding: 0; background: none; border: none; outline: none; color: inherit; font: inherit; font-variant-numeric: tabular-nums; }
         .jr-pnl input::placeholder, .jr-in::placeholder { color: #5b636b; }
-        .jr-sheet.be .jr-pnl { opacity: 0.6; cursor: default; }
         .jr-cols { display: flex; flex-wrap: wrap; column-gap: 28px; }
         .jr-col { flex: 1 1 300px; min-width: 0; }
         .jr-row { display: flex; align-items: center; gap: 8px; min-height: 40px; }
@@ -8969,12 +13215,30 @@ export default function PnlCalendar() {
         .jr-in:hover { background: rgba(255,255,255,0.06); }
         .jr-in:focus { background: rgba(24,27,31,0.62); border-color: rgba(200,210,220,0.42); }
         textarea.jr-in { display: block; min-height: 104px; padding: 10px 12px; line-height: 1.5; resize: vertical; }
+        /* a figure the form works out itself (the stocks buy and sell value): in a row like the boxes, without a box */
+        .jr-calc { padding: 7px 10px; font-size: 14px; color: #c7cdd2; font-variant-numeric: tabular-nums; }
+        .jr-calc i { font-style: normal; color: #5b636b; }
         .jr-chip { height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.09); background: none; color: #8a9299;
                    font-size: 12px; font-weight: 600; cursor: pointer; transition: color .18s ease, background .18s ease, border-color .18s ease; }
         .jr-chip:hover { color: #e8eaec; border-color: rgba(255,255,255,0.22); }
         .jr-chip.on, .jr-tag { color: #a9c6ea; background: rgba(120,165,225,0.12); border-color: rgba(120,165,225,0.36); }
         .jr-chip.long.on, .jr-tag.long { color: #8fd7a4; background: rgba(61,220,151,0.10); border-color: rgba(61,220,151,0.34); }
         .jr-chip.short.on, .jr-tag.short { color: #e2808c; background: rgba(255,93,108,0.10); border-color: rgba(255,93,108,0.34); }
+        /* each time frame in its own muted colour (--tf): faint while it is not the one chosen. The last box is typed in */
+        .jr-chip.tf { color: color-mix(in srgb, var(--tf) 55%, #8a9299); }
+        .jr-chip.tf:hover { color: var(--tf); border-color: color-mix(in srgb, var(--tf) 40%, transparent); }
+        .jr-chip.tf.on, .jr-tag.tf { color: var(--tf); background: color-mix(in srgb, var(--tf) 13%, transparent); border-color: color-mix(in srgb, var(--tf) 38%, transparent); }
+        .jr-chip.own { width: 58px; box-sizing: border-box; padding: 0 4px; text-align: center; outline: none; cursor: text; font-family: inherit; }
+        .jr-chip.own::placeholder { color: #8e969e; font-weight: 500; }
+        .jr-chip.own:focus { border-color: rgba(200,210,220,0.42); }
+        /* the form's choices: one quiet field per line, like the boxes that are typed in, with the choices as words in it and
+           only the chosen one in a box of its colour. Each used to be a box with a border of its own (4 styles, 13 sectors,
+           9 time frames), which he called button vomit */
+        .jr-pick { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: rgba(255,255,255,0.035); }
+        .jr-pick .jr-chip { padding: 0 10px; border-radius: 7px; border-color: transparent; }
+        .jr-pick .jr-chip:hover { background: rgba(255,255,255,0.06); border-color: transparent; }
+        .jr-pick .jr-chip.on { border-color: transparent; }
+        .jr-pick .jr-chip.own:focus { border-color: rgba(200,210,220,0.42); background: rgba(24,27,31,0.62); }
         .jr-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
         .jr-add { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 16px 0 11px; border-radius: 11px; cursor: pointer;
                   border: 1px solid var(--tone-bd); background: var(--tone-bg); color: var(--tone); font-size: 13.5px; font-weight: 700;
@@ -8989,15 +13253,58 @@ export default function PnlCalendar() {
                     color: var(--tone); background: var(--tone-bg); font-size: 11.5px; font-weight: 700; }
         .jr-badge .msym { font-size: 15px; }
         .jr-name { flex-shrink: 0; color: #e8eaec; font-size: 14px; font-weight: 700; }
-        .jr-name i { margin-left: 4px; color: #6d757d; font-size: 12px; font-style: normal; font-weight: 400; }
+        .jr-name i { margin-left: 4px; color: #8e969e; font-size: 12px; font-style: normal; font-weight: 400; }
         .jr-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border-radius: 7px; flex-shrink: 0; font-size: 11px; font-weight: 700; }
         .jr-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: #8a9299; font-size: 12.5px; }
         .jr-amt { flex-shrink: 0; color: var(--tone); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-        .jr-chev { flex-shrink: 0; color: #6d757d; font-size: 20px; transition: transform .3s var(--ease); }
+        .jr-chev { flex-shrink: 0; color: #8e969e; font-size: 20px; transition: transform .3s var(--ease); }
         .jr-item.open .jr-chev { transform: rotate(180deg); }
         .jr-fold { display: grid; grid-template-rows: 0fr; visibility: hidden; transition: grid-template-rows .3s cubic-bezier(0.4,0,0.2,1), visibility 0s .3s; }
         .jr-item.open .jr-fold { grid-template-rows: 1fr; visibility: visible; transition: grid-template-rows .3s cubic-bezier(0.4,0,0.2,1); }
         .jr-sheet.in-list { padding: 12px; border-top: 1px solid rgba(255,255,255,0.07); }
+        /* pictures on a trade: small tiles in its sheet (a press opens one large), and how many on its line */
+        .jr-pics { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; color: #8e969e; font-size: 12px; }
+        .jr-pics .msym { font-size: 15px; }
+        .jr-shots { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; padding: 3px 0; }
+        /* the setup's pictures: a button at the end of its box, the pictures under the box */
+        .jr-pre { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .jr-pre-line { display: flex; align-items: center; gap: 6px; }
+        .jr-pre-line .jr-in { flex: 1; min-width: 0; width: auto; }
+        .jr-pre .jr-shots { flex: none; padding: 7px 0 3px; }
+        .jr-pre-add { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
+                      color: #8e969e; border: 1px dashed rgba(255,255,255,0.16); transition: color .2s ease, border-color .2s ease, background .2s ease, opacity .2s ease; }
+        .jr-pre-add:hover { color: #e8eaec; border-color: rgba(200,210,220,0.42); background: rgba(255,255,255,0.05); }
+        .jr-pre-add .msym { font-size: 18px; }
+        .jr-pre-add.busy { opacity: 0.45; pointer-events: none; }
+        .jr-shot { position: relative; width: 104px; height: 66px; border-radius: 9px; overflow: hidden; flex-shrink: 0; cursor: zoom-in;
+                   background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.10); transition: border-color .2s ease, transform .2s var(--ease); }
+        .jr-shot:hover { border-color: rgba(200,210,220,0.42); transform: translateY(-1px); }
+        .jr-shot img, .jr-shot canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+        .jr-shot-x { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: none; border-radius: 6px; cursor: pointer;
+                     background: rgba(14,16,18,0.74); color: #c9cfd4; font-size: 13px; line-height: 18px; opacity: 0; transition: opacity .18s ease, color .18s ease; }
+        .jr-shot:hover .jr-shot-x { opacity: 1; }
+        .jr-shot-x:hover { color: #ff8d97; }
+        .jr-shot.add { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border-style: dashed; color: #8e969e; transition: color .2s ease, border-color .2s ease, opacity .2s ease; }
+        .jr-shot.add:hover { color: #e8eaec; transform: none; }
+        .jr-shot.add .msym { font-size: 22px; }
+        .jr-shot.add.busy { opacity: 0.45; pointer-events: none; }
+        .shot-view { position: fixed; inset: 0; z-index: 290; display: flex; align-items: center; justify-content: center; background: rgba(8,10,12,0.86);
+                     cursor: zoom-out; animation: fadeIn .18s ease backwards; transition: opacity .17s ease; }
+        .shot-view.out { opacity: 0; }
+        .shot-view img, .shot-view canvas { display: block; max-width: 92vw; max-height: 88vh; border-radius: 12px; box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+                                             animation: shotIn .24s cubic-bezier(0.22,1,0.36,1) backwards; }
+        .shot-view canvas { width: min(92vw, 960px); height: auto; }
+        @keyframes shotIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+        /* deposits: one line under the day's trades, in the journal's neutral blue (green and red are for PnL) */
+        .jr-dep { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.07);
+                  --tone: #a9c6ea; --tone-bg: rgba(120,165,225,0.10); --tone-bd: rgba(120,165,225,0.34); }
+        .jr-pnl.dep { width: 150px; height: 32px; padding: 0 11px; border-radius: 9px; font-size: 14px; }
+        .jr-v > .jr-dep-chip, .jr-v > .jr-dep-no { flex: none; }
+        .jr-dep-no { color: #e2808c; font-size: 12.5px; animation: fadeIn .2s ease backwards; }
+        .jr-dep-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 5px 0 10px; border-radius: 8px; color: #9aa3ab; font-size: 12.5px;
+                       background: rgba(120,165,225,0.07); border: 1px solid rgba(120,165,225,0.22); animation: fadeDown .25s ease backwards; }
+        .jr-dep-chip b { color: #a9c6ea; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .jr-dep-x { padding: 0 3px; background: none; border: none; color: #8e969e; font-size: 16px; line-height: 1; cursor: pointer; transition: color .18s ease; }
         .tok { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
                font-size: 11px; font-weight: 800; color: #14171a; }
         /* trading side: the PnL analysis card (time-frame tabs, the balance box, three line charts) */
@@ -9007,22 +13314,29 @@ export default function PnlCalendar() {
                   color: #7d858c; cursor: pointer; white-space: nowrap; transition: color .2s ease, background .2s ease; }
         .an-tab:hover { color: #e8eaec; }
         .an-tab.on { color: #f5a742; background: rgba(245,167,66,0.13); }
-        .an-bal { margin-left: auto; display: inline-flex; align-items: center; gap: 9px; font-size: 11px; font-weight: 700; letter-spacing: .12em;
-                  text-transform: uppercase; color: #6d757d; }
-        .an-bal-box { position: relative; display: inline-flex; align-items: center; }
-        .an-bal-box i { position: absolute; left: 11px; font-style: normal; font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; color: #6d757d; pointer-events: none; }
-        .an-bal-box input { width: 124px; height: 32px; box-sizing: border-box; padding: 0 10px 0 23px; border-radius: 10px; background: rgba(24,27,31,0.62);
-                            border: 1px solid rgba(255,255,255,0.10); color: #e8eaec; font: inherit; font-size: 13px; font-weight: 700; letter-spacing: 0;
-                            font-variant-numeric: tabular-nums; outline: none; transition: border-color .25s ease, box-shadow .25s ease; }
-        .an-bal-box.wide input { width: 150px; padding-left: 33px; }
-        .an-bal-box input:focus { border-color: #f5a742; box-shadow: 0 0 0 2px rgba(245,167,66,0.14); }
-        .an-bal-box input::placeholder { color: #6d757d; font-weight: 500; }
-        .an-dates { display: flex; align-items: center; gap: 9px; margin-top: 10px; font-size: 12px; color: #6d757d; animation: fadeDown .22s ease backwards; }
+        /* the balance: one pill. At rest a figure with a pencil, pressed it is typed over; dashed while there is none */
+        .an-bal { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; box-sizing: border-box; height: 36px; padding: 0 7px 0 13px; border-radius: 11px;
+                  background: rgba(24,27,31,0.62); border: 1px solid rgba(255,255,255,0.10); color: #8a9299; font-family: inherit; cursor: pointer;
+                  transition: border-color .2s ease, box-shadow .2s ease; }
+        .an-bal:hover { border-color: rgba(255,255,255,0.24); }
+        .an-bal > span:first-child { font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+        .an-bal b { color: #f2f5f8; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .an-bal i { margin-right: 3px; color: #8a9299; font-style: normal; font-size: 13px; font-weight: 600; }
+        .an-bal .msym { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; font-size: 15px; color: #8e969e;
+                        transition: color .2s ease, background .2s ease; }
+        .an-bal:hover .msym { color: #e8eaec; background: rgba(255,255,255,0.07); }
+        .an-bal.none { border-style: dashed; border-color: rgba(245,167,66,0.42); color: #c99a55; }
+        .an-bal.none b { color: #f5a742; font-size: 13px; font-weight: 600; }
+        .an-bal.edit { padding-right: 13px; gap: 8px; cursor: text; border-color: #f5a742; box-shadow: 0 0 0 2px rgba(245,167,66,0.14); }
+        .an-bal.edit i { margin-right: -4px; }
+        .an-bal input { width: 118px; padding: 0; background: none; border: none; outline: none; color: #f2f5f8; font-family: inherit; font-size: 15px; font-weight: 700; }
+        .an-bal input::placeholder { color: #8e969e; font-weight: 500; }
+        .an-dates { display: flex; align-items: center; gap: 9px; margin-top: 10px; font-size: 12px; color: #8e969e; animation: fadeDown .22s ease backwards; }
         .an-date { color-scheme: dark; height: 32px; box-sizing: border-box; padding: 0 9px; border-radius: 10px; background: rgba(24,27,31,0.62);
                    border: 1px solid rgba(255,255,255,0.10); color: #e8eaec; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
                    outline: none; transition: border-color .25s ease, box-shadow .25s ease; }
         .an-date:focus { border-color: #f5a742; box-shadow: 0 0 0 2px rgba(245,167,66,0.14); }
-        .an-asof { margin: 9px 2px 0; font-size: 11.5px; color: #6d757d; font-variant-numeric: tabular-nums; }
+        .an-asof { margin: 9px 2px 0; font-size: 11.5px; color: #8e969e; font-variant-numeric: tabular-nums; }
         .an-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 20px 22px; margin-top: 16px; padding-bottom: 10px; }
         .an-grid > div { min-width: 0; }
         .an-wide { grid-column: 1 / -1; }
@@ -9030,6 +13344,10 @@ export default function PnlCalendar() {
         .an-title span { font-weight: 400; color: #9aa3ab; }
         .an-val { min-height: 30px; display: flex; align-items: center; flex-wrap: wrap; gap: 2px 16px; margin: 3px 0 9px; font-size: 20px; font-weight: 700;
                   font-variant-numeric: tabular-nums; }
+        /* max drawdown, at the right end of the cumulative PnL's own line of figures */
+        .an-dd { margin-left: auto; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12.5px; font-weight: 500; color: #9aa3ab; white-space: nowrap; }
+        .an-dd b { font-size: 16px; font-weight: 700; color: #ff8d97; }
+        .an-dd i { font-style: normal; font-size: 12px; color: #8e969e; }
         .an-key { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: #c7cdd2; white-space: nowrap; }
         .an-key i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
         .an-key b { font-size: 16px; font-weight: 700; margin-left: 2px; }
@@ -9037,7 +13355,7 @@ export default function PnlCalendar() {
         .an-plot { position: relative; }
         .an-plot svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
         .an-line { stroke-dasharray: 1; animation: drawLine 1.05s var(--ease-soft) .1s backwards; }
-        .an-note { position: absolute; left: 0; right: 0; top: 30%; text-align: center; font-size: 13px; font-weight: 600; color: #6d757d; pointer-events: none;
+        .an-note { position: absolute; left: 0; right: 0; top: 30%; text-align: center; font-size: 13px; font-weight: 600; color: #8e969e; pointer-events: none;
                    animation: axisIn .35s ease backwards; }
         .an-ask { pointer-events: auto; background: rgba(245,167,66,0.10); border: 1px solid rgba(245,167,66,0.30); color: #f5a742; height: 32px; padding: 0 14px;
                   border-radius: 10px; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; transition: background .2s ease, border-color .2s ease; }
@@ -9058,7 +13376,7 @@ export default function PnlCalendar() {
         .ring-row.on { background: rgba(255,255,255,0.055); }
         .ring-row i { width: 9px; height: 9px; border-radius: 50%; }
         .ring-name { font-size: 14px; font-weight: 600; color: #e8eaec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .ring-name small { margin-left: 9px; font-size: 11.5px; font-weight: 500; color: #6d757d; }
+        .ring-name small { margin-left: 9px; font-size: 11.5px; font-weight: 500; color: #8e969e; }
         .ring-amt { font-size: 13.5px; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; }
         .ring-pct { font-size: 13px; color: #9aa3ab; text-align: right; font-variant-numeric: tabular-nums; }
         /* crypto tracker: the position calculator. Its button is the year arrows' twin and sits right above them on
@@ -9091,7 +13409,7 @@ export default function PnlCalendar() {
                   background: #25292e; border: 1px solid rgba(255,255,255,0.13); box-shadow: 0 16px 36px rgba(0,0,0,0.5);
                   animation: fadeDown .18s ease backwards; }
         .pc-pop-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 34px; align-items: center; gap: 9px; margin-top: 9px; font-size: 13px; color: #9aa3ab; }
-        .pc-note { font-size: 11.5px; color: #6d757d; margin-top: 10px; line-height: 1.45; }
+        .pc-note { font-size: 11.5px; color: #8e969e; margin-top: 10px; line-height: 1.45; }
         .pc-body { display: grid; grid-template-columns: 322px minmax(0, 1fr); gap: 26px; align-items: start; }
         .pc-form { display: flex; flex-direction: column; gap: 9px; }
         .pc-line { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: center; gap: 10px; }
@@ -9103,12 +13421,13 @@ export default function PnlCalendar() {
         .pc-in:focus { border-color: rgba(200,210,220,0.45); box-shadow: 0 0 0 3px rgba(154,163,171,0.13); }
         .pc-in.bad { border-color: rgba(255,93,108,0.6); }
         .pc-in::placeholder { color: #50575e; }
+        .pc-in.auto::placeholder { color: #959da5; }           /* a figure worked out for him, not a hint: it has to be read */
         /* the coin: always capitals, with /USDT.P written after it in grey */
         .pc-coin { position: relative; display: block; }
         .pc-coin .pc-in, .pc-ghost { font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
         .pc-ghost { position: absolute; left: 0; top: 0; height: 100%; display: flex; align-items: center; padding: 0 13px; font-size: 14px; pointer-events: none; white-space: pre; }
         .pc-ghost i { visibility: hidden; font-style: normal; }
-        .pc-ghost b { font-weight: 500; color: #6d757d; text-transform: none; }
+        .pc-ghost b { font-weight: 500; color: #8e969e; text-transform: none; }
         /* the latest price of what is typed, at the right end of its box: a press writes it into the entry */
         .pc-live { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); height: 26px; padding: 0 8px; border: none; border-radius: 7px;
                    display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.055); color: #c7cdd2; cursor: pointer;
@@ -9121,22 +13440,23 @@ export default function PnlCalendar() {
         .pc-live em.dn { color: #ff8d97; }
         .pc-live.old { color: #8a9299; }
         .pc-live.old i { background: #6d757d; }
-        .pc-live.old em { color: #6d757d; }
+        .pc-live.old em { color: #8e969e; }
         /* stock calculator: the lots, and what they come to in rupiah beside them */
         .pc-line.lots { grid-template-columns: 66px minmax(0, 0.62fr) minmax(0, 1fr); }
-        .pc-conv { font-size: 14px; color: #6d757d; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pc-conv { font-size: 14px; color: #8e969e; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .pc-conv b { font-weight: 700; color: #e8eaec; margin-left: 3px; }
         .pc-conv.off b { color: #50575e; font-weight: 600; }
-        .pc-cap { margin: 2px 0 1px; color: #6d757d; letter-spacing: 0.08em; }
+        .pc-cap { margin: 2px 0 1px; color: #8e969e; letter-spacing: 0.08em; }
         .pc-held { font-size: 12.5px; color: #8a9299; font-variant-numeric: tabular-nums; }
         .pc-unit { position: relative; display: block; transition: opacity .2s ease; }
         .pc-unit .pc-in { padding-right: 26px; }
-        .pc-unit > span { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); color: #6d757d; font-size: 12.5px; pointer-events: none; }
+        .pc-unit.wide .pc-in:placeholder-shown { padding-right: 46px; }     /* room for "auto" at the end of the empty IM box */
+        .pc-unit > span { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); color: #8e969e; font-size: 12.5px; pointer-events: none; }
         .pc-rest { font-size: 13px; color: #8a9299; text-align: right; padding-right: 11px; font-variant-numeric: tabular-nums; }
         .pc-unit.off { opacity: 0.38; }                        /* this target stands in for the full TP: its % is not used */
         /* long / short: pressed is locked by hand; the faint one is what the levels say */
         .pc-side { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .pc-side-b { height: 36px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.10); background: rgba(24,27,31,0.62); color: #6d757d; cursor: pointer;
+        .pc-side-b { height: 36px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.10); background: rgba(24,27,31,0.62); color: #8e969e; cursor: pointer;
                      font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
                      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
                      transition: color .18s ease, border-color .18s ease, background .18s ease; }
@@ -9148,17 +13468,24 @@ export default function PnlCalendar() {
         .pc-side-b.long.on { color: #a5efcd; border-color: rgba(61,220,151,0.55); background: rgba(61,220,151,0.12); }
         .pc-side-b.short.on { color: #ffb3bb; border-color: rgba(255,93,108,0.55); background: rgba(255,93,108,0.12); }
         .pc-rule { height: 1px; background: rgba(255,255,255,0.07); margin: 5px 0; }
-        .pc-x { position: absolute; right: -20px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #6d757d; cursor: pointer;
+        .pc-x { position: absolute; right: -20px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #8e969e; cursor: pointer;
                 font-size: 17px; line-height: 1; padding: 2px; transition: color .15s ease; }
         .pc-x:hover { color: #ff8d97; }
         .pc-add { align-self: flex-start; margin-left: 76px; background: none; border: 1px dashed rgba(255,255,255,0.17); color: #8a9299; border-radius: 9px;
                   padding: 5px 11px; font-size: 12px; cursor: pointer; transition: color .15s ease, border-color .15s ease; }
         .pc-add:hover { color: #e8eaec; border-color: rgba(255,255,255,0.34); }
         .pc-go-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
-        .pc-clear { background: none; border: none; color: #6d757d; font-size: 12px; cursor: pointer; padding: 6px 2px; transition: color .15s ease; }
+        .pc-clear { background: none; border: none; color: #8e969e; font-size: 12px; cursor: pointer; padding: 6px 2px; transition: color .15s ease; }
         .pc-clear:hover { color: #e8eaec; }
         .pc-clear.test { color: #b9a862; }
         .pc-clear.test:hover { color: #e3cd77; }
+        /* undo / redo in both calculators: small, but in a box of their own so they are seen; greyed out with nothing to go back or forward to */
+        .pc-undo { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: rgba(255,255,255,0.055); }
+        .pc-undo button { width: 27px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: none; border-radius: 7px;
+                          background: none; color: #b4bbc2; cursor: pointer; transition: background .16s ease, color .16s ease, opacity .2s ease; }
+        .pc-undo button .msym { font-size: 17px; }
+        .pc-undo button:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .pc-undo button.off { opacity: 0.3; pointer-events: none; }
         /* the enter button: grey, blue under the pointer */
         .pc-go { width: 58px; height: 40px; border-radius: 11px; border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.08); color: #9aa3ab;
                  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
@@ -9202,29 +13529,29 @@ export default function PnlCalendar() {
         .pc-body { overflow-clip-margin: 5px; }
         .pc-res-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
         .pc-sym { font-size: 17px; font-weight: 800; letter-spacing: 0.02em; }
-        .pc-sym span { color: #6d757d; font-weight: 600; }
+        .pc-sym span { color: #8e969e; font-weight: 600; }
         .pc-dir { font-size: 10px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 9px; border-radius: 99px; border: 1px solid; }
         .pc-dir.long { color: #8fd7a4; border-color: rgba(143,215,164,0.32); background: rgba(61,220,151,0.07); }
         .pc-dir.short { color: #e2808c; border-color: rgba(226,128,140,0.32); background: rgba(255,93,108,0.07); }
         .pc-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 4px; }
         .pc-tile { border-radius: 13px; padding: 10px 13px 11px; min-width: 0; }
-        .pc-tile-l { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #6d757d; }
+        .pc-tile-l { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8e969e; }
         .pc-tile-v { font-size: 19px; font-weight: 800; margin-top: 4px; color: #c7cdd2; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .pc-tile-v span { font-size: 12px; font-weight: 600; color: #8a9299; }
         .pc-tile.key .pc-tile-v { color: #ffffff; }
         .pc-title { font-size: 11.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #9aa3ab; margin: 16px 0 3px; }
-        .pc-title span { color: #6d757d; letter-spacing: 0.04em; font-weight: 600; }
+        .pc-title span { color: #8e969e; letter-spacing: 0.04em; font-weight: 600; }
         .pc-row { display: grid; grid-template-columns: 1.15fr 0.8fr 0.8fr 2fr; align-items: baseline; gap: 8px; padding: 7px 2px;
                   border-bottom: 1px solid rgba(255,255,255,0.055); font-size: 13.5px; color: #c7cdd2; font-variant-numeric: tabular-nums; }
         .pc-row.rr { grid-template-columns: 1.15fr 2fr 0.8fr 0.8fr; }
         .pc-row > :nth-child(n+2) { text-align: right; }
-        .pc-row.h { font-size: 10px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: #6d757d; padding: 4px 2px 6px; }
+        .pc-row.h { font-size: 10px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: #8e969e; padding: 4px 2px 6px; }
         .pc-row.t { border-bottom: none; font-weight: 700; color: #e8eaec; }
         .pc-row .k { font-weight: 700; color: #e8eaec; white-space: nowrap; }
         .pc-row .k i { font-style: normal; font-weight: 500; color: #8a9299; }
         .pc-pos { color: #5ee3a9; font-weight: 700; }
         .pc-neg { color: #ff8d97; font-weight: 700; }
-        .pc-2nd { color: #7d858d; font-weight: 500; }
+        .pc-2nd { color: #959da5; font-weight: 500; }
         .pc-rr { font-weight: 800; color: #e8eaec; }
 
         /* ---------- greeting (card -> year) ---------- */
@@ -9385,11 +13712,11 @@ export default function PnlCalendar() {
         /* ---------- year stack ---------- */
         /* the stack fills the window between the header and the footer (258px is what those two take), but is never
            smaller than it used to be. --yb is the height of one year: the stack minus the peek at its neighbours. */
-        .year-viewport { --yv: max(480px, calc(100vh - 258px)); --yb: calc(var(--yv) - ${YEAR_PEEK}px);
+        .year-viewport { --yv: max(480px, calc(100vh - 296px)); --yb: calc(var(--yv) - ${YEAR_PEEK}px);
                          height: var(--yv); overflow: hidden; margin-top: 2px; }
         /* quick add (finance yearly panel): one small row between the header and the year stack, which gives up
            QADD_H px of its height for it */
-        .year-viewport.with-qadd { --yv: max(480px, calc(100vh - 258px - ${QADD_H}px)); }
+        .year-viewport.with-qadd { --yv: max(480px, calc(100vh - 296px - ${QADD_H}px)); }
         /* the box is 46px tall and starts 8px up in the header's bottom margin; 10px stay clear under it (6 here and
            the stack's own 2px top margin, which no longer folds into the header's) */
         .qadd-row { display: flex; height: ${QADD_H + 6}px; margin-top: -8px; align-items: flex-start; }
@@ -9439,28 +13766,34 @@ export default function PnlCalendar() {
           78% { opacity: 1; transform: translateX(0); } 100% { opacity: 0; transform: translateX(6px); }
         }
         .year-track {
-          transition: transform .5s var(--ease-soft);
+          transition: transform .72s var(--ease-soft);
           will-change: transform;
         }
         .year-track.shifting { opacity: 0.92; }
         .year-block {
           height: var(--yb); padding-top: 4px;
           opacity: 0.13; transform: scale(0.965);
-          transition: opacity .4s ease, transform .4s var(--ease-soft);
+          transition: opacity .6s ease, transform .72s var(--ease-soft);
           cursor: pointer;
         }
         .year-block.active { opacity: 1; transform: scale(1); cursor: default; }
         .year-block-tag {
-          font-size: 12px; font-weight: 700; color: #6d757d; letter-spacing: 0.12em;
+          font-size: 12px; font-weight: 700; color: #8e969e; letter-spacing: 0.12em;
           margin-bottom: 8px; opacity: 0; transition: opacity .4s ease;
         }
         .year-block:not(.active) .year-block-tag { opacity: 1; }
 
         /* ---------- launch screen ---------- */
+        /* nothing on the stage is text to be marked: a second press right behind the first is a double click to the engine,
+           which marked the word under the pointer, the engraved Rassam on a card, in the selection's green (he reported it) */
+        /* (.th beside a :hover on the stage: the first launch's rehearsal has a pointer of its own making, which no
+           :hover answers to: see stageTour. A new :hover on the stage needs its .th, or what it shows is first built
+           under his pointer) */
         .launch-veil {
           position: fixed; inset: 0; z-index: 200; overflow: hidden;
           display: flex; align-items: center; justify-content: center;
           animation: veilIn .6s ease both;
+          -webkit-user-select: none; user-select: none;
         }
         .launch-veil.out { animation: veilOut .6s cubic-bezier(0.4,0,0.2,1) both; }
         @keyframes veilIn { from { opacity: 0; } to { opacity: 1; } }
@@ -9492,9 +13825,39 @@ export default function PnlCalendar() {
         }
         .pick-back .msym { font-size: 24px; transform: translateX(5px); transition: transform .28s var(--ease); }
         .pick-back.on { pointer-events: auto; }
-        .pick-back.on:hover, .pick-back.on:focus-visible { opacity: 1; }
-        .pick-back.on:hover .msym, .pick-back.on:focus-visible .msym { transform: none; }
+        .pick-back.on:hover, .pick-back.on:focus-visible, .pick-back.on.th { opacity: 1; }
+        .pick-back.on:hover .msym, .pick-back.on:focus-visible .msym, .pick-back.on.th .msym { transform: none; }
         .pick-back:active { color: #e8eaec; }
+        /* who is using the app, bottom right of every panel before an app is entered (8 October 2026: "a select user
+           button", "hidden but visible enough for the naked eye to see"): the account's picture at a third of its
+           strength, whole with its words under the pointer */
+        .who-btn { position: fixed; right: 20px; bottom: 18px; z-index: 6; display: flex; align-items: center; gap: 10px; padding: 6px;
+                   background: none; border: none; color: #c7cdd2; font-size: 12px; font-weight: 500; letter-spacing: 0.01em; cursor: pointer;
+                   opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+        .who-btn.on { opacity: 0.34; pointer-events: auto; }
+        .who-btn.on:hover, .who-btn.on:focus-visible, .who-btn.on.th { opacity: 1; }
+        .who-pic { display: block; width: 32px; height: 32px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 6px 16px rgba(0,0,0,0.35); }
+        .who-t { white-space: nowrap; opacity: 0; transform: translateX(6px); transition: opacity .2s ease, transform .28s var(--ease); }
+        .who-btn.on:hover .who-t, .who-btn.on:focus-visible .who-t, .who-btn.on.th .who-t { opacity: 1; transform: none; }
+        /* the side's title on the wallets panel and the trading panel: pixel letters with real thickness (copies of the
+           word set back one behind the other, like the coin's edge), floating and leaning after the pointer.
+           Three nested boxes as on the coin: .sw-tilt (pointer, written from JS), .sw-float (idle float), .sw-3d (resting
+           pose). Opacity only on .side-word: on those three it would flatten the letters */
+        .side-word { position: fixed; left: 0; right: 0; top: 52px; z-index: 5; display: flex; justify-content: center; pointer-events: none;
+                     font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 24px; line-height: 1; letter-spacing: 3px;
+                     opacity: 0; transform: translateY(-10px); transition: opacity .2s ease, transform .3s var(--ease); }
+        .side-word.on { opacity: 1; transform: none; transition: opacity .4s ease .22s, transform .55s var(--ease) .22s; }
+        .sw-tilt { transform: perspective(700px); transform-style: preserve-3d; transition: transform .7s cubic-bezier(0.22,1,0.36,1); will-change: transform; }
+        .sw-float { transform-style: preserve-3d; animation: swFloat 7s ease-in-out infinite; animation-play-state: paused; }
+        .side-word.on .sw-float { animation-play-state: running; }
+        @keyframes swFloat {
+          0%, 100% { transform: translate3d(0, 0, 0) rotateY(-6deg) rotateX(2deg); }
+          50%      { transform: translate3d(0, -7px, 0) rotateY(6deg) rotateX(-2deg); }
+        }
+        .sw-3d { position: relative; transform-style: preserve-3d; }
+        .sw-l, .sw-face { font-family: 'Press Start 2P', 'Inter', sans-serif; font-weight: 400; -webkit-font-smoothing: none; }
+        .sw-l { position: absolute; left: 0; top: 0; white-space: nowrap; }
+        .sw-face { position: relative; display: block; white-space: nowrap; color: #f4f6f8; }
         @keyframes wrapIn { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
 
         /* ---------- stage: wallet (phase 1) -> card (phase 2) ---------- */
@@ -9510,15 +13873,30 @@ export default function PnlCalendar() {
              filter makes every layer of the wallet be drawn again, and the first time that happened in a launch (the
              first switch between wallet and coin) it froze a few frames. Now only the blur's strength changes */
           filter: blur(0px);
-          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease;
+          /* --cp: how far its card is out (0 in the pocket, 1 out). The wallet drops away by that much */
+          --cp: 0; translate: 0 calc(var(--cp) * (50vh + 76px));
+          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, --cp ${CARD_IN_MS}ms ${CARD_IN_EASE};
         }
         .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(430px) scale(0.56); opacity: 0.65; z-index: 3; }
         .wallet-unit.side-left  { transform: translate(-50%, -50%) translateX(-430px) scale(0.56); opacity: 0.65; z-index: 3; }
-        .wallet-unit.side-right:hover, .wallet-unit.side-left:hover { opacity: 0.92; }
+        .wallet-unit.side-right:hover, .wallet-unit.side-left:hover, .wallet-unit.side-right.th, .wallet-unit.side-left.th { opacity: 0.92; }
         /* two steps away: parked further out and out of reach until you step across */
         .wallet-unit.far.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
         .wallet-unit.far.side-left  { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; }
-        .phase2 .wallet-unit.active { transform: translate(-50%, calc(50vh - 96px)); }
+        /* The card leaves the wallet as one piece, in one move (he asked for no fade, for any change of asset to be
+           invisible, and found the first version, which rose, stopped and set off again, janky and too slow).
+           One number does all of it: --cp, 0 in the pocket and 1 out, eased once (CARD_OUT_MS out, CARD_IN_MS back).
+           The wallet drops away by it; the pocket card cancels that drop, so on screen it only drifts to the middle
+           and grows to the big card's size, the pocket's walls hiding it the way they really would; the big card
+           makes exactly the same move on top, switched off. Once the card is clear of the pocket (--ct) the big one
+           is shown in its place, in the middle of the move; since the two are the same picture on the same spot at
+           every moment, when that happens can't be seen. Going back is the same number running down.
+           Because everything hangs on that one number, a press in the middle just turns it round from where it is:
+           there are no timers and nothing is locked. Stepping to another wallet while the card is still coming back
+           hands it to the pocket card at once (.away), which then finishes inside its wallet as that moves aside.
+           The number is written to "translate" and to the cards' own transforms, never to a property that has a
+           transition of its own (the wallet's "transform" has one). */
+        .phase2 .wallet-unit.active { --cp: 1; transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, --cp ${CARD_OUT_MS}ms ${CARD_OUT_EASE}; }
         .phase2 .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(660px) scale(0.45); opacity: 0; pointer-events: none; }
         .phase2 .wallet-unit.side-left  { transform: translate(-50%, -50%) translateX(-660px) scale(0.45); opacity: 0; pointer-events: none; }
         /* selections panel: a carousel of two, built like the wallets. The one in focus is in the middle; the other is
@@ -9529,7 +13907,7 @@ export default function PnlCalendar() {
           transform: translate(-50%, -50%) translateX(-430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s;
         }
-        .pick-coin .wallet-unit.active:hover { opacity: 0.92; }
+        .pick-coin .wallet-unit.active:hover, .pick-coin .wallet-unit.active.th { opacity: 0.92; }
         /* the coin was pressed: the wallet slips away, and the trading selection (coin and IDX globe) takes the stage */
         .markets .wallet-unit.active, .trade .wallet-unit.active { transform: translate(-50%, -50%) translateX(-700px) scale(0.45); opacity: 0; pointer-events: none; }
         .pick .wallet-unit.side-right, .markets .wallet-unit.side-right, .trade .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
@@ -9560,16 +13938,30 @@ export default function PnlCalendar() {
         /* cards inside the pocket */
         .slot-card {
           position: absolute; left: 34px; width: 384px; height: 242px;
-          border-radius: 11px; overflow: hidden; container-type: inline-size; z-index: 2;
+          border-radius: calc(20px * var(--csx, 0.6857)) / calc(20px * var(--csy, 0.7118)); overflow: hidden; z-index: 2;
           box-shadow: 0 6px 14px rgba(0,0,0,0.4);
           will-change: transform, opacity;
-          transition: transform .85s cubic-bezier(0.22,1,0.36,1), opacity .4s ease;
+          /* out of the pocket (--cp): it cancels the wallet's drop, drifts to the middle of the window (--ty),
+             straightens (--rot) and grows to the big card's size */
+          --cp: 0; transition: --cp ${CARD_IN_MS}ms ${CARD_IN_EASE};
+          translate: 0 calc(var(--cp) * (-50vh - 76px));
+          transform: translateY(calc(var(--cp) * var(--ty))) rotate(calc((1 - var(--cp)) * var(--rot)))
+                     scale(calc(1 + var(--cp) * (1 / var(--csx, 0.6857) - 1)), calc(1 + var(--cp) * (1 / var(--csy, 0.7118) - 1)));
         }
+        /* the face, laid out at the big card's size and scaled to the pocket card's */
+        .slot-in { position: absolute; left: 0; top: 0; width: min(560px, 84vw); height: min(340px, 44vh); container-type: inline-size;
+                   transform-origin: 0 0; transform: scale(var(--csx, 0.6857), var(--csy, 0.7118));
+                   /* a surface of its own, drawn at full size and scaled like the big card's, so the two are the same picture */
+                   will-change: transform; }
         /* back card: sits behind both pocket walls */
-        .slot-card.gold { top: 10px; transform: rotate(-0.6deg); z-index: 2; }
+        .slot-card.gold { top: 10px; --ty: 41px; --rot: -0.6deg; z-index: 2; }
         /* front card: sits inside the front pocket, ahead of the rear wall */
-        .slot-card.plat { top: 92px; transform: rotate(0.35deg); z-index: 4; }
-        .slot-card.taken { opacity: 0; transform: translateY(-46px); }
+        .slot-card.plat { top: 92px; --ty: -41px; --rot: 0.35deg; z-index: 4; }
+        /* the pressed card goes out … */
+        .phase2 .wallet-unit.active .slot-card.sel { --cp: 1; transition: --cp ${CARD_OUT_MS}ms ${CARD_OUT_EASE}; }
+        /* … and is switched off once the big card stands in for it (a hair later than that one comes on, so there
+           is never a frame with neither) */
+        .wallet-unit.active .slot-card.sel { opacity: clamp(0, calc((var(--ct, 0.55) + 0.004 - var(--cp)) * 500), 1); }
 
         /* front pocket with the puzzle panels */
         .puzzle-front {
@@ -9653,6 +14045,10 @@ export default function PnlCalendar() {
         }
         .anagram-dark { opacity: 0.42; filter: drop-shadow(0 1px 0 rgba(255,255,255,0.14)); }
         .leather-shine { position: absolute; inset: 0; pointer-events: none; transition: opacity .45s ease; overflow: hidden; }
+        /* the puzzle wallet's front is cut away at a slant, and the cards show through the part cut off: there the light
+           keeps to the leather (.lp-main's own outline). As a plain box it also lit the cards, from the wallet's top line
+           down: a straight line of light across the back card under the pointer (he sent a picture of it) */
+        .puzzle-front .leather-shine { clip-path: polygon(0 34%, 100% 8%, 100% 100%, 0 100%); }
         /* light spot is pre-painted once and slid with transform (200%-size box centred on the cursor) */
         .shine-spot { position: absolute; left: -100%; top: -100%; width: 200%; height: 200%; will-change: transform;
                       transform: translate3d(25%, 25%, 0); }
@@ -9877,19 +14273,40 @@ export default function PnlCalendar() {
           width: min(560px, 84vw); height: min(340px, 44vh);
           cursor: pointer; perspective: 1300px;
           will-change: transform, opacity;
-          transition: transform .95s cubic-bezier(0.22,1,0.36,1), opacity .5s ease;
+          /* the pocket card's own move, made on top of it: from its spot (--py: its middle against the window's), tilt
+             and size to the middle of the window. Switched off until the card is clear of the pocket (--ct), but drawn
+             all along (will-change keeps it ready, so taking over costs nothing) */
+          --cp: 0; --cq: var(--cp); --py: 41px; --rot: 0.35deg;
+          opacity: clamp(0, calc((var(--cp) - var(--ct, 0.55)) * 500), 1); pointer-events: none;
+          transition: --cp ${CARD_IN_MS}ms ${CARD_IN_EASE};
+          transform: translate(-50%, -50%) translateY(calc((1 - var(--cp)) * var(--py))) rotate(calc((1 - var(--cp)) * var(--rot)))
+                     scale(calc(var(--csx, 0.6857) + var(--cp) * (1 - var(--csx, 0.6857))), calc(var(--csy, 0.7118) + var(--cp) * (1 - var(--csy, 0.7118))));
         }
-        .phase1 .big-card { opacity: 0; transform: translate(-50%, -50%) translateY(70px) scale(0.66); pointer-events: none; }
-        .phase2 .big-card { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        .big-card.from-back { --py: -41px; --rot: -0.6deg; }
+        .phase2 .big-card { --cp: 1; pointer-events: auto; transition: --cp ${CARD_OUT_MS}ms ${CARD_OUT_EASE}; }
+        /* its wallet is no longer the one in the middle: the pocket card has it */
+        .big-card.away { opacity: 0; }
+        /* its shadow: the pocket card's own where it takes over, the deep one once it is out (--cq is --cp handed down) */
+        .card-shadow { position: absolute; inset: 0; border-radius: 20px; pointer-events: none; }
+        .card-shadow.near { box-shadow: 0 calc(6px / var(--csy, 0.7118)) calc(14px / var(--csx, 0.6857)) rgba(0,0,0,0.4);
+                            opacity: clamp(0, calc((1 - var(--cq)) / (1 - var(--ct, 0.55))), 1); }
+        .card-shadow.far { box-shadow: 0 34px 80px rgba(0,0,0,0.55); transition: box-shadow .4s ease;
+                           opacity: clamp(0, calc((var(--cq) - var(--ct, 0.55)) / (1 - var(--ct, 0.55))), 1); }
+        .big-card:hover .card-shadow.far, .big-card.th .card-shadow.far { box-shadow: 0 46px 110px rgba(0,0,0,0.6); }
+        /* the lights on the card come on only once it is out, and are gone before the pocket card takes over */
+        .phase2 .card-sheen:not(.lit) { transition-delay: .25s; }
+        .phase1 .card-gloss, .phase1 .card-sheen, .phase1 .card-edge { transition-duration: .1s; }
         .card-tilt { width: 100%; height: 100%; transform-style: preserve-3d; will-change: transform; }
         .big-card.out, .wallet-unit.out { animation: cardOut .55s cubic-bezier(0.5,0,0.75,0) both; }
         @keyframes cardOut { to { opacity: 0; transform: translate(-50%, -50%) translateY(-30px) scale(1.07); } }
-        .launch-float { width: 100%; height: 100%; animation: floaty 7s ease-in-out infinite; transform-style: preserve-3d; }
+        /* the idle float only runs once the card is out, from rest (so it adds nothing at the hand-over) */
+        .launch-float { width: 100%; height: 100%; transform-style: preserve-3d; }
+        .phase2 .launch-float { animation: floaty 7s ease-in-out ${CARD_OUT_MS}ms infinite; }
         .launch-float.still { animation-play-state: paused; }
         @keyframes floaty {
-          0%   { transform: translate3d(0, 0, 0) rotate(-0.25deg); }
-          50%  { transform: translate3d(0, -12px, 0) rotate(0.25deg); }
-          100% { transform: translate3d(0, 0, 0) rotate(-0.25deg); }
+          0%   { transform: translate3d(0, 0, 0) rotate(0deg); }
+          50%  { transform: translate3d(0, -12px, 0) rotate(0.4deg); }
+          100% { transform: translate3d(0, 0, 0) rotate(0deg); }
         }
 
         /* ---------- selections panel: the trading coin ---------- */
@@ -9910,19 +14327,58 @@ export default function PnlCalendar() {
            it waits a moment, so it never shows through the wallet that is leaving the same spot */
         .coin-unit.side { transform: translate(-50%, -50%) translateX(430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
                           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease .12s, filter 0s linear .26s, visibility 0s; }
-        .coin-unit.side:hover { opacity: 0.92; }
+        .coin-unit.side:hover, .coin-unit.side.th { opacity: 0.92; }
         /* trading selection with the globe in focus: the coin is tucked to the left instead */
         .coin-unit.side.left { transform: translate(-50%, -50%) translateX(-430px) scale(0.56); }
         /* the other one was pressed: this one just fades where it is */
         .coin-unit.side.gone, .idx-unit.side.gone { opacity: 0; pointer-events: none; }
+        /* three on the trading panel (coin, globe, forex coin): the one two places from the middle is out of sight
+           beyond its neighbour, as a far wallet is, and the globe can be tucked to the left as well */
+        .idx-unit.side.left { transform: translate(-50%, -50%) translateX(-430px) scale(0.56); }
+        .coin-unit.side.far { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
+        .coin-unit.side.left.far { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); }
+        /* the forex die waits off to the right. It is first drawn a moment after the trading panel has opened, out of
+           sight, so it is not painted in the middle of that move; asked for sooner, it is there at once */
+        .coin-unit.fx.away { transform: translate(-50%, -50%) translateX(760px) scale(0.42); }
+        .coin-unit.fx.side.far { transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s, visibility 0s linear .9s; }
+        /* the forex die: a cube turned corner on, so the top and two sides show (rotateX by the angle that makes the
+           three alike, rotateY by 45). The light is painted on the faces once, for that pose: brightest on top, the
+           left side in half shade, the right in shade. Each face is a layer of its own, painted at full size from the
+           start. The core is a slightly smaller cube in the shade's colour: it fills the corners the faces' round
+           corners leave open. While it floats it rocks a little about its upright; under the pointer and tucked away
+           it holds still, like the float */
+        .fx-die { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d;
+                  transform: rotateX(-35.26deg) rotateY(-45deg); animation: fxRock 9s ease-in-out infinite alternate; }
+        .coin-float.still .fx-die { animation-play-state: paused; }
+        @keyframes fxRock { from { transform: rotateX(-35.26deg) rotateY(-38deg); } to { transform: rotateX(-35.26deg) rotateY(-52deg); } }
+        .fxd-f, .fxd-core { position: absolute; backface-visibility: hidden; }
+        .fxd-f { --z: 92px; left: -92px; top: -92px; width: 184px; height: 184px; border-radius: 28px; will-change: transform;
+                 display: flex; align-items: center; justify-content: center;
+                 box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5), inset 0 0 26px rgba(110,100,80,0.16); }
+        .fxd-core { --z: 86px; left: -86px; top: -86px; width: 172px; height: 172px; background: #b9b5aa; }
+        .fx-die .front { transform: translateZ(var(--z)); }
+        .fx-die .back { transform: rotateY(180deg) translateZ(var(--z)); }
+        .fx-die .right { transform: rotateY(90deg) translateZ(var(--z)); }
+        .fx-die .left { transform: rotateY(-90deg) translateZ(var(--z)); }
+        .fx-die .top { transform: rotateX(90deg) translateZ(var(--z)); }
+        .fx-die .bottom { transform: rotateX(-90deg) translateZ(var(--z)); }
+        .fxd-f.top, .fxd-f.bottom { background: linear-gradient(135deg, #ffffff, #efede6); }
+        .fxd-f.front, .fxd-f.back { background: linear-gradient(160deg, #e9e6de, #d6d2c8); }
+        .fxd-f.right, .fxd-f.left { background: linear-gradient(160deg, #cfcbc0, #b7b3a7); }
+        /* the symbols: Inter at its heaviest, pressed in (a light lip below, a dark one above). The one on top is
+           turned so that it stands upright in the diamond the top is seen as */
+        .fxd-f b { display: block; font-size: 122px; font-weight: 800; line-height: 1; text-shadow: 0 2px 1px rgba(255,255,255,0.7), 0 -1px 1px rgba(0,0,0,0.3); }
+        .fxd-f.top b, .fxd-f.bottom b { color: #17935f; transform: rotate(-45deg); }
+        .fxd-f.front b, .fxd-f.back b { color: #2458c4; }
+        .fxd-f.right b, .fxd-f.left b { color: #cf3447; }
         /* wallets panel: it drops back and is gone before the next wallet arrives in its place, then is switched off
            so it costs nothing there */
         .coin-unit.away { transform: translate(-50%, -50%) translateX(520px) scale(0.42); opacity: 0; visibility: hidden; pointer-events: none; filter: blur(2px);
                           transition: transform .5s cubic-bezier(0.22,1,0.36,1), opacity .18s ease, visibility 0s linear .5s; }
-        .coin-shadow { position: absolute; inset: -16%; border-radius: 50%; pointer-events: none; transform: translate3d(6px, 36px, 0) scale(0.94, 1);
+        .coin-shadow { position: absolute; inset: -16%; border-radius: 50%; pointer-events: none; transform: translate3d(6px, 36px, 0) scale(0.94, 1); will-change: transform;
                        background: radial-gradient(closest-side, rgba(0,0,0,0.58) 0%, rgba(0,0,0,0.42) 42%, rgba(0,0,0,0.16) 70%, transparent 100%); }
         /* three nested 3D boxes: the cursor tilt (written from JS), the idle float, and the coin in its resting pose */
-        .coin-tilt, .coin-float, .coin-3d { position: absolute; inset: 0; transform-style: preserve-3d; }
+        .coin-tilt, .coin-float, .coin-3d, .coin-s2, .coin-s3 { position: absolute; inset: 0; transform-style: preserve-3d; }
         .coin-tilt { pointer-events: none; will-change: transform; }
         /* the float runs only while the coin is in focus, and holds still under the pointer */
         .coin-float { animation: coinFloat 7s ease-in-out infinite; }
@@ -9931,26 +14387,70 @@ export default function PnlCalendar() {
           0%, 100% { transform: translate3d(0, 0, 0) rotateY(0deg) rotateX(0deg); }
           50%      { transform: translate3d(0, -9px, 0) rotateY(7deg) rotateX(-2.5deg); }
         }
-        .coin-3d { transform: rotateX(${COIN_REST.rx}deg) rotateY(${COIN_REST.ry}deg); }
-        /* pressed: a coin flip on the spot. It tumbles twice end over end while turning once round, with a small hop,
-           and lands back in its resting pose */
-        .trade-crypto .coin-3d { animation: coinFlip 1.1s cubic-bezier(0.3,0.1,0.2,1) forwards, coinHop 1.1s linear; }
-        /* the flip's motion blur: directional, along the tumble (up and down), like a real one. CSS can only blur
-           evenly, so three plain boxes sit round the coin: the middle one blurs, while the outer one squeezes it
-           sideways to a quarter and the inner one stretches it back four times. The blur is therefore four times
-           weaker sideways than up and down. Strongest while the coin is fastest, gone as it settles. The boxes do
-           nothing outside the flip, and they are outside the 3D boxes (a filter there would flatten the coin); the
-           innermost one carries the perspective. An SVG blur filter did this too, but made the flip stutter. */
+        .coin-3d { transform: rotateX(${COIN_REST.rx}deg) rotateY(${COIN_REST.ry}deg); transition: transform .7s cubic-bezier(0.22,1,0.36,1); }
+        /* trading panel (coin and globe): the coin turns to face forward (he asked for it) */
+        .markets .coin-3d, .trade .coin-3d { transform: rotateX(0deg) rotateY(0deg); }
+        /* pressed: a coin toss, seen from the front: three whole turns, each about an axis of its own (7 October 2026:
+           he meant a new random rotation for every spin of a toss, not one for the whole toss). Three boxes turn, one
+           inside the other: .coin-3d makes the first turn, .coin-s2 the second, .coin-s3 the third. Each is a plain
+           transform keyframe, so the graphics process runs them and a busy page can't make them stutter. A whole turn
+           about any axis ends facing forward, so the next can set off another way from there, and the last one lands
+           facing forward whatever was rolled (enterTrade).
+           No seam between the turns: a turn does not stop before the next begins. Its last 55° or so run out while
+           the next one's first 50° run in, both close to facing forward, where two small turns together are just a
+           lean on a slant in between. Each turn's speed is a straight ramp there (down for the one, up for the
+           other), so together they keep the speed of the toss: about 3.8 turns a second off the thumb, then 3.4, then
+           3.3, slowing evenly to rest. The figures in the keyframes are that sum worked out; change the times and
+           they have to be worked out again.
+           Keep the overlap this short: two turns at rates of their own for the WHOLE toss is what once sent the coin
+           through slanted poses, which he found very weird. The lean it had under the pointer is let go of at once. */
+        .coin-unit.toss .coin-3d { animation: coinSpin1 .3s linear forwards, coinHop 1.1s linear; }
+        .coin-unit.toss .coin-s2 { animation: coinSpin2 .38s linear .22s backwards; }
+        .coin-unit.toss .coin-s3 { animation: coinSpin3 .6s linear .5s backwards; }
+        @keyframes coinSpin1 {
+          0%     { transform: rotate3d(var(--f1x, 1), var(--f1y, 0), var(--f1z, 0), 0deg); }
+          73.33% { transform: rotate3d(var(--f1x, 1), var(--f1y, 0), var(--f1z, 0), calc(var(--f1d, 360deg) * 0.8462)); animation-timing-function: cubic-bezier(0.333, 0.667, 0.667, 1); }
+          100%   { transform: rotate3d(var(--f1x, 1), var(--f1y, 0), var(--f1z, 0), var(--f1d, 360deg)); }
+        }
+        @keyframes coinSpin2 {
+          0%     { transform: rotate3d(var(--f2x, 0), var(--f2y, 1), var(--f2z, 0), 0deg); animation-timing-function: cubic-bezier(0.333, 0, 0.667, 0.333); }
+          21.05% { transform: rotate3d(var(--f2x, 0), var(--f2y, 1), var(--f2z, 0), calc(var(--f2d, 360deg) * 0.1379)); }
+          73.68% { transform: rotate3d(var(--f2x, 0), var(--f2y, 1), var(--f2z, 0), calc(var(--f2d, 360deg) * 0.8276)); animation-timing-function: cubic-bezier(0.333, 0.667, 0.667, 1); }
+          100%   { transform: rotate3d(var(--f2x, 0), var(--f2y, 1), var(--f2z, 0), var(--f2d, 360deg)); }
+        }
+        @keyframes coinSpin3 {
+          0%     { transform: rotate3d(var(--f3x, 1), var(--f3y, 1), var(--f3z, 0), 0deg); animation-timing-function: cubic-bezier(0.333, 0, 0.667, 0.333); }
+          16.67% { transform: rotate3d(var(--f3x, 1), var(--f3y, 1), var(--f3z, 0), calc(var(--f3d, 360deg) * 0.1667)); animation-timing-function: cubic-bezier(0.333, 0.667, 0.667, 1); }
+          100%   { transform: rotate3d(var(--f3x, 1), var(--f3y, 1), var(--f3z, 0), var(--f3d, 360deg)); }
+        }
+        /* the toss's motion blur: directional, along the tumble, like a real one. CSS can only blur evenly, so three
+           plain boxes sit round the coin: the middle one blurs, while the outer one squeezes it to a quarter along
+           the turn's axis and the inner one stretches it back four times. The blur is therefore four times weaker
+           along the axis than across it, the way the coin's face is moving. Both boxes are turned to the axis of the
+           turn that is under way (--fa1, --fa2, --fa3), swinging from one to the next while the turns hand over, in
+           step with each other, so that together they always come to nothing. Strongest while the coin is fastest,
+           gone as it settles. The boxes do nothing outside the toss, and they are outside the 3D boxes (a filter
+           there would flatten the coin); the innermost one carries the perspective. An SVG blur filter did this too,
+           but made the toss stutter. */
         .coin-smear, .coin-smear > div, .coin-smear > div > div { position: absolute; inset: 0; pointer-events: none; }
         .coin-smear > div > div { perspective: 1300px; }
-        .trade-crypto .coin-smear { transform: scaleX(0.25); }
-        .trade-crypto .coin-smear > div { animation: coinBlur 1.1s linear backwards; }
-        .trade-crypto .coin-smear > div > div { transform: scaleX(4); }
+        .coin-unit.toss .coin-smear { transform: rotate(var(--fa3, 0deg)) scaleX(0.25); animation: coinSmearOut 1.1s linear backwards; }
+        .coin-unit.toss .coin-smear > div { animation: coinBlur 1.1s linear backwards; }
+        .coin-unit.toss .coin-smear > div > div { transform: scaleX(4) rotate(calc(-1 * var(--fa3, 0deg))); animation: coinSmearIn 1.1s linear backwards; }
         @keyframes coinBlur { 0% { filter: blur(0px); } 12% { filter: blur(11px); } 44% { filter: blur(8px); } 82%, 100% { filter: blur(0px); } }
-        @keyframes coinFlip { to { transform: rotateX(${COIN_REST.rx + 720}deg) rotateY(${COIN_REST.ry - 360}deg); } }
+        @keyframes coinSmearOut {
+          0%, 20%     { transform: rotate(var(--fa1, 0deg)) scaleX(0.25); }
+          27.3%, 45.5% { transform: rotate(var(--fa2, 0deg)) scaleX(0.25); }
+          54.5%, 100% { transform: rotate(var(--fa3, 0deg)) scaleX(0.25); }
+        }
+        @keyframes coinSmearIn {
+          0%, 20%     { transform: scaleX(4) rotate(calc(-1 * var(--fa1, 0deg))); }
+          27.3%, 45.5% { transform: scaleX(4) rotate(calc(-1 * var(--fa2, 0deg))); }
+          54.5%, 100% { transform: scaleX(4) rotate(calc(-1 * var(--fa3, 0deg))); }
+        }
         @keyframes coinHop {
           0%   { translate: 0 0; animation-timing-function: cubic-bezier(0.2,0.7,0.4,1); }
-          42%  { translate: 0 -30px; animation-timing-function: cubic-bezier(0.6,0,0.8,0.4); }
+          40%  { translate: 0 -46px; animation-timing-function: cubic-bezier(0.6,0,0.8,0.4); }
           100% { translate: 0 0; }
         }
         /* will-change on everything the coin is painted on (faces, their layers, the edge strips): they are then
@@ -9969,6 +14469,13 @@ export default function PnlCalendar() {
                        rgba(60,36,4,0) 128deg, rgba(255,251,232,0.07) 154deg, rgba(255,251,232,0.24) 180deg, rgba(255,251,232,0.07) 206deg,
                        rgba(60,36,4,0) 232deg, rgba(60,36,4,0.16) 270deg, rgba(60,36,4,0) 308deg, rgba(255,251,232,0.10) 332deg,
                        rgba(255,251,232,0.36) 360deg); }
+        /* trading panel: a light that follows the pointer over the front face (moved from JS), there only under the
+           pointer. A plain pale gold glow, no blend mode; the round box cuts it off at the coin's rim */
+        .cn-glare { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; pointer-events: none;
+                    opacity: 0; transition: opacity .4s ease; will-change: opacity; }
+        .markets .coin-unit:not(.side):hover .cn-glare, .markets .coin-unit:not(.side).th .cn-glare { opacity: 1; }
+        .cn-glare i { position: absolute; left: -50%; top: -50%; width: 200%; height: 200%; display: block; will-change: transform;
+                      background: radial-gradient(closest-side, rgba(255,252,236,0.62) 0%, rgba(255,247,214,0.3) 16%, rgba(255,240,190,0.1) 38%, rgba(255,240,190,0) 62%); }
         /* one flat strip of the smooth edge. Its two shades (--a at one side, --b at the other) are worked out per
            strip in COIN_STRIPS; the edge also darkens a little towards the back of the coin */
         .cn-strip { position: absolute; left: 50%; top: 50%; display: block; backface-visibility: hidden;
@@ -9991,7 +14498,7 @@ export default function PnlCalendar() {
         }
         .idx-unit.side { transform: translate(-50%, -50%) translateX(430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
                          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease .12s, filter 0s linear .26s, visibility 0s; }
-        .idx-unit.side:hover { opacity: 0.92; }
+        .idx-unit.side:hover, .idx-unit.side.th { opacity: 0.92; }
         .idx-unit.away { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; visibility: hidden; pointer-events: none; filter: blur(2px);
                          transition: transform .5s cubic-bezier(0.22,1,0.36,1), opacity .18s ease, visibility 0s linear .5s; }
         .idx-halo { position: absolute; inset: -16%; border-radius: 50%; pointer-events: none; transform: translate3d(6px, 36px, 0) scale(0.94, 1);
@@ -10025,10 +14532,7 @@ export default function PnlCalendar() {
           container-type: inline-size;
           position: relative; width: 100%; height: 100%;
           border-radius: 20px; overflow: hidden; isolation: isolate;
-          box-shadow: 0 34px 80px rgba(0,0,0,0.55);
-          transition: box-shadow .4s ease;
         }
-        .big-card:hover .launch-card { box-shadow: 0 46px 110px rgba(0,0,0,0.6); }
 
         .cardface { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
         .cf-metal { position: absolute; inset: 0; }
@@ -10055,13 +14559,13 @@ export default function PnlCalendar() {
         .obsidian .cf-logo     { filter: drop-shadow(0 0.2cqw 0 rgba(180,224,202,0.18)) drop-shadow(0 -0.16cqw 0.14cqw rgba(2,10,6,0.6)); }
         .cf-script {
           position: absolute; right: 7%; top: 12%;
-          font-family: 'Mrs Saint Delafield', cursive; font-size: clamp(38px, 8.6cqw, 74px);
+          font-family: 'Mrs Saint Delafield', cursive; font-size: calc(clamp(38px, 8.6cqw, 74px) * var(--fit, 1)); white-space: nowrap;
           color: rgba(58,63,69,0.78); line-height: 1;
           text-shadow: 0 1px 0 rgba(255,255,255,0.7), 0 -1px 1px rgba(0,0,0,0.18);
         }
         .cf-foot { display: flex; align-items: baseline; justify-content: space-between; }
         .cf-name {
-          font-size: clamp(9px, 2.6cqw, 15px); font-weight: 600; letter-spacing: 0.18em; color: rgba(62,68,75,0.8);
+          font-size: calc(clamp(9px, 2.6cqw, 15px) * var(--fit, 1)); white-space: nowrap; font-weight: 600; letter-spacing: 0.18em; color: rgba(62,68,75,0.8);
           text-shadow: 0 1px 0 rgba(255,255,255,0.65);
         }
         .cf-exp {
@@ -10131,7 +14635,9 @@ export default function PnlCalendar() {
         /* recap */
         .recap-link { cursor: pointer; transition: opacity .18s ease, text-shadow .25s ease; }
         .recap-link:hover { opacity: .86; text-shadow: 0 0 22px rgba(255,255,255,0.18); }
-        .wr-modal { border-radius: 24px; width: min(980px, 94vw); max-height: 90vh; overflow: auto; padding: 20px 22px 22px; transform-origin: center center;
+        /* the scroll bar's room is always there (scrollbar-gutter) and comes out of the right padding, 22px in all as on the
+           left. Before, a list opened under the tiles brought the bar in and every box was squeezed by its 11px */
+        .wr-modal { border-radius: 24px; width: min(980px, 94vw); max-height: 90vh; overflow: auto; scrollbar-gutter: stable; padding: 20px 11px 22px 22px; transform-origin: center center;
                     background: radial-gradient(60% 50% at 0% 0%, rgba(61,220,151,0.10), transparent 70%),
                                 radial-gradient(50% 60% at 100% 100%, rgba(127,182,224,0.10), transparent 70%), rgba(28,31,35,0.86) !important; }
         .wr-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(132px, auto); gap: 12px; margin-top: 8px; }
@@ -10156,7 +14662,7 @@ export default function PnlCalendar() {
         .wr-bar.dn { background: linear-gradient(0deg, #ff97a0, #ff5d6c); transform-origin: top; border-radius: 2px 2px 5px 5px; }
         .wr-bar.none { height: 3px; background: rgba(255,255,255,0.10); animation: none; margin-top: -2px; }
         @keyframes wrGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-        .wr-bar-lbl { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); font-size: 10px; color: #6d757d; }
+        .wr-bar-lbl { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); font-size: 10px; color: #8e969e; }
         .wr-bars { position: relative; }
         .wr-bar-col { cursor: default; transition: opacity .2s ease; }
         .wr-bar-tip { position: absolute; top: 0; transform: translate(-50%, -60%); z-index: 3; pointer-events: none;
@@ -10167,7 +14673,7 @@ export default function PnlCalendar() {
         .wr-tile.clickable { cursor: pointer; }
         .wr-tile.active { border-color: color-mix(in srgb, var(--acc) 65%, transparent);
                           box-shadow: 0 0 0 1px color-mix(in srgb, var(--acc) 35%, transparent), 0 10px 30px color-mix(in srgb, var(--acc) 14%, transparent); }
-        .wr-more { position: absolute; top: 14px; right: 14px; font-size: 16px !important; color: #6d757d; opacity: 0;
+        .wr-more { position: absolute; top: 14px; right: 14px; font-size: 16px !important; color: #8e969e; opacity: 0;
                    transform: translate(-4px, 4px); transition: opacity .2s ease, transform .25s cubic-bezier(0.22,1,0.36,1), color .2s ease; }
         .wr-tile.clickable:hover .wr-more, .wr-tile.active .wr-more { opacity: 1; transform: none; color: var(--acc); }
         .wr-stack-seg, .wr-leg { cursor: pointer; }
@@ -10191,17 +14697,40 @@ export default function PnlCalendar() {
         .seg-box { top: 2px; bottom: 2px; overflow: hidden; pointer-events: none; }
         .seg-fill { top: 0; bottom: 0; background: rgba(255,255,255,0.1); }
         .wr-seg.slide.go .seg-box, .wr-seg.slide.go .seg-fill { transition: transform .34s var(--ease-soft); }
+        /* Wins / Losses on the ring (6 October 2026: two boxes with a border each, which he wanted better looking): one switch,
+           its box sliding between the two and going from a green wash to a red one on the way. The two washes lie on each
+           other and cross-fade (--loss, 0 or 1), so only transforms and opacity move */
+        .wr-seg.ring-sw { padding: 3px; border-radius: 11px; background: rgba(255,255,255,0.035); border-color: rgba(255,255,255,0.07); }
+        .ring-sw button { display: inline-flex; align-items: center; justify-content: center; padding: 5px 13px; color: #7b838b; border-radius: 8px; }
+        .ring-sw button .msym { font-size: 18px; }
+        .ring-sw button:hover { color: #c7cdd2; }
+        .ring-sw button:first-of-type.on { color: #86e3ba; }
+        .ring-sw button:last-of-type.on { color: #ff9ea7; }
+        .ring-sw .seg-box { top: 3px; bottom: 3px; }
+        /* the debts' I owe / Owed to me switch: the same sliding box, red under "I owe" and green under "Owed to me",
+           one wash fading into the other while it slides */
+        .debt-seg button { transition: color .3s ease; }
+        .debt-seg button:first-of-type.on { color: #ffb3bb; }
+        .debt-seg button:last-of-type.on { color: #a5efcd; }
+        .debt-seg .seg-fill { background: none; }
+        .debt-seg .seg-fill::before, .debt-seg .seg-fill::after { content: ""; position: absolute; inset: 0; border-radius: 8px; transition: opacity .34s ease; }
+        .debt-seg .seg-fill::before { background: rgba(255,93,108,0.17); opacity: var(--owe, 1); }
+        .debt-seg .seg-fill::after { background: rgba(61,220,151,0.16); opacity: calc(1 - var(--owe, 1)); }
+        .ring-sw .seg-fill { background: none; }
+        .ring-sw .seg-fill::before, .ring-sw .seg-fill::after { content: ""; position: absolute; inset: 0; border-radius: 8px; transition: opacity .34s ease; }
+        .ring-sw .seg-fill::before { background: rgba(61,220,151,0.15); opacity: calc(1 - var(--loss, 0)); }
+        .ring-sw .seg-fill::after { background: rgba(255,93,108,0.15); opacity: var(--loss, 0); }
         .wr-list { display: flex; flex-direction: column; }
         .wr-li { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 8px 2px;
                  border-top: 1px solid rgba(255,255,255,0.05); animation: fadeRight .36s cubic-bezier(0.22,1,0.36,1) both; }
         .wr-li:first-child { border-top: none; }
-        .wr-li-rank { font-size: 12px; font-weight: 800; color: #6d757d; text-align: center; font-variant-numeric: tabular-nums; }
+        .wr-li-rank { font-size: 12px; font-weight: 800; color: #8e969e; text-align: center; font-variant-numeric: tabular-nums; }
         .wr-li-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
         .wr-li-name { font-size: 13.5px; font-weight: 600; color: #e8eaec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .wr-li-track { height: 5px; border-radius: 99px; background: rgba(255,255,255,0.06); overflow: hidden; }
         .wr-li-fill { display: block; height: 100%; border-radius: 99px; transform-origin: left; animation: wrGrowX .6s cubic-bezier(0.22,1,0.36,1) both; }
         .wr-li-val { display: flex; flex-direction: column; align-items: flex-end; font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-        .wr-li-sub { font-size: 11px; font-weight: 500; color: #6d757d; margin-top: 1px; }
+        .wr-li-sub { font-size: 11px; font-weight: 500; color: #8e969e; margin-top: 1px; }
         .wr-two { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
         @media (max-width: 760px) { .wr-two { grid-template-columns: 1fr; } }
         .wr-ring { animation: wrRing 1.1s cubic-bezier(0.22,1,0.36,1) .4s both; }
@@ -10216,16 +14745,31 @@ export default function PnlCalendar() {
           .wr-tile.wr-hero, .wr-tile.wr-wide { grid-column: span 2; }
         }
         /* goals */
-        .goal-row { padding: 13px 2px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); animation: fadeDown .42s cubic-bezier(0.22,1,0.36,1) both; }
+        .goal-row { display: grid; grid-template-columns: 60px minmax(0, 1fr); column-gap: 16px; align-items: center; }
+        .goal-row > .goal-ring { grid-row: 1 / span 3; align-self: start; margin-top: 4px; }
+        /* a debt's row has no ring: left in the goals' two columns, its name and amount were squeezed into the ring's
+           60px and its bar took the place of the text */
+        .goal-row.debt-row { display: block; }
+        .goal-ring { position: relative; width: 60px; height: 60px; display: block; }
+        .goal-lines { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; padding-left: 2px; min-width: 0; }
+        .goal-amt { font-size: 13.5px; font-weight: 600; color: #d5dade; font-variant-numeric: tabular-nums; }
+        .goal-amt span { color: #7b838b; font-weight: 500; }
+        .goal-pred { font-size: 12.5px; color: #8a9299; }
+        .goal-pred b { color: #c7cdd2; font-weight: 600; }
+        .goal-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
+        .goal-arc { transition: stroke-dasharray .6s cubic-bezier(0.22,1,0.36,1); }
+        .goal-ring-n { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+                       color: #e8eaec; font-variant-numeric: tabular-nums; }
+        .goal-row { padding: 11px 2px 11px; border-bottom: 1px solid rgba(255,255,255,0.06); animation: fadeDown .42s cubic-bezier(0.22,1,0.36,1) backwards; }
         .goal-row.leaving { animation: goalOut .26s ease both; }
         @keyframes goalOut { to { opacity: 0; transform: translateX(14px); } }
         .goal-track { flex: 1; height: 9px; border-radius: 99px; background: rgba(255,255,255,0.07); overflow: hidden;
                       box-shadow: inset 0 1px 2px rgba(0,0,0,0.35); }
-        .goal-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, #4f8fd6, #7fb6e0);
-                     box-shadow: 0 0 12px rgba(127,182,224,0.35);
-                     transition: width .9s cubic-bezier(0.32,0.72,0.24,1), background .4s ease; }
-        .goal-fill.done { background: linear-gradient(90deg, #3ddc97, #8ff0c4); box-shadow: 0 0 12px rgba(61,220,151,0.35); }
-        .goal-icon-btn { background: none; border: none; color: #6d757d; cursor: pointer; padding: 3px; line-height: 0;
+        .goal-fill { width: 100%; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #4f8fd6 var(--gs, 0%), #7fb6e0);
+                     box-shadow: 0 0 12px rgba(127,182,224,0.35); will-change: transform;
+                     transition: transform .9s cubic-bezier(0.32,0.72,0.24,1), background .4s ease; }
+        .goal-fill.done { background: linear-gradient(90deg, #3ddc97 var(--gs, 0%), #8ff0c4); box-shadow: 0 0 12px rgba(61,220,151,0.35); }
+        .goal-icon-btn { background: none; border: none; color: #aab1b8; cursor: pointer; padding: 6px; line-height: 0;
                          border-radius: 8px; transition: color .15s ease, background .15s ease; }
         .goal-icon-btn:hover { color: #e8eaec; background: rgba(255,255,255,0.07); }
         .goal-icon-btn.del:hover { color: #e2808c; }
@@ -10257,7 +14801,7 @@ export default function PnlCalendar() {
         .pj-now { animation: axisIn .3s ease .95s backwards; }
         .pj-end { animation: flowTagIn .4s cubic-bezier(0.22,1,0.36,1) 1.65s backwards; }
         .proj-rec { display: flex; align-items: center; gap: 7px; margin: 11px 2px 0; font-size: 12px; color: #8a9299; font-variant-numeric: tabular-nums; }
-        .proj-rec .msym { font-size: 15px; color: #6d757d; }
+        .proj-rec .msym { font-size: 15px; color: #8e969e; }
         .proj-rec b { color: #c7cdd2; font-weight: 600; }
         .proj-legend b { color: #e8eaec; font-weight: 600; }
         .proj-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-top: 13px; }
@@ -10268,9 +14812,11 @@ export default function PnlCalendar() {
         /* insights drop-down */
         .ins-box { margin-top: 14px; border-radius: 14px; background: rgba(255,255,255,0.03);
                    border: 1px solid rgba(255,255,255,0.07); padding: 2px 12px; }
-        .ins-head { width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none;
-                    cursor: pointer; padding: 11px 0; color: inherit; }
-        .ins-head:hover .plain-arrow { color: #e8eaec; }
+        .ins-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 11px 0; }
+        .ins-more { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; background: none; border: none;
+                    border-top: 1px solid rgba(255,255,255,0.05); cursor: pointer; padding: 10px 0; color: #9aa3ab; font: inherit;
+                    font-size: 12.5px; font-weight: 600; transition: color .16s ease; }
+        .ins-more:hover, .ins-more:hover .plain-arrow { color: #e8eaec; }
         .ins-count { font-size: 11px; font-weight: 700; color: #1e2124; background: #c7cdd2; border-radius: 99px;
                      padding: 1px 7px; line-height: 16px; }
         .ins-row { display: flex; align-items: flex-start; gap: 11px; padding: 9px 0;
@@ -10359,7 +14905,7 @@ export default function PnlCalendar() {
         .tcfg-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; flex-wrap: wrap; }
         .tcfg-lbl { font-size: 13.5px; color: #c7cdd2; }
         .tcfg-ctl { display: inline-flex; align-items: center; gap: 8px; }
-        .tcfg-to { font-size: 12px; color: #6d757d; }
+        .tcfg-to { font-size: 12px; color: #8e969e; }
         .tcfg-err { font-size: 12px; color: #ff8d97; margin: -2px 0 4px; text-align: right; }
         .tcfg-num { display: inline-flex; align-items: center; height: 34px; border-radius: 10px; background: rgba(24,27,31,0.6);
                     border: 1px solid rgba(255,255,255,0.10); overflow: hidden; transition: border-color .15s ease, box-shadow .15s ease; }
@@ -10402,7 +14948,7 @@ export default function PnlCalendar() {
         .tcfg-body > div { min-height: 0; overflow-x: visible; overflow-y: clip; }
         .tcfg-pad { padding: 0 2px 12px; opacity: 0; transform: translateY(-8px); transition: opacity .2s ease, transform .28s cubic-bezier(0.4,0,0.2,1); }
         .tcfg-body.open .tcfg-pad { opacity: 1; transform: none; }
-        .tcfg-note { display: block; font-size: 11.5px; color: #6d757d; margin-top: 1px; }
+        .tcfg-note { display: block; font-size: 11.5px; color: #8e969e; margin-top: 1px; }
         .tcfg-num.sm { height: 30px; border-radius: 9px; }
         .tcfg-num.sm input { width: 44px; padding: 0 7px 0 4px; font-size: 13px; }
         .tcfg-num.sm .tcfg-unit { margin: 0 8px 0 -2px; white-space: nowrap; }
@@ -10428,6 +14974,68 @@ export default function PnlCalendar() {
         .bk-btn.ico { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; padding: 0; border-color: transparent; background: none; }
         .bk-btn.ico:hover { border-color: transparent; background: rgba(255,255,255,0.08); }
         .bk-btn.ico .msym { font-size: 17px; }
+        /* the note above a footer symbol: small, solid, and only moved and faded (it is always there) */
+        .bk-btn.ico { position: relative; }
+        .bk-tip { position: absolute; left: -5px; bottom: calc(100% + 8px); z-index: 30; padding: 6px 10px 7px; border-radius: 9px; white-space: nowrap; text-align: left; pointer-events: none;
+                  font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 1.4; color: #9aa3ab; background: #1c1f23;
+                  box-shadow: 0 10px 26px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09);
+                  opacity: 0; transform: translateY(4px); transition: opacity .14s ease, transform .2s var(--ease); }
+        .bk-tip b { display: block; font-size: 11.5px; font-weight: 700; color: #f2f3f4; }
+        .bk-btn.ico:hover .bk-tip, .bk-btn.ico:focus-visible .bk-tip { opacity: 1; transform: translateY(0); transition-delay: .22s; }
+        /* the names of the columns over the rows of the Coins / Stocks card */
+        .bd-head span { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8e969e; text-align: right; white-space: nowrap; }
+        .bd-head span:first-child { text-align: left; }
+        /* the settings pop-up: a line per setting, its name and a word on it on the left, what sets it on the right */
+        .set-modal { border-radius: 20px; width: min(450px, 92vw); max-height: 88vh; overflow: auto; padding: 20px 22px 10px; transform-origin: center center; }
+        .set-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+        .set-k { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .set-k b { font-size: 13.5px; font-weight: 600; color: #e8eaec; }
+        .set-k small { font-size: 11.5px; line-height: 1.4; color: #7b838b; }
+        .set-v { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12.5px; color: #8a9299; }
+        .set-v i { font-style: normal; min-width: 30px; }
+        .set-in { width: 124px; text-align: right; }
+        .set-modal .wr-seg { flex-shrink: 0; }
+        /* split bill (BillSplit): the settings' pop-up, wider */
+        .set-modal.sb { width: min(560px, 94vw); padding-bottom: 20px; }
+        .sb-top { display: flex; gap: 10px; align-items: flex-end; margin-top: 6px; }
+        .sb-f { display: flex; flex-direction: column; gap: 6px; }
+        .sb-f.grow { flex: 1; min-width: 0; }
+        .sb-f > span, .sb-cols span, .sb-tile span { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8e969e; }
+        .sb-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; min-height: 28px;
+                   font-size: 11.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #9aa3ab; }
+        .sb-step { display: inline-flex; align-items: center; gap: 4px; }
+        .sb-step button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 9px; cursor: pointer;
+                          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: #c7cdd2;
+                          transition: background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease; }
+        .sb-step button:hover:not(:disabled) { color: #ffffff; border-color: rgba(255,255,255,0.24); background: rgba(255,255,255,0.10); }
+        .sb-step button:disabled { opacity: 0.35; cursor: default; }
+        .sb-step .msym { font-size: 17px; }
+        .sb-step b { min-width: 28px; text-align: center; font-size: 14px; letter-spacing: 0; color: #e8eaec; font-variant-numeric: tabular-nums; }
+        .sb-cols, .sb-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 40px 124px; gap: 8px; align-items: center; }
+        .sb-cols { margin-bottom: 6px; padding: 0 2px; }
+        .sb-cols span:last-child, .sb-pay { text-align: right; }
+        .sb-person { margin-bottom: 8px; animation: fadeDown .22s ease backwards; }
+        .sb-pay { font-size: 14px; font-weight: 700; color: #c7cdd2; font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 2px; }
+        .sb-pay.me { color: #ffffff; }
+        .sb-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 12px; }
+        .sb-tile { border-radius: 13px; padding: 10px 13px 11px; min-width: 0; }
+        .sb-tile b { display: block; margin-top: 4px; font-size: 19px; font-weight: 800; color: #c7cdd2; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sb-tile.key b { color: #ffffff; }
+        .sb-note { margin-top: 12px; font-size: 12.5px; line-height: 1.45; color: #ff8d97; }
+        .sb-exp { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+        .sb-cats { display: flex; padding: 3px; margin-bottom: 10px; border-radius: 11px; background: rgba(24,27,31,0.62); border: 1px solid rgba(255,255,255,0.10); }
+        .sb-cat { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 30px; padding: 0 6px; border: none; border-radius: 8px;
+                  background: none; color: #8e969e; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .18s ease, color .18s ease; }
+        .sb-cat .msym { font-size: 16px; }
+        .sb-cat:hover { color: #e8eaec; }
+        .sb-cat.auto { color: #c7cdd2; background: rgba(255,255,255,0.05); }
+        .sb-cat.on { color: #ffffff; background: rgba(255,255,255,0.14); }
+        .sb-add { width: 100%; height: 40px; border-radius: 11px; cursor: pointer; font-size: 13.5px; font-weight: 650;
+                  color: #ffc2c8; background: rgba(255,93,108,0.14); border: 1px solid rgba(255,93,108,0.38);
+                  transition: background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease; }
+        .sb-add:hover:not(:disabled) { color: #ffffff; background: rgba(255,93,108,0.26); border-color: rgba(255,93,108,0.6); }
+        .sb-add:disabled { opacity: 0.45; cursor: default; }
+        .sb-add.done { opacity: 1; color: #a5efcd; background: rgba(61,220,151,0.10); border-color: rgba(61,220,151,0.34); }
         .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease both; }
         /* ---------- open app panel ---------- */
         .open-panel { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; }
@@ -10475,12 +15083,28 @@ export default function PnlCalendar() {
         /* app start: the pieces are in place but held back until what they are drawn with is ready. At 1% they can't
            be seen, yet they are already drawn, so their first moving frame has nothing left to prepare */
         .open-panel.wait .open-panel-logo, .open-panel.wait .open-panel-word .opw-ch { animation: none; opacity: 0.01; }
+        /* first launch only (see warmPrime): a line of text and a bar that is moved in steps from script, nothing that could stutter.
+           The held-back logo and letters stand for seconds here, not for a tenth of one: at 1% they showed as a ghost
+           behind the text, so they are at the warm-up's own 0.4% until the text leaves */
+        .open-panel.wait.prep .open-panel-logo, .open-panel.wait.prep .open-panel-word .opw-ch { opacity: 0.004; }
+        .open-prep { position: absolute; left: 0; right: 0; top: 50%; margin-top: -14px; display: flex; flex-direction: column; align-items: center; gap: 12px;
+                     color: #959da5; font-size: 12.5px; font-weight: 500; letter-spacing: 0.02em; transition: opacity ${PRIME_FADE_MS - 40}ms ease;
+                     animation: openPrepIn .35s ease .45s backwards; }
+        .open-prep.off { opacity: 0; animation: none; }
+        .open-prep i { display: block; width: 168px; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.09); overflow: hidden; }
+        .open-prep b { display: block; width: 100%; height: 100%; border-radius: 2px; background: #e8eaec; transform: scaleX(0); transform-origin: 0 50%; }
+        @keyframes openPrepIn { from { opacity: 0; } to { opacity: 1; } }
         /* ---------- warm-up (see the top of the file): filed screens drawn for a few frames, all but invisibly ---------- */
         .warm-host { position: fixed; inset: 0; overflow: hidden; contain: strict; opacity: 0.004; pointer-events: none; z-index: 2; }
         .warm-screen { position: absolute; left: 0; right: 0; top: 0; max-width: 1280px; min-height: 100vh; margin: 0 auto; padding: 30px 32px 52px; color: #e8eaec; }
         /* everything in its resting state at once: no entrance animation to wait for, and the cards that only show
            once scrolled to are shown */
-        .warm-screen *, .warm-screen *::before, .warm-screen *::after { animation: none !important; transition: none !important; }
+        .warm-screen:not(.live) *, .warm-screen:not(.live) *::before, .warm-screen:not(.live) *::after { animation: none !important; }
+        .warm-screen *, .warm-screen *::before, .warm-screen *::after { transition: none !important; }
+        /* first launch only (primeOne): every animation of the screen held still at the point --at of its run, so
+           that what is only drawn while something moves is drawn too, one frame per point however long a frame takes */
+        .warm-screen.live *, .warm-screen.live *::before, .warm-screen.live *::after {
+          animation-duration: 1s !important; animation-delay: var(--at, 0s) !important; animation-play-state: paused !important; animation-iteration-count: 1 !important; }
         .warm-screen .flow-card { visibility: visible !important; opacity: 1 !important; transform: none !important; }
         .warm-screen .rv { visibility: visible !important; }
         /* the touch: every second element repaints (never all of them: a tile repainted whole is drawn afresh, and
@@ -10488,11 +15112,19 @@ export default function PnlCalendar() {
         .warm-screen.touch *:nth-child(2n), .warm-screen.touch *:nth-child(2n)::before, .warm-screen.touch *:nth-child(2n)::after {
           outline: 1px solid rgba(0,0,0,0.02) !important; outline-offset: -1px !important; }
         .warm-screen.touch svg *:nth-child(2n) { stroke-opacity: 0.99; }
+        /* the same touch a piece at a time (warmRest): on what was put in together, and on what is in it */
+        .warm-screen .wt:nth-child(2n), .warm-screen .wt *:nth-child(2n), .warm-screen .wt *:nth-child(2n)::before, .warm-screen .wt *:nth-child(2n)::after {
+          outline: 1px solid rgba(0,0,0,0.02) !important; outline-offset: -1px !important; }
+        .warm-screen svg.wt *:nth-child(2n), .warm-screen .wt svg *:nth-child(2n) { stroke-opacity: 0.99; }
+        /* first launch only (primeOne): the other half */
+        .warm-screen.touch2 *:nth-child(2n+1), .warm-screen.touch2 *:nth-child(2n+1)::before, .warm-screen.touch2 *:nth-child(2n+1)::after {
+          outline: 1px solid rgba(0,0,0,0.02) !important; outline-offset: -1px !important; }
+        .warm-screen.touch2 svg *:nth-child(2n+1) { stroke-opacity: 0.99; }
         /* crocodile home button in the footer: just the logo, no tile or outline */
         .foot-logo { background: none; border: none; outline: none; padding: 0; margin: 0; cursor: pointer; line-height: 0; align-self: center;
                      -webkit-tap-highlight-color: transparent; }
         .foot-logo img { display: block; height: 24px; width: auto; user-select: none; }
-        .plain-arrow { background: none; border: none; color: #6d757d; cursor: pointer; line-height: 0; padding: 2px 4px; transition: color .15s ease; }
+        .plain-arrow { background: none; border: none; color: #8e969e; cursor: pointer; line-height: 0; padding: 2px 4px; transition: color .15s ease; }
         .plain-arrow:hover { color: #e8eaec; }
         .chev svg { width: 15px; height: 15px; display: block; transform-origin: 50% 50%; }
         /* closed = 0deg (pointing down), open = 180deg; always turns clockwise */
@@ -10501,6 +15133,245 @@ export default function PnlCalendar() {
         @keyframes chevUp   { from { transform: rotate(0deg); }   to { transform: rotate(180deg); } }
         @keyframes chevDown { from { transform: rotate(180deg); } to { transform: rotate(360deg); } }
         .flow-card { opacity: 0; visibility: hidden; transform: scale(0.94); }
+        .flow-card > .card-aura { position: absolute; left: 0; top: 0; width: min(100%, 820px); height: 130px; max-height: 100%; z-index: 0; border-top-left-radius: inherit; pointer-events: none;
+                                  background: radial-gradient(820px 130px at 0% 0%, color-mix(in srgb, var(--tint) 27%, transparent), transparent 74%); }
+        .card-tag { display: inline-flex; align-items: center; gap: 7px; margin: -3px 0 6px -4px; padding: 5px 11px 5px 9px; border-radius: 99px;
+                    font-size: 11px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
+                    color: var(--tint); background: color-mix(in srgb, var(--tint) 12%, transparent); border: 1px solid color-mix(in srgb, var(--tint) 20%, transparent); }
+        .card-tag i { width: 6px; height: 6px; border-radius: 99px; background: var(--tint); }
+        .hero { position: relative; margin: 4px -14px 22px; padding: 18px 22px 18px; border-radius: 24px;
+                border: 1px solid color-mix(in srgb, var(--hc) 24%, rgba(255,255,255,0.07));
+                background: radial-gradient(900px 300px at 0% 0%, color-mix(in srgb, var(--hc) 24%, transparent), transparent 70%),
+                            radial-gradient(640px 260px at 100% 100%, color-mix(in srgb, var(--hc) 9%, transparent), transparent 72%),
+                            linear-gradient(160deg, rgba(255,255,255,0.06), rgba(255,255,255,0.015));
+                box-shadow: 0 18px 44px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.10); }
+        .hero-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        /* the tag and, right of it, the information symbol with its note */
+        .hero-lead { display: inline-flex; align-items: center; gap: 6px; }
+        .info-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: none; border-radius: 50%;
+                    background: none; cursor: help; color: #9aa3ab; outline: none; transition: color .18s ease, background .18s ease; }
+        .info-btn > .msym { font-size: 18px; }
+        .info-btn:hover, .info-btn:focus { color: #ffffff; background: rgba(255,255,255,0.09); }
+        .info-tip { position: absolute; left: -6px; top: calc(100% + 9px); z-index: 20; width: 318px; padding: 13px 15px 13px; border-radius: 14px; text-align: left; cursor: default;
+                    display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; font-weight: 450; line-height: 1.45; color: #c7cdd2; letter-spacing: 0; text-transform: none;
+                    background: linear-gradient(180deg, #2b2f33 0%, #212428 100%);
+                    box-shadow: 0 22px 50px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.09), inset 0 1px 0 rgba(255,255,255,0.07);
+                    opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .2s ease, transform .26s var(--ease); }
+        .info-btn:hover .info-tip, .info-btn:focus .info-tip { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .info-tip > b { font-size: 13px; font-weight: 700; color: #f2f3f4; }
+        /* the same symbol on the score card, to the right of the trend tag. Its note is placed from the whole line
+           (the symbol itself is not what it is measured from), under it and from its left end. The card is lifted
+           over the parts under it, so the note is never covered by the projection */
+        .score-card { position: relative; z-index: 3; }
+        .score-row { position: relative; }
+        .score-row .info-btn { position: static; margin-left: -3px; }
+        .score-row .info-tip { left: 0; width: 352px; }
+        .score-row .info-tip > span > b { font-weight: 700; color: #f2f3f4; margin-right: 5px; }
+        .info-tip > span { display: block; position: relative; }
+        .info-tip > span > i { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 99px; vertical-align: 1px; }
+        .info-tip .info-foot { margin-top: 2px; padding-top: 8px; color: #9aa3ab; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+        .term .info-tip { border-radius: 6px; }
+        .hero-tag { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 9px; border-radius: 99px; font-size: 11px; font-weight: 700;
+                    letter-spacing: 0.13em; text-transform: uppercase; color: var(--hc); background: color-mix(in srgb, var(--hc) 13%, transparent);
+                    border: 1px solid color-mix(in srgb, var(--hc) 22%, transparent); }
+        .hero-tag i { width: 6px; height: 6px; border-radius: 99px; background: var(--hc); }
+        .hero-vs { font-size: 12.5px; color: #aab1b8; padding: 5px 12px; border-radius: 99px; background: rgba(255,255,255,0.055);
+                   border: 1px solid rgba(255,255,255,0.07); white-space: pre; animation: fadeRight .4s ease backwards; }
+        .hero-vs b { font-weight: 700; }
+        .hero-num { font-size: 64px; font-weight: 800; letter-spacing: -0.035em; line-height: 1.05; margin: 12px 0 14px; color: var(--hc);
+                    font-variant-numeric: tabular-nums; text-shadow: 0 0 40px color-mix(in srgb, var(--hc) 34%, transparent); }
+        .hero-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+        .hero-tile { position: relative; display: flex; flex-direction: column; gap: 3px; padding: 11px 14px 12px 22px; border-radius: 14px; min-width: 0;
+                     background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.06); }
+        .hero-tile::before { content: ""; position: absolute; left: 10px; top: 12px; bottom: 12px; width: 3px; border-radius: 3px; background: var(--tc); }
+        .ht-cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8a9299; white-space: nowrap; }
+        .ht-val { font-size: 21px; font-weight: 800; color: #eef1f4; font-variant-numeric: tabular-nums; white-space: nowrap; letter-spacing: -0.01em; }
+        .ht-val small { font-size: 12px; font-weight: 600; color: #8a9299; letter-spacing: 0; }
+        .ht-sub { font-size: 12px; color: #8a9299; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* ---- personalities (6 October 2026): depth instead of borders, green as the brand, one dominant visual a screen ---- */
+        .flow-card.glass { border-color: transparent; box-shadow: 0 34px 80px rgba(0,0,0,0.46), inset 0 1px 0 rgba(255,255,255,0.08); }
+        .flow-card.glass:hover { border-color: transparent; box-shadow: 0 34px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.11); }
+        .cal-wrap { border-color: transparent !important; box-shadow: 0 30px 70px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.07); }
+        /* the month's card: no border, a neon edge of its colour along the top, and a big soft glow of it spilling out behind */
+        .hero { border-color: transparent; box-shadow: 0 34px 80px rgba(0,0,0,0.46), inset 0 1.5px 0 color-mix(in srgb, var(--hc) 62%, transparent), 0 -1px 26px color-mix(in srgb, var(--hc) 16%, transparent); }
+        .hero::before { content: ""; position: absolute; left: -70px; top: -90px; width: 760px; height: 420px; z-index: -1; pointer-events: none;
+                        background: radial-gradient(closest-side, color-mix(in srgb, var(--hc) 20%, transparent), transparent); }
+        .hero-num { font-size: 92px; letter-spacing: -0.045em; margin: 14px 0 18px -4px; }
+        .hero-tiles { grid-template-columns: 1.75fr 1fr 1fr 1fr; align-items: end; }
+        .hero-tile { border-color: transparent; }
+        .hero-tile:first-child { padding-top: 16px; padding-bottom: 17px; background: color-mix(in srgb, var(--tc) 9%, rgba(255,255,255,0.04)); }
+        .hero-tile:first-child .ht-val { font-size: 32px; }
+        /* the year as a poster */
+        .poster { position: relative; }
+        .poster::before { content: ""; position: absolute; left: -60px; top: -70px; width: 560px; height: 260px; z-index: -1; pointer-events: none;
+                          background: radial-gradient(closest-side, color-mix(in srgb, var(--hc) 17%, transparent), transparent); }
+        .poster-line { display: flex; align-items: flex-end; gap: 18px; margin: -18px 0 12px; }
+        .poster-num { font-size: 76px; font-weight: 800; letter-spacing: -0.045em; line-height: 0.95; color: var(--hc); font-variant-numeric: tabular-nums;
+                      text-shadow: 0 0 44px color-mix(in srgb, var(--hc) 32%, transparent); }
+        .poster-cap { display: flex; flex-direction: column; gap: 3px; padding-bottom: 7px; font-size: 13px; color: #8a9299; font-variant-numeric: tabular-nums; }
+        .poster-cap b { font-size: 15px; font-weight: 700; color: #e8eaec; }
+        .ycell > .spark { position: absolute; z-index: 0; left: 10px; bottom: 8px; width: calc(100% - 20px); height: 30%; opacity: 0.24; pointer-events: none; }
+        /* a day's spending as a bar rising behind its figure, and the neon edge on today */
+        /* The bar's box is the whole inside of the tile, cut to the tile's corners, and stands still; what rises is its
+           ::after, as high as --h. Until 8 October 2026 the bar itself carried the round corners: a bar lower than a
+           corner is deep can't have them (the corner is made smaller to fit), so on a day of little spending its
+           nearly square ends showed outside the tile's corners, and while it rose its corners were squeezed with it. */
+        .cell > .cbar { position: absolute; z-index: 0; inset: 0; border-radius: 13px; overflow: hidden; pointer-events: none; }
+        .cell > .cbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--h, 0%);
+                               background: linear-gradient(to top, color-mix(in srgb, currentColor 30%, transparent), transparent); }
+        .cell.today { box-shadow: 0 0 0 1px rgba(127,182,224,0.5), 0 0 22px rgba(127,182,224,0.28); }
+        /* the score: the dial is the picture, the three boxes sit beside it, stepped */
+        .score-dial::before { content: ""; position: absolute; inset: -34px; border-radius: 50%; pointer-events: none;
+                              background: radial-gradient(closest-side, color-mix(in srgb, var(--gc) 22%, transparent), transparent 78%); }
+        .score-orbit { display: flex !important; flex-direction: column; width: 290px !important; flex-shrink: 0; margin: 0 !important; gap: 10px !important; }
+        .score-orbit > :nth-child(2) { margin-left: -28px; margin-right: 28px; }
+        .score-orbit > .sub-box { border-color: transparent; }
+        /* goals: softer and warmer than the rest */
+        .flow-card[data-card="goals"] { border-radius: 30px !important; }
+        .flow-card[data-card="goals"] > .card-aura { width: 100%; height: 220px;
+            background: radial-gradient(900px 220px at 18% 0%, color-mix(in srgb, var(--tint) 20%, transparent), transparent 74%); }
+        .flow-card[data-card="goals"] .goal-row { border-bottom-color: transparent; padding: 14px 2px; }
+        /* trading: sharper, technical, terminal-like. Square corners, a fine grid, figures in the system's own face at its
+           widest and heavy (SF Pro Expanded: system-ui with font-stretch, nothing loaded). It was the fixed-width face
+           until 6 October 2026, which he really didn't like: he asked for bold and extended */
+        .term .hero, .term .flow-card, .term .cal-wrap { border-radius: 8px !important; }
+        .term .hero { background: repeating-linear-gradient(0deg, rgba(255,255,255,0.028) 0 1px, transparent 1px 26px),
+                                  repeating-linear-gradient(90deg, rgba(255,255,255,0.028) 0 1px, transparent 1px 26px),
+                                  radial-gradient(900px 300px at 0% 0%, color-mix(in srgb, var(--hc) 20%, transparent), transparent 70%), rgba(18,21,24,0.72); }
+        .term .hero-num, .term .ht-val, .term .ht-sub, .term .hero-vs b { font-family: system-ui, -apple-system, 'Inter', sans-serif; font-stretch: 125%; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+        /* The big PnL figures are Monument Extended on both sides (6 October 2026, his choice; he said Montserrat first by
+           mistake): the month's figure on finance and trading, and the year's on the finance poster. Nothing else is to
+           change. It is a foundry face that is not in the project: it is used from the Mac's own fonts once it is installed
+           there, under either of the names it has gone by, and until then the system's widest heavy face stands in (SF Pro
+           Expanded, which font-stretch asks for and which is close to it). Much wider than Inter, so the sizes came down */
+        .poster-num, .hero-tile:first-child .ht-val { font-family: 'PP Monument Extended', 'Monument Extended', system-ui, -apple-system, 'Inter', sans-serif;
+                                                      font-weight: 800; font-stretch: 150%; letter-spacing: -0.03em; }
+        .poster-num { font-size: 62px; line-height: 1; }
+        /* 11 October 2026: he had the two swapped. The month's PnL figure is the pixel font on both sides (64px: a font
+           pixel is 8px, and its capitals are as high as the 78px Monument figure was), in capitals as the Left figure was;
+           the finance Left figure took the bold extended face in its place (further down). The year's poster is as it was */
+        .hero-num, .term .hero-num { font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 64px; font-weight: 400; font-stretch: normal; letter-spacing: 0;
+                                     line-height: 1; text-transform: uppercase; -webkit-font-smoothing: none; margin: 20px 0 20px; }
+        .term .ht-val { font-stretch: 150%; }
+        /* the day tiles and month boxes stay in Inter: the page-wide rule on * beats any face a tile hands down, so only this spacing reaches their text */
+        .term .cell, .term .ycell { letter-spacing: -0.05em; }
+        .term .hero-tile, .term .sub-box, .term .cell, .term .ycell { border-radius: 5px !important; }
+        .term .hero-tag, .term .card-tag { border-radius: 4px; }
+        .term .hero-tag i, .term .card-tag i { width: 6px; height: 11px; border-radius: 1px; }
+        .term .hero-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .term .hero-tile:first-child .ht-val { font-size: 21px; }
+        .term .hero-tile:first-child { padding: 11px 14px 12px 22px; background: rgba(255,255,255,0.045); }
+        /* ---- 6 October 2026, second brief: pixel type used sparingly, the data moving, one focal point a screen,
+           and colour roles: green = gain / progress, red = loss / risk, gold = reached / achieved, blue-grey = information ---- */
+        .px-word { font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 16px; line-height: 1; letter-spacing: 1px; color: #e6c877; -webkit-font-smoothing: none; }
+        .hero-tile:first-child .ht-val { font-size: 28px; padding: 3px 0 2px; }
+        .term .hero-tile:first-child .ht-val { font-family: system-ui, -apple-system, 'Inter', sans-serif; font-weight: 800; font-size: 21px; text-transform: none; padding: 0; letter-spacing: -0.01em; }
+        /* one hero, the rest quieter: the three small tiles step back, and so does quick add until it is used */
+        .hero-tile:not(:first-child) { background: transparent; }
+        .hero-tile:not(:first-child) .ht-val { font-size: 18px; color: #c7cdd2; }
+        .term .hero-tile:not(:first-child) { background: rgba(255,255,255,0.045); }
+        .qadd { opacity: 0.7; transition: opacity .2s ease; }
+        .qadd:hover, .qadd:focus-within { opacity: 1; }
+        .cell > .cbar::after { transform-origin: 50% 100%; animation: cbarUp .55s var(--ease) var(--bd, 0ms) backwards; }
+        @keyframes cbarUp { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+        /* the trading sides have these too (8 October 2026): a day's result as the bar, a red day as the ring, in their square corners */
+        .term .cell > .cbar { border-radius: 4px; }
+        .term .qadd { border-radius: 8px; }
+        .term .qadd input, .term .qadd-kind, .term .qadd-go { border-radius: 5px !important; }
+        .ql-kind.be { color: #e3cd77; background: rgba(227,205,119,0.1); }
+        .ql-kind.be i { background: #e3cd77; }
+        .cell.over::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; border: 1.5px solid #ff5d6c; opacity: 0; pointer-events: none;
+                            animation: overPulse .7s ease-out .4s backwards; }
+        @keyframes overPulse { 0% { opacity: 0; transform: scale(1); } 28% { opacity: 0.9; } 100% { opacity: 0; transform: scale(1.09); } }
+        .goal-done-count { background: #e6c877 !important; }
+        .glass-tip-sub { display: block; margin-top: 3px; font-size: 11px; font-weight: 500; color: #9aa3ab; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        /* the journal's row: R first and strongest after the PnL, the rest small capitals, the setup last and cut short */
+        .jr-meta { display: flex; align-items: baseline; gap: 14px; white-space: nowrap; font-size: 11px; letter-spacing: 0.07em; }
+        .jr-meta > * { flex-shrink: 0; font-style: normal; }
+        .jr-meta b { font-size: 13.5px; font-weight: 800; letter-spacing: 0; color: var(--tone); font-variant-numeric: tabular-nums; }
+        .jr-meta em { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; font-size: 12.5px; color: #8e969e; }
+        .jr-amt { font-size: 15px; font-weight: 800; }
+        /* the ••• menu is one box. At rest it is the dots' own; opened, it draws out to the left over Edit, Duplicate and
+           Delete and uncovers them; shut, it draws back to the dots (6 October 2026, his words: extend from the three dots,
+           scale horizontally to the left, return to its original scale). One number does it, --mo (0 shut, 1 open), eased
+           on the row, so a press half-way turns it round from where it is:
+           - the box is a fill sliding inside a clip as wide as the open box, so its left end keeps its round corners and
+             nothing is resized (at rest the two are the dots' size and the slide comes to nothing);
+           - the buttons stand still behind a clip of their own that moves with that end;
+           - what stands left of them in the row (pictures, amount, arrow) was moved over at once by the layout when the
+             buttons were put there, so it is slid from where it was: --aw, the buttons' width (jrActsW).
+           The buttons stay until the box has drawn back (JR_MENU_MS), then go, and the row is laid out as before */
+        @property --mo { syntax: "<number>"; inherits: true; initial-value: 0; }
+        .jr-sum { transition: --mo .32s var(--ease); }
+        .jr-sum.menu { --mo: 1; transition-duration: .42s; }
+        .jr-sum.acts .jr-pics, .jr-sum.acts .jr-amt, .jr-sum.acts .jr-chev { translate: calc(var(--aw, 0px) * (1 - var(--mo))) 0; }
+        .jr-more { position: relative; display: inline-flex; align-items: center; height: 28px; flex-shrink: 0; }
+        .jr-box { position: absolute; inset: 0; border-radius: 9px; overflow: hidden; pointer-events: none; }
+        .jr-box i { position: absolute; inset: 0; border-radius: 9px; background: rgba(255,255,255,0.08); opacity: 0; transition: opacity .16s ease;
+                    transform: translateX(calc((100% - 28px) * (1 - var(--mo)))); }
+        .jr-more:hover .jr-box i, .jr-sum.acts .jr-box i { opacity: 1; }
+        .jr-dots { position: relative; z-index: 1; width: 28px; height: 28px; border-radius: 9px; border: none; background: none; color: #8e969e; cursor: pointer; display: inline-flex;
+                   align-items: center; justify-content: center; transition: color .16s ease; }
+        .jr-dots .msym { font-size: 19px; }
+        .jr-dots:hover, .jr-dots.on { color: #e8eaec; }
+        .jr-acts { display: inline-flex; height: 28px; overflow: hidden; pointer-events: none; transform: translateX(calc(100% * (1 - var(--mo)))); }
+        .jr-acts-in { display: inline-flex; align-items: center; gap: 2px; padding: 0 1px 0 3px; opacity: var(--mo); transform: translateX(calc(-100% * (1 - var(--mo)))); }
+        .jr-acts button { pointer-events: auto; height: 22px; border: none; background: none; color: #c7cdd2; font: inherit; font-size: 12px; font-weight: 600; padding: 0 9px; border-radius: 6px;
+                          cursor: pointer; white-space: nowrap; transition: background .14s ease, color .14s ease; }
+        .jr-sum:not(.menu) .jr-acts button { pointer-events: none; }
+        .jr-acts button:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .jr-acts button.del:hover { background: rgba(255,93,108,0.16); color: #ff8d97; }
+        /* a trade looked at */
+        .jv { padding: 6px 14px 16px; }
+        .jv-top { display: flex; align-items: baseline; gap: 16px; }
+        .jv-pnl { font-size: 38px; font-weight: 800; letter-spacing: -0.03em; color: var(--tone); font-variant-numeric: tabular-nums; line-height: 1.1; }
+        .jv-r { font-size: 22px; font-weight: 800; color: #ecd3a4; font-variant-numeric: tabular-nums; }
+        .jv-btn { display: inline-flex; align-items: center; gap: 6px; align-self: center; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #c7cdd2;
+                  font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 10px; cursor: pointer; transition: background .16s ease, color .16s ease; }
+        .jv-btn .msym { font-size: 16px; }
+        .jv-btn.ico { width: 32px; height: 32px; padding: 0; justify-content: center; }
+        .jv-btn.ico .msym { font-size: 17px; }
+        .jv-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        /* a trade looked at is a short summary, not another card (6 October 2026, a review he passed on): under the PnL one
+           line that says what kind of trade it was (Swing · 1D · 20 lot · 8D · Bank), then its figures in a row with a name
+           over each and a hairline above. No boxes: as tiles, each one in a box, most of the view was empty */
+        .jv-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; margin-top: 7px; font-size: 13px; }
+        .jv-sum b { font-weight: 600; color: #c7cdd2; font-variant-numeric: tabular-nums; }
+        .jv-sum i { font-style: normal; color: #4f565d; }
+        .jv-grid { display: flex; flex-wrap: wrap; gap: 12px 34px; margin-top: 13px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .jv-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .jv-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+        .jv-line > * { min-width: 0; }
+        .jv-k { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #7b838b; }
+        .jv-v { font-size: 17px; font-weight: 800; color: #e8eaec; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .jv-s { font-size: 11px; color: #7b838b; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .jv-note { margin-top: 14px; }
+        .jv-note p { margin: 5px 0 0; font-size: 13.5px; line-height: 1.55; color: #d5dade; white-space: pre-wrap; max-width: 760px; }
+        .jv-bar { display: flex; align-items: center; justify-content: space-between; padding: 4px 14px 8px; font-size: 12px; color: #7b838b; }
+        /* cash flow: under the journal, apart from it */
+        .jr-cash { margin-top: 22px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); }
+        .jr-cash-head { width: 100%; display: flex; align-items: center; gap: 8px; border: none; background: none; cursor: pointer; padding: 6px 2px; color: #9aa3ab;
+                        font: inherit; font-size: 12.5px; font-weight: 600; transition: color .16s ease; }
+        .jr-cash-head:hover { color: #e8eaec; }
+        .jr-cash-head .msym { font-size: 17px; }
+        .jr-cash-head i { font-style: normal; font-weight: 500; color: #8e969e; margin-left: 4px; flex: 1; text-align: left; font-variant-numeric: tabular-nums; }
+        .jr-cash-chev { transition: transform .2s ease; }
+        .jr-cash-chev.up { transform: rotate(180deg); }
+        .jr-cash .jr-dep { margin-top: 6px; padding-top: 0; border-top: none; }
+        .jr-name.tk { display: inline-flex; flex-direction: column; gap: 2px; line-height: 1.1; padding: 3px 0; min-width: 0; }
+        .jr-name.tk small { font-size: 11px; font-weight: 500; color: #a3abb3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+        .jr-tag.st { color: #d6c9a2; background: rgba(214,201,162,0.12); }
+        .bk-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px 34px; padding-bottom: 8px; }
+        .bk-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .bk-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px; align-items: center; padding: 9px 0 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .bk-name { font-size: 14.5px; font-weight: 700; color: #e8eaec; }
+        .bk-pnl { font-size: 14.5px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
+        .bk-meta { font-size: 12px; color: #8a9299; font-variant-numeric: tabular-nums; }
+        .bk-track { grid-column: 1 / -1; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 4px; }
+        .bk-track i { display: block; height: 100%; border-radius: 3px; opacity: 0.75; }
+        .bk-none { font-size: 13px; color: #8e969e; padding: 10px 0; }
+        .tag-pill { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 99px; white-space: nowrap;
+                    color: var(--tc); background: color-mix(in srgb, var(--tc) 14%, transparent); }
         /* each card, and what folds in it, is a surface of its own for good: when a card folds, the cards under it and
            its own content are only moved and cut off, never drawn again */
         .flow-card, .fold-in { will-change: transform; }
@@ -10519,6 +15390,8 @@ export default function PnlCalendar() {
         }
         .flow-label { transition: background .16s ease; }
         .flow-label:hover { background: #33373b; }
+        .score-hit { pointer-events: auto; cursor: pointer; display: flex; flex-direction: column; align-items: center; padding: 9px 14px; border-radius: 16px; transition: background .16s ease; }
+        .score-hit:hover { background: rgba(255,255,255,0.07); }
         .score-arc { animation: scoreDraw 1s cubic-bezier(0.3,0,0.2,1) both; transform-origin: center; }
         @keyframes scoreDraw { from { stroke-dasharray: 0 9999; } }
         .bd-title { animation: bdTitleIn .3s cubic-bezier(0.34,1.15,0.64,1) both; }
@@ -10531,9 +15404,11 @@ export default function PnlCalendar() {
           100% { transform: translateY(0); filter: blur(0px); }
         }
         .score-card { animation: bdItemIn .4s cubic-bezier(0.4,0,0.2,1) .12s both; }
+        .sub-box { background-image: linear-gradient(150deg, color-mix(in srgb, var(--tc, transparent) 17%, transparent), transparent 64%);
+                   border-color: color-mix(in srgb, var(--tc, #fff) 16%, rgba(255,255,255,0.05)); }
         .sub-box { animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) both; }
         @keyframes subBoxIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-        .bd-item { animation: bdItemIn .34s cubic-bezier(0.4,0,0.2,1) both; }
+        .bd-item { animation: bdItemIn .34s cubic-bezier(0.4,0,0.2,1) backwards; }
         @keyframes bdItemIn { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: translateY(0); } }
         .bd-fill { display: block; height: 100%; border-radius: 99px; animation: bdGrow .55s cubic-bezier(0.4,0,0.2,1) both; transform-origin: left center; }
         @keyframes bdGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
@@ -10584,6 +15459,9 @@ export default function PnlCalendar() {
            with the lift (a gradient can't be transitioned, a registered number can). At 0 and at 1 these are exactly
            the two gradients that used to be switched. */
         @property --lit { syntax: "<number>"; inherits: false; initial-value: 0; }
+        /* how far a card is out of its wallet; --cq hands it down to the big card's shadows */
+        @property --cp { syntax: "<number>"; inherits: false; initial-value: 0; }
+        @property --cq { syntax: "<number>"; inherits: true; initial-value: 0; }
         .cell::before, .ycell::before {
           content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
           background:
@@ -10608,20 +15486,20 @@ export default function PnlCalendar() {
         .cmp-line { stroke-opacity: 0.55; transition: d ${CMP_MS}ms var(--ease-soft), stroke-opacity ${CMP_MS}ms ease; }
         .cmp-line.line-sweep { animation-duration: 1.1s; animation-delay: .04s; }
         .cmp-line.gone { stroke-opacity: 0; }
-        .wk-cmp { position: absolute; display: inline-flex; padding: 0; background: none; border: none; color: #6d757d; cursor: pointer; line-height: 0;
+        .wk-cmp { position: absolute; display: inline-flex; padding: 0; background: none; border: none; color: #8e969e; cursor: pointer; line-height: 0;
                   transition: color .18s ease; }
         .wk-cmp .msym { font-size: 18px; animation: wkCmpIn .3s var(--ease-soft) backwards; }
         .wk-cmp:hover { color: #e8eaec; }
         .wk-cmp.on { color: #a9bccd; }
-        .wk-cmp:disabled { opacity: 0.4; cursor: default; color: #6d757d; }
+        .wk-cmp:disabled { opacity: 0.4; cursor: default; color: #8e969e; }
         @keyframes wkCmpIn { from { opacity: 0; transform: scale(0.6) rotate(-45deg); } }
         .cmp-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; background: none; border: none; padding: 2px 0;
-                   font-size: 12px; font-weight: 600; color: #6d757d; cursor: pointer; transition: color .18s ease; }
+                   font-size: 12px; font-weight: 600; color: #8e969e; cursor: pointer; transition: color .18s ease; }
         .cmp-btn i { width: 14px; height: 2.4px; border-radius: 2px; background: ${CMP_INK}; opacity: 0.5; transition: opacity .18s ease; }
         .cmp-btn:hover { color: #e8eaec; }
         .cmp-btn.on { color: #a9bccd; }
         .cmp-btn.on i, .cmp-btn:hover i { opacity: 1; }
-        .cmp-btn:disabled { opacity: 0.45; cursor: default; color: #6d757d; }
+        .cmp-btn:disabled { opacity: 0.45; cursor: default; color: #8e969e; }
         .cmp-btn:disabled i { opacity: 0.5; }
         .chart-btn { transition: border-color .18s ease, color .18s ease; }
         .chart-btn:hover { border-color: #8a9299 !important; color: #e8eaec !important; }
@@ -10635,12 +15513,250 @@ export default function PnlCalendar() {
         .nav-arrow { background: none; border: none; color: #9aa3ab; font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; transition: color .15s; }
         .nav-arrow:hover { color: #e8eaec; }
         /* month switcher: the arrows fade in only while the pointer is on it (or an arrow has keyboard focus) */
+        /* ---- navigation (7 October 2026): the sidebar, then the month header's way back and its arrows ---- */
+        /* 64px free on each side: the left for the three lines, the right so that the page stays in the middle (and
+           clear of the buttons fixed in that corner: the year arrows, the calculator) */
+        body.has-side { padding-left: 64px; padding-right: 64px; }
+        .snav-root { position: fixed; left: 0; top: 0; z-index: 25; transition: opacity .4s ease; }
+        .snav-root.off { opacity: 0; pointer-events: none; }
+        /* the three lines: each one a bar that slides to the middle and turns, so they become the cross and come back */
+        .snav-burger { position: fixed; left: 18px; top: 18px; width: 40px; height: 40px; padding: 0; border: none; border-radius: 12px; cursor: pointer;
+                       background: rgba(255,255,255,0.07); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07); transition: background .2s ease;
+                       animation: sideIn .6s var(--ease) backwards; }
+        .snav-burger:hover { background: rgba(255,255,255,0.13); }
+        .snav-burger i { position: absolute; left: 11px; top: 19px; width: 18px; height: 2px; border-radius: 2px; background: #e8eaec;
+                         transition: transform .5s var(--ease), opacity .3s ease; }
+        .snav-burger i:nth-child(1) { transform: translateY(-6px); }
+        .snav-burger i:nth-child(3) { transform: translateY(6px); }
+        .snav-root.open .snav-burger i:nth-child(1) { transform: translateY(0) rotate(45deg); }
+        .snav-root.open .snav-burger i:nth-child(2) { opacity: 0; transform: scaleX(0.3); }
+        .snav-root.open .snav-burger i:nth-child(3) { transform: translateY(0) rotate(-45deg); }
+        @keyframes sideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        /* behind the panel the page dims a little; a press there shuts it */
+        .snav-scrim { position: fixed; inset: 0; background: rgba(8,10,12,0.34); opacity: 0; pointer-events: none; transition: opacity .34s ease; }
+        .snav-root.open .snav-scrim { opacity: 1; pointer-events: auto; transition-duration: .5s; }
+        /* the panel: parked off the left edge while shut, slid in as one piece. No blur behind it and nothing see-through:
+           the page passes under it */
+        .snav { position: fixed; left: 10px; top: 10px; bottom: 10px; width: 228px; display: flex; flex-direction: column; gap: 2px; padding: 62px 12px 12px;
+                border-radius: 20px; background: linear-gradient(180deg, #25282c 0%, #1c1f22 100%);
+                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.075), inset 0 1px 0 rgba(255,255,255,0.06);
+                user-select: none; -webkit-user-select: none; will-change: transform; pointer-events: none;
+                transform: translateX(-118%); transition: transform .38s cubic-bezier(0.4, 0, 0.2, 1); }
+        .snav-root.open .snav { transform: translateX(0); pointer-events: auto; transition: transform .54s var(--ease); }
+        /* its lines: in one after the other as the panel arrives, out together as it leaves */
+        .sd-in { flex-shrink: 0; opacity: 0; transform: translateX(-14px); transition: opacity .2s ease, transform .3s ease; }
+        .snav-root.open .sd-in { opacity: 1; transform: translateX(0); transition: opacity .46s ease, transform .56s var(--ease); transition-delay: calc(90ms + var(--i) * 22ms); }
+        .snav-name { position: absolute; left: 64px; top: 25px; font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 11px; letter-spacing: 2px; color: #e8eaec;
+                     -webkit-font-smoothing: none; }
+        .sd-act, .sd-row { display: flex; align-items: center; gap: 10px; width: 100%; border: none; cursor: pointer; text-align: left; position: relative; flex-shrink: 0; }
+        .sd-act { height: 38px; padding: 0 11px; margin-bottom: 8px; border-radius: 11px; font-size: 13.5px; font-weight: 650; color: #eef0f2;
+                  background: rgba(255,255,255,0.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); transition: background .15s ease, transform .2s var(--ease); }
+        .sd-act:hover { background: rgba(255,255,255,0.15); }
+        .sd-act:active { transform: scale(0.98); }
+        .sd-act .msym { font-size: 19px; }
+        .sd-act kbd { margin-left: auto; font-size: 11px; font-weight: 600; color: #9aa3ab; }
+        .sd-head { margin: 16px 11px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #8b939a;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+        .sd-row { height: 34px; padding: 0 11px; border-radius: 9px; background: none; font-size: 13.5px; font-weight: 550; color: #b3bac0; transition: color .15s ease, background .15s ease; }
+        .sd-row .msym { font-size: 18px; color: #858d95; transition: color .15s ease; }
+        .sd-row i { margin-left: auto; font-style: normal; font-size: 12px; font-weight: 500; color: #8b939a; font-variant-numeric: tabular-nums; }
+        .sd-row:hover { color: #ffffff; background: rgba(255,255,255,0.055); }
+        .sd-row:hover .msym { color: #d5dade; }
+        .sd-row.on { color: #ffffff; background: rgba(255,255,255,0.10); }
+        .sd-row.on .msym, .sd-row.at .msym { color: #e8eaec; }
+        .sd-row.sub { height: 32px; font-size: 13px; }
+        .sd-row.at { color: #ffffff; }
+        .sd-row::before { content: ""; position: absolute; left: 1px; top: 9px; bottom: 9px; width: 3px; border-radius: 2px; background: #e8eaec; opacity: 0;
+                          transform: scaleY(0.4); transition: opacity .2s ease, transform .25s var(--ease); }
+        .sd-row.at::before { opacity: 1; transform: scaleY(1); }
+        .sd-gap { flex: 1; }
+        .sd-foot { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 11px; background: none; cursor: pointer; text-align: left;
+                   flex-shrink: 0; transition: background .15s ease; }
+        .sd-foot:hover { background: rgba(255,255,255,0.055); }
+        .sd-croc { position: relative; flex-shrink: 0; width: 26px; height: 26px; line-height: 0; display: inline-flex; align-items: center; justify-content: center; }
+        .sd-croc img { display: block; height: 24px; width: auto; user-select: none; }
+        .sd-drop { position: absolute; right: -2px; top: 0; width: 6px; height: 8px; border-radius: 50% 50% 50% 50% / 64% 64% 36% 36%; background: #8fd0ff;
+                   animation: sdDrop .6s var(--ease) backwards; }
+        .sd-ok { position: absolute; right: -3px; bottom: -1px; width: 9px; height: 9px; border-radius: 99px; background: #3ddc97; box-shadow: 0 0 0 2px #1c1f22;
+                 animation: sdPop .45s var(--ease) backwards; }
+        @keyframes sdDrop { from { opacity: 0; transform: translateY(-5px) scale(0.6); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes sdPop { from { opacity: 0; transform: scale(0.3); } to { opacity: 1; transform: scale(1); } }
+        .sd-say { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+        .sd-say b { font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        .sd-say small { font-size: 11px; font-weight: 500; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        /* a goal's bin shows when the pointer is on its row (the review: a red-bordered bin on every row was the loudest
+           thing in the card). A debt's bin is in its edit line and always there */
+        .goal-row:not(.debt-row) .trash-btn { opacity: 0; transition: opacity .18s ease, background .18s ease, border-color .18s ease, color .18s ease; }
+        .goal-row:not(.debt-row):hover .trash-btn, .goal-row:not(.debt-row) .trash-btn:focus-visible { opacity: 1; }
+        .cal-wrap, .flow-card, .debt-sec { scroll-margin-top: 22px; }
+        .goal-icon-btn.on { color: #e8eaec; }
+        /* ---- accounts: the login screen and the select acc panel. One cover on the opening screen's own backdrop;
+           every piece comes in on a transition (its turn is --i), so nothing can be caught half-way ---- */
+        .av { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+        .sd-pic { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,0.14); }
+        .acc { position: fixed; inset: 0; z-index: 250; display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto;
+               user-select: none; -webkit-user-select: none; transition: opacity .56s ease; }
+        .acc.out { opacity: 0; pointer-events: none; }
+        .acc-bg { position: fixed; inset: 0; background: radial-gradient(circle at 50% 48%, #43484f 0%, #2a2e33 34%, #17191c 70%, #0e1012 100%); }
+        .acc-up { opacity: 0; transform: translateY(16px); transition: opacity .3s ease, transform .3s ease; }
+        .acc.in .acc-up { opacity: 1; transform: translateY(0); transition: opacity .6s ease, transform .7s var(--ease); transition-delay: calc(140ms + var(--i) * 70ms); }
+        .acc-pick, .acc-card { position: relative; transition: opacity .2s ease, transform .2s ease; }
+        .acc-pick.fade, .acc-card.fade { opacity: 0; transform: scale(0.985); }
+        .acc-card { animation: accSwap .46s var(--ease) backwards; }
+        @keyframes accSwap { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        /* the select acc panel */
+        .acc-pick { display: flex; flex-direction: column; align-items: center; animation: accSwap .46s var(--ease) backwards; }
+        .acc-title { margin: 0 0 44px; font-size: 40px; font-weight: 650; letter-spacing: -0.02em; color: #f2f3f4; }
+        .acc-tiles { display: flex; flex-wrap: wrap; justify-content: center; gap: 30px; max-width: 1060px; }
+        .acc-tile { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 144px; padding: 0; border: none; background: none; cursor: pointer; outline: none; }
+        .acc-face { position: relative; display: flex; align-items: center; justify-content: center; width: 144px; height: 144px; border-radius: 50%;
+                    box-shadow: 0 0 0 0 rgba(255,255,255,0), 0 22px 44px rgba(0,0,0,0.42); transition: transform .34s var(--ease), box-shadow .3s ease; }
+        .acc-face i { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 36px; font-style: normal; color: #ffffff;
+                      background: rgba(10,11,13,0.62); opacity: 0; transition: opacity .28s ease; }
+        .acc-name { font-size: 16px; font-weight: 550; color: #9aa3ab; transition: color .25s ease; white-space: nowrap; }
+        .acc-tile:hover .acc-face, .acc-tile:focus-visible .acc-face { transform: translateY(-5px) scale(1.04); box-shadow: 0 0 0 3px #f2f3f4, 0 30px 56px rgba(0,0,0,0.5); }
+        .acc-tile:hover .acc-name, .acc-tile:focus-visible .acc-name { color: #ffffff; }
+        .acc-tile.add .acc-face { background: linear-gradient(180deg, rgba(255,255,255,0.11), rgba(255,255,255,0.045));
+                                  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), inset 0 0 0 1px rgba(255,255,255,0.08), 0 22px 44px rgba(0,0,0,0.34); }
+        .acc-tile.add .acc-face .msym { font-size: 54px; color: #c7cdd2; transition: color .25s ease, transform .34s var(--ease); }
+        .acc-tile.add:hover .acc-face, .acc-tile.add:focus-visible .acc-face { box-shadow: inset 0 1px 0 rgba(255,255,255,0.26), 0 0 0 3px #f2f3f4, 0 30px 56px rgba(0,0,0,0.46); }
+        .acc-tile.add:hover .acc-face .msym { color: #ffffff; transform: rotate(90deg); }
+        .acc-pick.manage .acc-tile:not(.add) .acc-face i { opacity: 1; }
+        .acc-pick.manage .acc-tile.add { opacity: 0.3; pointer-events: none; }
+        .acc-pick.chosen .acc-tile { pointer-events: none; }
+        .acc-pick.chosen .acc-tile:not(.me), .acc-pick.chosen .acc-title, .acc-pick.chosen .acc-manage { opacity: 0.2 !important; transition: opacity .3s ease !important; }
+        .acc-pick.chosen .acc-tile.me .acc-face { transform: scale(1.1); box-shadow: 0 0 0 3px #f2f3f4, 0 34px 60px rgba(0,0,0,0.5); }
+        .acc-manage { margin-top: 62px; height: 40px; padding: 0 24px; border-radius: 4px; cursor: pointer; background: none; border: 1px solid #8e969e; color: #9aa3ab;
+                      font-size: 13px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; }
+        .acc.in .acc-manage:hover { color: #ffffff; border-color: #ffffff; }
+        /* the login, and adding or editing an account: a card of the app's glass */
+        .acc-card { width: min(520px, 94vw); padding: 30px 32px 26px; border-radius: 28px; display: flex; flex-direction: column;
+                    background: linear-gradient(180deg, rgba(255,255,255,0.09) 0%, rgba(255,255,255,0.035) 100%);
+                    box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), inset 0 0 0 1px rgba(255,255,255,0.07), 0 44px 100px rgba(0,0,0,0.5); }
+        .acc-me { position: relative; align-self: center; width: 96px; height: 96px; border-radius: 50%; overflow: hidden; flex-shrink: 0;
+                  box-shadow: 0 0 0 3px rgba(255,255,255,0.9), 0 18px 40px rgba(0,0,0,0.45); }
+        .acc-me.own { cursor: grab; touch-action: none; }
+        .acc-me.own:active { cursor: grabbing; }
+        .acc-own { position: absolute; left: 50%; top: 50%; max-width: none; pointer-events: none; }
+        .acc-hello { margin: 18px 0 6px; text-align: center; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; color: #f2f3f4;
+                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .acc-sub { margin: 0 0 20px; text-align: center; font-size: 14px; color: #9aa3ab; line-height: 1.45; }
+        .acc-label, .acc-field > span { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #9aa3ab; }
+        /* 48px across: three screen points to a square of the 16 x 16 grid, so the squares come out even */
+        .acc-pics { display: grid; grid-template-columns: repeat(8, 48px); justify-content: space-between; row-gap: 10px; margin: 10px 0 16px; }
+        .acc-me .av { position: relative; }
+        /* the choices of background (.acc-bgc: .acc-back is the Back button) */
+        .acc-bgs { display: flex; flex-wrap: wrap; gap: 10px 11px; margin: 10px 0 18px; }
+        .acc-bgc { width: 36px; height: 36px; padding: 0; border: none; border-radius: 50%; background: none; cursor: pointer; overflow: hidden; opacity: 0.7; flex-shrink: 0;
+                   display: flex; align-items: center; justify-content: center; transition: opacity .2s ease, transform .3s var(--ease), box-shadow .2s ease; }
+        .acc-bgc > .av { width: 36px; height: 36px; flex-shrink: 0; }
+        .acc-bgc:hover { opacity: 1; transform: scale(1.08); }
+        .acc-bgc.on { opacity: 1; transform: scale(1.08); box-shadow: 0 0 0 2.5px #f2f3f4; }
+        .acc-bgc.mine { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.34); }
+        .acc-bgc.mine .msym { font-size: 18px; color: #e8eaec; }
+        .acc-bgc.mine.on { box-shadow: 0 0 0 2.5px #f2f3f4; }
+        .acc-pic.mine { display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.34); }
+        .acc-pic.mine .msym { font-size: 22px; color: #e8eaec; }
+        .acc-pic.mine.on { box-shadow: 0 0 0 2.5px #f2f3f4; }
+        .acc-zoom { display: flex; align-items: center; gap: 10px; margin: -6px 0 18px; animation: fadeIn .3s ease backwards; }
+        .acc-zoom .msym { font-size: 18px; color: #9aa3ab; }
+        .acc-zoom input { flex: 1; min-width: 0; height: 18px; margin: 0; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; outline: none; }
+        .acc-zoom input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.16); }
+        .acc-zoom input::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: #f2f3f4; box-shadow: 0 2px 8px rgba(0,0,0,0.45); }
+        .acc-other { height: 30px; padding: 0 12px; margin-left: 4px; border: none; border-radius: 9px; cursor: pointer; font-size: 12.5px; font-weight: 600; color: #c7cdd2;
+                     background: rgba(255,255,255,0.08); transition: background .2s ease, color .2s ease; }
+        .acc-other:hover { background: rgba(255,255,255,0.15); color: #ffffff; }
+        .acc-pic { position: relative; width: 48px; height: 48px; padding: 0; border: none; border-radius: 50%; background: none; cursor: pointer; opacity: 0.62;
+                   transition: opacity .2s ease, transform .3s var(--ease), box-shadow .2s ease; }
+        .acc-pic:hover { opacity: 1; transform: scale(1.08); }
+        .acc-pic.on { opacity: 1; transform: scale(1.08); box-shadow: 0 0 0 2.5px #f2f3f4; }
+        .acc-field { position: relative; display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+        .acc-in { height: 46px; padding: 0 58px 0 14px; border-radius: 13px; font-size: 16px; font-weight: 550; color: #f2f3f4; outline: none; user-select: text; -webkit-user-select: text;
+                  background: rgba(16,18,21,0.55); border: 1px solid rgba(255,255,255,0.11); transition: border-color .2s ease, background .2s ease; }
+        .acc-in::placeholder { color: #6d757d; font-weight: 450; }
+        .acc-in:focus { border-color: rgba(255,255,255,0.55); background: rgba(16,18,21,0.72); }
+        .acc-field em { position: absolute; right: 14px; bottom: 15px; font-style: normal; font-size: 11.5px; color: #8e969e; font-variant-numeric: tabular-nums; pointer-events: none; }
+        .acc-acts { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+        .acc-go { margin-left: auto; height: 46px; padding: 0 30px; border: none; border-radius: 13px; cursor: pointer; font-size: 15px; font-weight: 700; color: #111315;
+                  background: linear-gradient(180deg, #ffffff, #dfe2e5); box-shadow: 0 10px 26px rgba(0,0,0,0.35), inset 0 1px 0 #ffffff;
+                  transition: opacity .25s ease, transform .2s var(--ease); }
+        .acc-go:hover:not(:disabled) { transform: translateY(-1px); }
+        .acc-go:active:not(:disabled) { transform: scale(0.98); }
+        .acc-go:disabled { opacity: 0.32; cursor: default; }
+        .acc-back, .acc-del { height: 46px; padding: 0 16px; border: none; border-radius: 13px; cursor: pointer; font-size: 14px; font-weight: 600; color: #c7cdd2; background: rgba(255,255,255,0.07);
+                              transition: background .2s ease, color .2s ease; }
+        .acc-back:hover { background: rgba(255,255,255,0.13); color: #ffffff; }
+        /* the introduction: its cards side by side on a track that slides (a transition: a press half-way turns it
+           round), each as high as the highest, so the card never changes size */
+        .acc-intro { padding-top: 34px; }
+        .in-view { overflow: hidden; margin: 0 -32px; }
+        .in-track { display: flex; transition: transform .62s var(--ease); will-change: transform; }
+        .in-slide { flex: 0 0 100%; box-sizing: border-box; padding: 0 32px; display: flex; flex-direction: column; align-items: center; opacity: 0; transition: opacity .3s ease; }
+        .in-slide.on { opacity: 1; transition: opacity .5s ease .1s; }
+        .in-mark { display: flex; align-items: center; justify-content: center; width: 88px; height: 88px; border-radius: 50%; flex-shrink: 0; color: var(--tc);
+                   background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--tc) 28%, transparent), color-mix(in srgb, var(--tc) 9%, transparent));
+                   box-shadow: inset 0 1px 0 rgba(255,255,255,0.16), 0 18px 40px rgba(0,0,0,0.34); }
+        .in-mark .msym { font-size: 42px; }
+        .in-mark.logo { background: none; box-shadow: none; }
+        .in-mark.logo img { display: block; height: 80px; width: auto; }
+        .in-slide .acc-hello { align-self: stretch; }
+        .in-slide .acc-sub { margin-bottom: 18px; max-width: 410px; }
+        .in-list { list-style: none; margin: 0; padding: 0; align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+        .in-list li { display: flex; align-items: center; gap: 13px; min-height: 46px; box-sizing: border-box; padding: 9px 14px; border-radius: 13px; background: rgba(16,18,21,0.42);
+                      font-size: 14px; line-height: 1.4; color: #dfe3e6; }
+        .in-list .msym { font-size: 20px; color: var(--tc); flex-shrink: 0; }
+        .in-dots { display: flex; justify-content: center; gap: 8px; margin: 22px 0 16px; }
+        .in-dots button { width: 7px; height: 7px; padding: 0; border: none; border-radius: 99px; cursor: pointer; background: #ffffff; opacity: 0.22;
+                          transition: opacity .3s ease, transform .4s var(--ease); }
+        .in-dots button.on { opacity: 1; transform: scale(1.3); }
+        .acc-intro .acc-acts { margin-top: 0; }
+        .acc-intro .acc-go { margin-left: 0; min-width: 104px; }
+        .in-skip { margin-right: auto; height: 46px; padding: 0 6px; border: none; background: none; cursor: pointer; font-size: 14px; font-weight: 600; color: #8e969e; transition: color .2s ease; }
+        .in-skip:hover { color: #ffffff; }
+        .in-back { transition: opacity .25s ease, background .2s ease, color .2s ease; }
+        .in-back.off { opacity: 0; pointer-events: none; }
+        .acc-del { color: #ff8d97; background: rgba(255,93,108,0.08); }
+        .acc-del:hover, .acc-del.sure { background: rgba(255,93,108,0.2); color: #ffb3bb; }
+        /* ---- quick log (the ⌘N box): one line read as it is typed, the things logged most often under it ---- */
+        .ql { width: min(620px, 92vw); margin-top: 17vh; border-radius: 18px; padding: 14px 16px 12px; animation: qlIn .26s var(--ease) backwards; }
+        /* the backdrop behind it already blurs the page: a second blur on top of it is not drawn, the glass tint stands in
+           for what it showed (the glass colour over the darkened, blurred page, worked out) */
+        .ql.glass { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(34,35,37,0.94); }
+        .ql.out { opacity: 0; transform: translateY(-8px) scale(0.985); transition: opacity .18s ease, transform .18s ease; }
+        @keyframes qlIn { from { opacity: 0; transform: translateY(-12px) scale(0.975); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        .ql-line { display: flex; align-items: center; gap: 10px; }
+        .ql-kind { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; border-radius: 9px; border: none; cursor: pointer; flex-shrink: 0;
+                   font-size: 12.5px; font-weight: 650; color: #ffb3bb; background: rgba(255,93,108,0.12); }
+        .ql-kind i { width: 7px; height: 7px; border-radius: 99px; background: #ff5d6c; }
+        .ql-kind.inc { color: #a5efcd; background: rgba(61,220,151,0.12); }
+        .ql-kind.inc i { background: #3ddc97; }
+        .ql-in { flex: 1; min-width: 0; height: 44px; background: none; border: none; outline: none; color: #ffffff; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+        .ql-in::placeholder { color: #8e969e; font-weight: 500; }
+        .ql-read { display: flex; align-items: center; gap: 8px; min-height: 30px; margin-top: 2px; padding: 0 2px 10px; font-size: 13.5px; color: #9aa3ab;
+                   border-bottom: 1px solid rgba(255,255,255,0.07); }
+        .ql-read b { color: #e8eaec; font-weight: 650; }
+        .ql-read i { font-style: normal; color: #5d656d; }
+        .ql-read kbd { margin-left: auto; font-size: 11px; font-weight: 650; color: #c7cdd2; padding: 3px 7px; border-radius: 6px; background: rgba(255,255,255,0.09); }
+        .ql-cat { display: inline-flex; align-items: center; gap: 5px; color: #c7cdd2; }
+        .ql-cat .msym { font-size: 16px; }
+        .ql-often { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 11px 2px 2px; }
+        .ql-often > span { font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #8b939a; margin-right: 3px; }
+        .ql-chip { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; border-radius: 99px; border: none; cursor: pointer; font-size: 13px; font-weight: 550;
+                   color: #d5dade; background: rgba(255,255,255,0.07); transition: background .15s ease, transform .2s var(--ease); }
+        .ql-chip b { font-weight: 600; color: #9aa3ab; font-variant-numeric: tabular-nums; }
+        .ql-chip:hover { background: rgba(255,255,255,0.14); }
+        .ql-chip:active { transform: scale(0.96); }
+        .ql-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px 0; font-size: 12.5px; color: #9aa3ab; }
+        .ql-foot b { color: #d5dade; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .ql-hint { color: #7b838b; }
+        .ql-done { display: inline-flex; align-items: center; gap: 5px; color: #ffb3bb; font-weight: 600; animation: qlDone .3s var(--ease) backwards; }
+        .ql-done.inc { color: #a5efcd; }
+        .ql-done .msym { font-size: 16px; }
+        @keyframes qlDone { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         .month-nav { display: inline-flex; align-items: center; gap: 8px; }
-        .month-nav .nav-arrow { opacity: 0; transition: opacity .2s ease, color .15s ease, transform .22s var(--ease); }
-        .month-nav:hover .nav-arrow, .month-nav .nav-arrow:focus-visible { opacity: 1; }
+        .month-nav .nav-arrow { transition: opacity .3s ease, color .15s ease, transform .22s var(--ease); }
         /* at the first January or the last December of the year list there is nowhere further to go */
-        .month-nav .nav-arrow:disabled { cursor: default; color: #9aa3ab; }
-        .month-nav:hover .nav-arrow:disabled { opacity: .25; }
+        .month-nav .nav-arrow:disabled { cursor: default; color: #9aa3ab; opacity: .25; }
         /* chart pop-up: the same hidden arrows, sitting right after the title */
         .chart-nav { display: inline-flex; align-items: center; gap: 6px; }
         .chart-per { display: inline-block; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -10692,6 +15808,49 @@ export default function PnlCalendar() {
         .entry-row.inc:hover { border-color: #2f7d5c !important; }
         .entry-row.exp:hover { border-color: #8f3b45 !important; }
         .entry-row input { background: transparent; border: none; outline: none; }
+        /* several items added up into one expense (PartLines). The button beside the description, the total that
+           stands in for the amount box, the count on a logged row */
+        .split-btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 38px; padding: 0; border-radius: 11px; cursor: pointer;
+                     background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: #9aa3ab;
+                     transition: background .18s ease, border-color .18s ease, color .18s ease; }
+        .split-btn:hover { color: #e8eaec; border-color: rgba(255,255,255,0.24); background: rgba(255,255,255,0.10); }
+        .split-btn.on { color: #ff8d97; border-color: rgba(255,93,108,0.45); background: rgba(255,93,108,0.10); }
+        .split-sum { border-style: dashed !important; pointer-events: none; }
+        .split-tag { position: absolute; right: 11px; top: 0; height: 100%; display: flex; align-items: center; pointer-events: none;
+                     font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8e969e; }
+        .parts-btn { display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 8px 0 6px; margin-left: 6px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+                     background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: #9aa3ab;
+                     font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+                     transition: background .18s ease, border-color .18s ease, color .18s ease; }
+        .parts-btn:hover { color: #e8eaec; border-color: rgba(255,255,255,0.24); }
+        .parts-btn.on { color: #ff8d97; border-color: rgba(255,93,108,0.40); background: rgba(255,93,108,0.08); }
+        /* the list unfolds and shuts like the developer options' sections, and turns round from where it is; the lines
+           hang off a thin guide under the row they belong to. A line unfolds as it comes and folds away as it goes */
+        .parts-fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .28s cubic-bezier(0.4,0,0.2,1); }
+        .parts-fold.open { grid-template-rows: 1fr; }
+        .parts-fold > div { min-height: 0; overflow-x: visible; overflow-y: clip; }
+        .parts { margin-left: 14px; padding: 2px 0 0 10px; border-left: 1px solid rgba(255,93,108,0.28); opacity: 0; transform: translateY(-8px);
+                 transition: opacity .2s ease, transform .28s cubic-bezier(0.4,0,0.2,1); }
+        .parts-fold.open .parts { opacity: 1; transform: none; }
+        .pt-wrap { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .24s cubic-bezier(0.4,0,0.2,1), opacity .18s ease;
+                   animation: ptIn .24s cubic-bezier(0.4,0,0.2,1) backwards; }
+        .pt-wrap.out { grid-template-rows: 0fr; opacity: 0; }
+        .pt-wrap > div { min-height: 0; overflow: hidden; }
+        @keyframes ptIn { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+        .pt-line { display: flex; align-items: center; margin-top: 6px; border-radius: 10px; padding: 1px 6px; min-width: 0; transition: border-color .2s ease, box-shadow .2s ease; }
+        .pt-line:hover { border-color: rgba(255,255,255,0.16); }
+        /* the line being typed in is outlined in white, round corners and all: the boxes in it have no outline of their
+           own (the page-wide green glow of a box in use is square, and was drawn inside the line) */
+        .pt-line:focus-within { border-color: rgba(255,255,255,0.82); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.26); }
+        .pt-line input { background: transparent; border: none; outline: none; min-width: 0; font-size: 13px; }
+        .pt-line input:focus { box-shadow: none; }
+        .pt-amt { position: relative; flex: 0 0 var(--pw); }
+        .pt-amt input { width: 100%; padding: 7px 10px; font-weight: 600; color: #ff7a86; }
+        .pt-ghost { position: absolute; left: 0; top: 0; height: 100%; display: flex; align-items: center; padding: 0 10px; font-size: 13px; font-weight: 600;
+                    pointer-events: none; font-variant-numeric: tabular-nums; white-space: pre; color: #8e969e; }
+        .pt-div { width: 1px; height: 16px; background: #3a3f44; flex-shrink: 0; }
+        .pt-name { flex: 1; padding: 7px 12px; color: #c7cdd2; }
+        .pt-x { background: none; border: none; color: #8e969e; width: 26px; height: 26px; padding: 0; font-size: 10px; cursor: pointer; flex-shrink: 0; transition: color .18s ease; }
         /* liquid-glass chart bubble */
         /* the outer box only positions; opacity/scale animate on the glass itself, because a fading
            parent would cut the blur off from the chart behind it */
@@ -10729,8 +15888,79 @@ export default function PnlCalendar() {
           transition: opacity .18s ease, transform .18s ease; z-index: 20; white-space: nowrap;
         }
         .cell:hover .cell-tip { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-        .row-wrap { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .26s cubic-bezier(0.4,0,0.2,1); }
+        .row-wrap { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .26s cubic-bezier(0.4,0,0.2,1), opacity .2s ease; }
         .row-wrap.collapsing { grid-template-rows: 0fr; }
+        /* ---- a logged row moved to another day by its bar (rowDrag). Only transform and opacity move. The bar is as
+           it was at rest (1px, 20px high); what the pointer can take hold of reaches a little past it, and under the
+           pointer a lighter, thicker bar shows on top of it ---- */
+        /* ---- planned expenses, under the weekly chart (WeekPlans). Blue-grey is information: a plan is neither spent nor saved ---- */
+        .wp { margin-top: 18px; padding-top: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.07); }
+        .wp-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+        .wp-head span { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #8fa3b8; }
+        .wp-head b { font-size: 12.5px; font-weight: 600; color: #8fa3b8; font-variant-numeric: tabular-nums; }
+        .wp-pick { display: flex; align-items: center; padding: 4px 3px; border-radius: 11px; background: rgba(16,18,21,0.5); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07); }
+        .wp-pick i { font-style: normal; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #8e969e; padding: 0 9px 0 10px; }
+        /* the day chosen stands in a dashed red outline that slides to the day pressed (11 October 2026: "make the
+           animation slide when choosing another date", then "the selected date should have a dotted red outline").
+           The days are boxes of one width (72px, 2px apart), so the outline is one piece of that width, moved by
+           --at days and never resized */
+        .wp-days { position: relative; display: inline-flex; gap: 2px; }
+        .wp-days button { position: relative; width: 72px; padding: 6px 0; border: none; background: none; cursor: pointer; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: #8e969e;
+                          white-space: nowrap; text-align: center; font-variant-numeric: tabular-nums; transition: color .2s ease; }
+        .wp-days button:hover, .wp-days button.on { color: #f2f3f4; }
+        .wp-on { position: absolute; left: 0; top: 0; bottom: 0; width: 72px; border-radius: 8px; pointer-events: none; border: 1.5px dashed #ff5d6c; background: rgba(255,93,108,0.09);
+                 transform: translateX(calc(var(--at) * 74px)); transition: transform .34s var(--ease-soft); will-change: transform; }
+        .wp .amt-field { border-color: rgba(255,93,108,0.38) !important; }
+        .wp-amt { color: #ff5d6c !important; }
+        /* the weekly chart's two arrows, and a day's note pressed open (WeekPin) */
+        .wk-step:disabled { opacity: 0.3; }
+        .wk-step .msym { font-size: 20px; }
+        .glass-tip.pin { pointer-events: auto; z-index: 9; }
+        .glass-tip.pin .glass-tip-inner { align-items: center; min-width: 228px; max-width: 320px; padding: 11px 14px 12px; transition: opacity .17s ease, transform .17s ease; animation-fill-mode: backwards; }
+        .glass-tip.pin .glass-tip-inner::before { inset: 0 0 auto 0; height: 34px; border-radius: 16px 16px 50% 50%; }
+        .glass-tip.pin.shut .glass-tip-inner { opacity: 0; transform: scale(0.95); }
+        .wkp-list { position: relative; align-self: stretch; display: flex; flex-direction: column; gap: 6px; margin-top: 9px; padding-top: 9px;
+                    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14); text-align: left; }
+        /* only a long day scrolls: with the rule on every list, a bar showed beside three rows */
+        .wkp-list.many { max-height: 172px; overflow-y: auto; padding-right: 2px; }
+        .wkp-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+        .wkp-row .msym { font-size: 15px; color: #aab1b8; flex-shrink: 0; }
+        .wkp-row > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #e2e6ea; }
+        .wkp-row b { font-weight: 700; color: #ffffff; font-variant-numeric: tabular-nums; padding-left: 10px; }
+        .wkp-row.plan > span:nth-child(2), .wkp-row.plan b { color: #ffb3bb; }
+        .wkp-row.plan .msym { color: #ff8d97; }
+        .wkp-none { font-size: 12px; color: rgba(232,234,236,0.6); text-align: center; }
+        .wp-row { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 6px 7px 6px 12px; border-radius: 11px; }
+        .wp-day { flex-shrink: 0; min-width: 92px; font-size: 12px; font-weight: 700; color: #8fa3b8; font-variant-numeric: tabular-nums; }
+        .wp-name { flex: 1; min-width: 0; font-size: 14px; color: #c7cdd2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .wp-amt { font-size: 14px; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; }
+        .wp-do { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; padding: 0; margin-left: 2px; border-radius: 10px; cursor: pointer; flex-shrink: 0;
+                 color: #8fd7a4; background: rgba(61,220,151,0.06); border: 1px solid rgba(61,220,151,0.26); transition: background .18s ease, border-color .18s ease, color .18s ease; }
+        .wp-do:hover { color: #c9f2dd; background: rgba(61,220,151,0.14); border-color: rgba(61,220,151,0.5); }
+        .wp-do .msym { font-size: 18px; }
+        .wp-row .trash-btn { margin-left: 0 !important; }
+        .row-grip { position: relative; width: 1px; height: 20px; background: #3a3f44; flex-shrink: 0; cursor: grab; touch-action: none; }
+        .row-grip::before { content: ""; position: absolute; inset: -9px -7px; }
+        .row-grip::after { content: ""; position: absolute; left: -1px; top: -2px; width: 3px; height: 24px; border-radius: 2px; background: #c7cdd2; pointer-events: none;
+                           opacity: 0; transform: scaleY(0.7); transition: opacity .16s ease, transform .22s var(--ease); }
+        .row-grip:hover::after, .row-grip.held::after { opacity: 1; transform: scaleY(1); }
+        .row-grip.held { cursor: grabbing; }
+        .row-wrap.dnd-src { opacity: 0.3; }
+        .row-wrap.gone { opacity: 0; }
+        .cal-dnd .cell { pointer-events: none; }
+        .cal-ring { position: absolute !important; left: 0; top: 0; z-index: 8 !important; width: 0; height: 0; border-radius: 15px; pointer-events: none; opacity: 0;
+                    box-shadow: 0 0 0 2px #f2f3f4, 0 0 28px rgba(255,255,255,0.24); transition: opacity .18s ease, transform .22s var(--ease); will-change: transform, opacity; }
+        .cal-ring.on { opacity: 1; }
+        .dnd-chip { position: fixed; left: 0; top: 0; z-index: 400; pointer-events: none; will-change: transform; }
+        .dnd-chip-in { display: flex; align-items: center; height: 38px; max-width: 330px; padding: 0 15px 0 13px; border-radius: 12px; white-space: nowrap; font-size: 14px;
+                       background: #2b2f34; box-shadow: 0 20px 44px rgba(0,0,0,0.5), 0 3px 10px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.13);
+                       opacity: 0; transform: scale(0.8); transition: opacity .16s ease, transform .26s var(--ease); }
+        .dnd-chip.on .dnd-chip-in { opacity: 1; transform: scale(1); }
+        .dnd-chip.in .dnd-chip-in { opacity: 0; transform: scale(0.4); transition: opacity .26s ease, transform .28s ease; }
+        .dnd-chip-in b { font-weight: 700; font-variant-numeric: tabular-nums; color: #ff5d6c; }
+        .dnd-chip-in.inc b { color: #3ddc97; }
+        .dnd-chip-in i { width: 3px; height: 22px; margin: 0 11px; border-radius: 2px; background: #c7cdd2; flex-shrink: 0; }
+        .dnd-chip-in span { color: #c7cdd2; overflow: hidden; text-overflow: ellipsis; }
         .axis-fade { animation: axisIn .35s ease both; }
         /* axes grow out of the origin */
         .axis-y {
@@ -10807,10 +16037,20 @@ export default function PnlCalendar() {
         <div data-nowarm="" className={`stage-bg${(yearIntro && introMove) || tradeIn ? " out" : ""}`} />
       )}
 
-      {openPanel !== "done" && (
-        <div key={openRun} className={`open-panel${openRun > 0 ? " again" : ""}${openGo ? "" : " wait"}${openPanel === "out" ? " out" : ""}`} aria-label="Flow"
+      {gate && gate !== "done" && acc && (
+        <AccountGate api={accApi} state={acc} first={accFirst.current} shown={openPanel !== "in" || prep === "on"} leaving={gate === "gone"} />
+      )}
+
+      {openPanel !== "done" && !skipOpen && (
+        <div key={openRun} className={`open-panel${openRun > 0 ? " again" : ""}${openGo ? "" : " wait"}${prep === "on" ? " prep" : ""}${openPanel === "out" ? " out" : ""}`} aria-label="Flow"
              style={{ position: "fixed", inset: 0, zIndex: 300 }}>
           <div className="open-panel-bg" />
+          {prep && openRun === 0 && (
+            <div className={`open-prep${prep === "off" ? " off" : ""}`}>
+              <span>Setting up for the first time</span>
+              <i><b ref={prepBar} /></i>
+            </div>
+          )}
           <div className="open-panel-inner">
             <CrocLogo className="open-panel-logo" style={openFall.logo} />
             <div className="open-panel-word">
@@ -10826,7 +16066,7 @@ export default function PnlCalendar() {
       )}
 
       {!launched && (openPanel !== "in" || walletsReady) && (
-        <div ref={launchRef} className={`launch-veil${launchExit ? " out" : ""}`}
+        <div ref={(el) => { launchRef.current = el; fitCard(); }} className={`launch-veil${launchExit ? " out" : ""}`}
              onMouseMove={onVeilMove}
              onClick={(e) => e.stopPropagation()}>
 
@@ -10836,6 +16076,17 @@ export default function PnlCalendar() {
               no repaint); the pattern inside slides the opposite way so the dots stay aligned */}
           <div data-nowarm="" className="bg-lit-win" ref={litWinRef}><div className="bg-dots lit" ref={litInnerRef} /></div>
           <div data-nowarm="" className="bg-glow" ref={glowRef} />
+
+          {/* every panel before an app is entered (selections, wallets, trading): who is using Flow, in the bottom-right
+              corner. Faint, but there to be seen; whole under the pointer. Pressed, it is "Switch" in the sidebar. */}
+          {user && (
+            <button className={`who-btn${!launchExit && !tradeIn ? " on" : ""}`} tabIndex={!launchExit && !tradeIn ? 0 : -1}
+                    title={`${user.first} · Switch account`} aria-label="Switch account"
+                    onClick={(e) => { e.stopPropagation(); e.currentTarget.blur(); if (!launchExit && !tradeIn) switchUser(); }}>
+              <span className="who-t">Switch account</span>
+              <span className="who-pic"><Avatar pic={user.pic} img={user.img} bg={user.bg} bgImg={user.bgImg} /></span>
+            </button>
+          )}
 
           {/* wallets panel and trading selection: the hidden arrow in the top-left corner, one step back like Esc */}
           <button className={`pick-back${(choice === "wallet" || inMarkets) && !launchExit ? " on" : ""}`}
@@ -10851,22 +16102,37 @@ export default function PnlCalendar() {
             <span className="msym">arrow_back</span>
           </button>
 
+          {/* which side this is, in the pixel font: on the wallets panel and the trading panel, never on the selections panel */}
+          {SIDE_WORDS.map((w, wi) => (
+            <div key={w.text} className={`side-word${(wi === 0 ? choice === "wallet" && !launchExit : inMarkets) ? " on" : ""}`}>
+              <div className="sw-tilt" ref={(el) => { sideTilt.current[wi] = el; }}>
+                <div className="sw-float">
+                  <div className="sw-3d">
+                    {w.shades.map((c, i) => <span key={i} className="sw-l" style={{ color: c, transform: `translate3d(0, ${((SIDE_DEPTH - i) * SIDE_DROP).toFixed(1)}px, ${-(SIDE_DEPTH - i) * SIDE_STEP}px)` }}>{w.text}</span>)}
+                    <span className="sw-face">{w.text}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+
           <div className={`launch-wrap phase${phase}${picking ? (pickFocus === "coin" ? " pick pick-coin" : " pick") : inMarkets ? " markets" : choice === "trade" ? ` trade trade-${tradeKind}` : ""}`}>
             {/* ---- the card that gets pulled out ---- */}
             <div ref={cardRef}
-                 className={`big-card${launchExit ? " out" : ""}`}
+                 className={`big-card${WALLETS.some((w) => w.cards[0] === picked) ? " from-back" : ""}${WALLETS[activeWallet]?.cards.includes(picked) ? "" : " away"}${launchExit ? " out" : ""}`}
                  onMouseMove={phase === 2 ? onCardMove : undefined}
                  onMouseEnter={phase === 2 ? onCardEnter : undefined}
                  onMouseLeave={phase === 2 ? onCardLeave : undefined}
-                 onClick={(e) => { e.stopPropagation(); if (phase === 2) enterApp(); }}>
+                 onClick={(e) => { e.stopPropagation(); if (phase === 2 && +getComputedStyle(e.currentTarget).opacity > 0.5) enterApp(); }}>
               <div className="card-tilt">
-                <div className={`launch-float${hoverCard || phase === 1 ? " still" : ""}`}>
+                <div ref={floatRef} className={`launch-float${hoverCard ? " still" : ""}`}>
+                  <i className="card-shadow near" /><i className="card-shadow far" />
                   <div className="launch-card">
-                    <CardFace variant={picked} exp={walletExp(WALLETS.find((w) => w.cards.includes(picked)))} />
+                    <CardFace variant={picked} who={user} exp={walletExp(WALLETS.find((w) => w.cards.includes(picked)))} />
                     <div className="card-gloss" style={{
                           opacity: phase === 2 && hoverCard ? 1 : 0,
                         }} />
-                    <div className="card-sheen" style={{
+                    <div className={hoverCard ? "card-sheen lit" : "card-sheen"} style={{
                           opacity: phase === 2 ? (hoverCard ? 0.9 : 0.4) : 0,
                         }} />
                     <div className="card-edge" style={{
@@ -10902,14 +16168,14 @@ export default function PnlCalendar() {
                       <div className="hold-back" />
                       {w.cards.map((variant, ci) => (
                         <div key={variant}
-                             className={`slot-card ${ci === 0 ? "gold" : "plat"}${picked === variant && phase === 2 ? " taken" : ""}`}
+                             className={`slot-card ${ci === 0 ? "gold" : "plat"}${picked === variant ? " sel" : ""}`}
                              onClick={(e) => {
                                if (choice !== "wallet") return;      // selections panel: the press belongs to the whole wallet
                                e.stopPropagation();
                                if (!isActive) { setActiveWallet(wi); onCardLeave(); return; }
                                phase === 1 ? openCard(variant) : closeCard();
                              }}>
-                          <CardFace variant={variant} exp={walletExp(w)} />
+                          <div className="slot-in"><CardFace variant={variant} who={user} exp={walletExp(w)} /></div>
                         </div>
                       ))}
                       {w.id === "python" ? (
@@ -10934,7 +16200,8 @@ export default function PnlCalendar() {
 
             {/* ---- selections panel: the trading coin, the wallet's neighbour. On the trading selection it is "crypto" ---- */}
             <div data-nowarm="" className={`coin-unit${choice === "wallet" ? " away" : picking ? (pickFocus === "coin" ? "" : " side")
-                              : inMarkets ? (marketFocus === "idx" ? " side left" : "") : tradeKind === "idx" ? " side left gone" : ""}`}
+                              : inMarkets ? (marketFocus === "crypto" ? "" : marketFocus === "idx" ? " side left" : " side left far")
+                              : tradeKind === "crypto" ? " toss" : tradeKind === "idx" ? " side left gone" : " side left far gone"}`}
                  onMouseMove={coinFocused ? onCoinMove : undefined}
                  onMouseEnter={coinFocused ? () => setHoverCoin(true) : undefined}
                  onMouseLeave={coinFocused ? onCoinLeave : undefined}
@@ -10943,24 +16210,42 @@ export default function PnlCalendar() {
                    if (picking) { coinFocused ? openMarkets() : focusPick("coin"); }
                    else if (inMarkets) { coinFocused ? enterTrade("crypto") : focusMarket("crypto"); }
                  }}>
-              <div className="coin-shadow" />
+              <div className="coin-shadow" ref={coinShadowRef} />
               <div className="coin-smear"><div><div>
                 <div className="coin-tilt" ref={coinTiltRef}>
                   <div className={`coin-float${coinFocused && !hoverCoin ? "" : " still"}`}>
-                    <BtcCoin lustreRef={coinLustreRef} />
+                    <BtcCoin lustreRef={coinLustreRef} glareRef={coinGlareRef} />
                   </div>
                 </div>
               </div></div></div>
             </div>
 
             {/* ---- trading selection: the IDX globe, Indonesian stocks ---- */}
-            <div className={`idx-unit${inMarkets ? (globeFocused ? "" : " side") : choice === "trade" ? (tradeKind === "idx" ? " go" : " side gone") : " away"}`}
+            <div className={`idx-unit${inMarkets ? (globeFocused ? "" : marketFocus === "fx" ? " side left" : " side")
+                              : choice === "trade" ? (tradeKind === "idx" ? " go" : tradeKind === "fx" ? " side left gone" : " side gone") : " away"}`}
                  onMouseMove={globeFocused ? onGlobeMove : undefined}
                  onMouseEnter={globeFocused ? () => setHoverGlobe(true) : undefined}
                  onMouseLeave={globeFocused ? onGlobeLeave : undefined}
                  onClick={(e) => { e.stopPropagation(); if (inMarkets) { globeFocused ? enterTrade("idx") : focusMarket("idx"); } }}>
               <div className="idx-halo" />
               <div className="idx-lift"><IdxGlobe canvasRef={globeCanvasRef} live={globeLive} still={!globeFocused || hoverGlobe} /></div>
+            </div>
+
+            {/* ---- trading selection: the forex die, on the very right. Two places from the middle it is out of sight ---- */}
+            <div data-nowarm="" className={`coin-unit fx${inMarkets ? (fxFocused ? "" : marketFocus === "idx" ? " side" : " side far")
+                              : choice === "trade" ? (tradeKind === "fx" ? " toss" : tradeKind === "idx" ? " side gone" : " side far gone") : " away"}`}
+                 onMouseMove={fxFocused ? onFxMove : undefined}
+                 onMouseEnter={fxFocused ? () => setHoverFx(true) : undefined}
+                 onMouseLeave={fxFocused ? onFxLeave : undefined}
+                 onClick={(e) => { e.stopPropagation(); if (inMarkets) { fxFocused ? enterTrade("fx") : focusMarket("fx"); } }}>
+              <div className="coin-shadow" ref={fxShadowRef} />
+              <div className="coin-smear"><div><div>
+                <div className="coin-tilt" ref={fxTiltRef}>
+                  <div className={`coin-float${fxFocused && !hoverFx ? "" : " still"}`}>
+                    <FxDie />
+                  </div>
+                </div>
+              </div></div></div>
             </div>
           </div>
         </div>
@@ -10971,7 +16256,7 @@ export default function PnlCalendar() {
           <div className="greet-title">
             {now.getHours() < 12 ? "Good Morning," : now.getHours() < 18 ? "Good Afternoon," : "Good Evening,"}
           </div>
-          <div className="greet-name">Rassam</div>
+          <div className="greet-name">{user ? user.first : ""}</div>
         </div>
       )}
 
@@ -10993,7 +16278,8 @@ export default function PnlCalendar() {
       )}
 
       {!launched ? null : view === "trade" ? (
-        <TradeTracker key={tradeKind} market={tradeKind} onHome={goHome} />
+        <div className="term"><TradeTracker key={tradeKind} market={tradeKind} onHome={goHome} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
+                                               onOther={(side, data) => (side === "finance" ? takeFinance(data) : takeSide(side, data))} /></div>
       ) : view === "year" ? (
         <div ref={yearWrapRef}>
           <div className="year-shell" style={{ opacity: yearIntro ? 0 : 1 }}>
@@ -11009,21 +16295,22 @@ export default function PnlCalendar() {
                   ))}
                 </span>
               </div>
-              <div style={S.yearBarWrap}>
+              {/* the year as a poster: one figure, huge, with a glow of its colour; the bar and the rest under it */}
+              <div className="poster" style={{ ...S.yearBarWrap, "--hc": remainColor(yearRemaining) }}>
+                <div className="poster-line">
+                  <span className="poster-num">
+                    <CountNum value={yearRemaining} duration={560} render={(n, b, sp) => `${n < 0 ? "−" : ""}${fmtLive(Math.abs(n), b, sp)}`} />
+                  </span>
+                  <span className="poster-cap">
+                    <b>{yearRemaining >= 0 ? "net gain" : "net loss"} this year</b>
+                    <span>{fmt(yearStats.income)} in · <CountNum value={yearStats.spent} duration={560} render={fmtLive} /> out</span>
+                  </span>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ flex: 1 }}>
                     <SplitBar remainingVal={yearRemaining} totalVal={yearStats.income} frac={yearRemainFrac} animKey={`y-${currency}-${yearIntro ? "i" : "l"}`} />
                   </div>
                   {ChartButton({ title: "Yearly chart" })}
-                </div>
-                <div style={S.barMeta}>
-                  <span style={{ color: remainColor(yearRemaining) }}>
-                    <strong><CountNum value={yearRemaining} duration={560} render={fmtLive} /></strong>
-                    {" / "}{fmt(yearStats.income)}
-                  </span>
-                  <span style={{ color: "#ff5d6c" }}>
-                    <CountNum value={yearStats.spent} duration={560} render={fmtLive} />
-                  </span>
                 </div>
               </div>
             </div>
@@ -11074,6 +16361,11 @@ export default function PnlCalendar() {
                                           animation: active ? `tileIn .42s var(--ease) ${m * 22}ms backwards` : "none" }}
                                  onClick={() => { if (active) { setYear(yr); setMonth(m); setSelected(null); setFromYear(true); setView("month"); setTimeout(() => setFromYear(false), 1100); } }}>
                               <span style={S.yearCellName}>{name}</span>
+                              {yearSparks[`${yr}-${m}`] && (
+                                <svg className="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                                  <path d={yearSparks[`${yr}-${m}`]} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinecap="butt" strokeLinejoin="miter" />
+                                </svg>
+                              )}
                               {hasAnything ? (
                                 <>
                                   <span style={{ ...S.yearCellSpent, color }}>
@@ -11101,7 +16393,7 @@ export default function PnlCalendar() {
         </div>
       ) : (
         <div className={fromYear ? "month-view enter" : "month-view"}>
-          <div style={S.topRow}>
+          <div data-mv="" style={S.topRow}>
             <h1 className={`recap-link month-big${monthFlick?.cells ? (monthFlick.from ? " swap" : " flick") : ""}`} style={S.title} title={`${MONTHS_FULL[month]} wrapped`}
                 onClick={() => openRecap({ kind: "month", y: year, m: month })}>
               {Array.from({ length: monthFlick?.cells ? monthFlick.cells.length : MONTHS_FULL[month].length }, (_, i) => {
@@ -11117,7 +16409,7 @@ export default function PnlCalendar() {
               })}
             </h1>
             <div style={S.navBox}>
-              {/* the arrows stay hidden until the pointer is on the month switcher */}
+              {/* the arrows are always on show (7 October 2026: he asked for that; they used to wait for the pointer) */}
               <span className="month-nav">
                 <button className="nav-arrow" disabled={!monthAfter(year, month, -1)} title="Previous month (←)" onClick={() => nav(-1)}>‹</button>
                 <button className="month-btn" style={S.monthLabelBtn}
@@ -11133,7 +16425,7 @@ export default function PnlCalendar() {
             </div>
           </div>
 
-          <div style={S.incomeRow}>
+          <div data-mv="" style={S.incomeRow}>
             <label style={S.incomeLabel}>Income ({cur})</label>
             <span style={{ position: "relative", display: "inline-block", width: 150 }}>
               <input className="amt-field green" style={{ ...S.incomeInput, width: "100%" }} inputMode="numeric"
@@ -11148,7 +16440,7 @@ export default function PnlCalendar() {
               {needsGhost(incomeDraft) && (
                 <span style={{ ...S.ghostOverlay, fontSize: 15 }} aria-hidden="true">
                   <span style={{ visibility: "hidden" }}>{incomeDraft}</span>
-                  <span style={{ color: "#6d757d" }}>.000</span>
+                  <span style={{ color: "#8e969e" }}>.000</span>
                 </span>
               )}
             </span>
@@ -11171,7 +16463,7 @@ export default function PnlCalendar() {
             </span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateRows: showIncomeList ? "1fr" : "0fr", transition: "grid-template-rows .28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
+          <div data-mv="" style={{ display: "grid", gridTemplateRows: showIncomeList ? "1fr" : "0fr", transition: "grid-template-rows .28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
             <div style={S.fold}>
               <div className="glass-soft" style={{ ...S.incomeList, opacity: showIncomeList ? 1 : 0, transform: showIncomeList ? "translateY(0)" : "translateY(-10px)", transition: "opacity .25s ease, transform .25s ease" }}>
                 {monthIncomes.length === 0 ? (
@@ -11188,49 +16480,65 @@ export default function PnlCalendar() {
             </div>
           </div>
 
-          <div style={{ ...S.bigPnl, color: stats.pnl >= 0 ? "#3ddc97" : "#ff5d6c" }}>
-            <CountNum value={stats.pnl} duration={660}
-                      render={(n, b, sp) => `${n >= 0 ? "+" : ""}${fmtLive(n, b, sp)}`} />
-            <span style={S.bigPnlSub}>PnL this month</span>
-            {pnlVsPrev && (
-              <span key={`vs-${year}-${month}`} style={S.pnlVs}>
-                <span style={{ color: pnlVsPrev.pct >= 0 ? "#3ddc97" : "#ff5d6c", fontWeight: 700 }}>
-                  {pnlVsPrev.pct >= 0 ? "+" : "−"}{Math.abs(pnlVsPrev.pct).toFixed(1).replace(".", ",")}%
-                </span>
-                {" "}vs {pnlVsPrev.name}
+          {/* the month at a glance: one card in the colour of the month's result, the figure big, four tiles under the bar */}
+          <div data-mv="" className="hero" style={{ "--hc": stats.pnl >= 0 ? "#3ddc97" : "#ff5d6c" }}>
+            <div className="hero-head">
+              <span className="hero-lead">
+                <span className="hero-tag"><i />PnL this month</span>
+                <InfoTip title="How the PnL works">
+                  <span>Every day you log is measured against your daily limit ({fmt(dailyLimit)}). The month's PnL is those days added up.</span>
+                  <span><i style={{ background: "#3ddc97" }} />Under the limit: plus the difference.</span>
+                  <span><i style={{ background: "#ff5d6c" }} />Over the limit: minus the difference.</span>
+                  <span><i style={{ background: "#a5efcd" }} />A no-spend day: plus the whole limit.</span>
+                  <span><i style={{ background: "#8e969e" }} />A day with nothing logged is not counted.</span>
+                  <span className="info-foot">It is not income minus spending: that is Left.</span>
+                </InfoTip>
               </span>
-            )}
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <SplitBar remainingVal={remaining} totalVal={totalIncome} frac={remainFrac} animKey={`m-${currency}`} />
+              {pnlVsPrev && (
+                <span key={`vs-${year}-${month}`} className="hero-vs">
+                  <b style={{ color: pnlVsPrev.pct >= 0 ? "#3ddc97" : "#ff5d6c" }}>
+                    {pnlVsPrev.pct >= 0 ? "+" : "−"}{Math.abs(pnlVsPrev.pct).toFixed(1).replace(".", ",")}%
+                  </b>
+                  {" "}vs {pnlVsPrev.name}
+                </span>
+              )}
             </div>
-            {ChartButton({ title: "Monthly chart" })}
-          </div>
-          <div style={S.barMeta}>
-            <span style={{ color: remainColor(remaining) }}>
-              <strong><CountNum value={remaining} duration={560} render={fmtLive} /></strong>
-              {" / "}{fmt(totalIncome)}
-            </span>
-            <span style={{ color: "#ff5d6c" }}>
-              <CountNum value={stats.spent} duration={560} render={fmtLive} />
-              {" ("}<CountNum value={totalIncome > 0 ? (stats.spent / totalIncome) * 100 : 0} duration={560} render={(n) => Math.round(n)} />{"%)"}
-            </span>
-          </div>
-          <div style={S.dayStats}>
-            <span style={{ color: "#3ddc97" }}>
-              <CountNum value={stats.greenDays} duration={560} render={(n) => Math.round(n)} />
-              {" / +"}<CountNum value={stats.greenSum} duration={560} render={fmtLive} />
-            </span>
-            <span style={{ color: "#ff5d6c" }}>
-              <CountNum value={stats.redDays} duration={560} render={(n) => Math.round(n)} />
-              {" / "}<CountNum value={stats.redSum} duration={560} render={fmtLive} />
-            </span>
+            <div className="hero-num">
+              <CountNum value={stats.pnl} duration={660}
+                        render={(n, b, sp) => `${n >= 0 ? "+" : ""}${fmtLive(n, b, sp)}`} />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <SplitBar remainingVal={remaining} totalVal={totalIncome} frac={remainFrac} animKey={`m-${currency}`} />
+              </div>
+              {ChartButton({ title: "Monthly chart" })}
+            </div>
+            <div className="hero-tiles">
+              <div className="hero-tile" style={{ "--tc": remainColor(remaining) }}>
+                <span className="ht-cap">Left</span>
+                <span className="ht-val" style={{ color: remainColor(remaining) }}><CountNum value={remaining} duration={560} render={fmtLive} /></span>
+                <span className="ht-sub">of {fmt(totalIncome)} income</span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": "#ff5d6c" }}>
+                <span className="ht-cap">Spent</span>
+                <span className="ht-val"><CountNum value={stats.spent} duration={560} render={fmtLive} /></span>
+                <span className="ht-sub"><CountNum value={totalIncome > 0 ? (stats.spent / totalIncome) * 100 : 0} duration={560} render={(n) => Math.round(n)} />% of income</span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": "#3ddc97" }}>
+                <span className="ht-cap">Under the limit</span>
+                <span className="ht-val"><CountNum value={stats.greenDays} duration={560} render={(n) => Math.round(n)} /> <small>days</small></span>
+                <span className="ht-sub" style={{ color: "#3ddc97" }}>+<CountNum value={stats.greenSum} duration={560} render={fmtLive} /></span>
+              </div>
+              <div className="hero-tile" style={{ "--tc": "#ff5d6c" }}>
+                <span className="ht-cap">Over the limit</span>
+                <span className="ht-val"><CountNum value={stats.redDays} duration={560} render={(n) => Math.round(n)} /> <small>days</small></span>
+                <span className="ht-sub" style={{ color: "#ff5d6c" }}><CountNum value={stats.redSum} duration={560} render={fmtLive} /></span>
+              </div>
+            </div>
           </div>
 
-          <div className="cal-wrap">
-          <div key={`grid-${year}-${month}`} style={S.grid}>
+          <div data-mv="" className="cal-wrap">
+          <div key={`grid-${year}-${month}`} ref={calGrid} style={S.grid}>
             {DOW.map((d, i) => <div key={i} style={S.dowCell}>{d}</div>)}
             {cells.map((d, i) => {
               if (d === null) return <div key={"e" + i} />;
@@ -11246,9 +16554,14 @@ export default function PnlCalendar() {
               const dots = [...dIncomes.map(() => "g"), ...(has ? items.map((it) => (it.zero ? "z" : "r")) : [])];
               const dayKey = keyOf(year, month, d);
               return (
-                <div key={d} className={`cell${i < 7 ? " tip-below" : ""}`}
+                <div key={d} data-day={d} className={`cell${i < 7 ? " tip-below" : ""}${d === todayNum ? " today" : ""}${has && spent > dailyLimit ? " over" : ""}`}
                      style={{ ...S.cell, background: bg, borderColor: border, animation: `tileIn .4s var(--ease) ${d * 12}ms backwards` }}
                      onClick={() => { setSelected(d); setNewAmt(""); setNewDesc(""); setNewIncAmt(""); setNewIncDesc(""); }}>
+                  {/* the bar is the day against the daily limit: full at the limit (130 of 150 is nearly full, and it is
+                      yellow from nine tenths on). Over the limit it is red and says something else: that day's share
+                      of the month's spending, the month's biggest red day standing full and never under a tenth */}
+                  {has && spent > 0 && <i className="cbar" style={{ "--bd": `${90 + d * 4}ms`, color,
+                    "--h": `${Math.round((spent > dailyLimit ? Math.max(0.1, spent / (overTop || spent)) : spent / (dailyLimit || 1)) * 100)}%` }} />}
                   <span className="cell-tip glass" style={S.cellTip}>
                     <span style={S.cellTipDate}>{d} {monthLabelFull}</span>
                     <span style={S.cellTipRow}>
@@ -11284,12 +16597,17 @@ export default function PnlCalendar() {
                 </div>
               );
             })}
+            {/* the ring on the day a dragged row is over (rowDrag moves it; out of the grid's flow) */}
+            <i className="cal-ring" aria-hidden="true" />
           </div>
           </div>
 
-          <div style={{ display: "grid",
+          {/* as wide as the calendar and the cards under it, like the trading side's (he sent a picture of it sitting
+              narrower than the other boxes). The margins are on this outer box, so the panel is not cut at the sides
+              while it opens */}
+          <div data-mv="" style={{ display: "grid",
                         gridTemplateRows: selected !== null && !panelClosing ? "1fr" : "0fr",
-                        transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+                        transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)", margin: "0 -14px" }}>
            <div style={{ overflow: panelAnim ? "hidden" : "visible", minHeight: 0 }}>
           {selected !== null && (
             <div key={`panel-${selKey}`} className="glass" style={{ ...S.panel, opacity: panelClosing ? 0 : 1, transition: "opacity .24s ease" }}>
@@ -11319,16 +16637,17 @@ export default function PnlCalendar() {
               {selIncomes.length > 0 && (
                 <div style={{ ...S.expList, marginBottom: 14 }}>
                   {selIncomes.map((it, idx) => (
-                    <div key={it.id} className={`row-wrap${removing[it.id] ? " collapsing" : ""}`}>
+                    <div key={it.id} className={`row-wrap${removing[it.id] ? " collapsing" : ""}${removing[it.id] === "move" ? " gone" : ""}`}>
                       <div style={S.fold}>
                         <div style={{ display: "flex",
-                          animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards`,
+                          animation: removing[it.id] === true ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards`,
                           transformOrigin: "center center" }}>
                           <div className="entry-row glass-soft inc" style={S.entryRow}>
                             <input style={{ ...S.entryAmt, color: "#3ddc97" }} inputMode="numeric" value={dispStr(it.amount)}
                                    onChange={(e) => editIncome(it.id, "amount", e.target.value)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
-                            <span style={S.entryDivider} />
+                            <span className="row-grip" title="Drag onto another day to move it" onMouseDown={stopDown}
+                                  onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "inc", day: selected, drop: (to) => moveApi.current.drop("inc", it.id, to) })} />
                             <input style={S.entryDesc} value={it.desc} placeholder=""
                                    onChange={(e) => editIncome(it.id, "desc", e.target.value)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
@@ -11342,25 +16661,44 @@ export default function PnlCalendar() {
               )}
 
               <div style={{ ...S.sectionLabel, animation: "fadeDown .25s ease .1s both" }}>Expenses</div>
-              <div style={{ ...S.addRow, animation: "fadeDown .25s ease .13s both" }}>
-                <AmountField value={newAmt} setValue={setNewAmt} accent="red" cur={cur} ghost={needsGhost(newAmt)} allowDecimal={isMYR} onSubmit={addExpense} />
-                <input className="desc-field" style={{ ...S.darkInput, flex: 1, minWidth: 160 }} placeholder="Description — e.g. lunch, fuel, coffee"
+              <div style={{ ...S.addRow, marginBottom: 0, animation: "fadeDown .25s ease .13s both" }}>
+                {split !== null ? (
+                  <span style={{ position: "relative", display: "inline-block", width: 140 }}>
+                    <input className="amt-field split-sum" style={{ ...S.darkInput, width: "100%" }} readOnly tabIndex={-1} placeholder={`${cur} 0`} value={dispStr(split)} />
+                    {dispStr(split).length < 11 && <span className="split-tag">total</span>}
+                  </span>
+                ) : (
+                  <AmountField value={newAmt} setValue={setNewAmt} accent="red" cur={cur} ghost={needsGhost(newAmt)} allowDecimal={isMYR} onSubmit={addExpense} />
+                )}
+                <input ref={descBox} className="desc-field" style={{ ...S.darkInput, flex: 1, minWidth: 160 }}
+                       placeholder={split !== null ? "One name for all of it — e.g. lunch" : "Description — e.g. lunch, fuel, coffee"}
                        value={newDesc} onChange={(e) => setNewDesc(e.target.value)}
                        onKeyDown={(e) => e.key === "Enter" && addExpense()} />
+                <button className={`split-btn${split !== null ? " on" : ""}`} title="Several items in one expense" onClick={toggleSplit}>
+                  <span className="msym" style={{ fontSize: 19 }}>receipt_long</span>
+                </button>
+                <button className="split-btn" title="Split a bill between people" onClick={() => setBillOpen(true)}>
+                  <span className="msym" style={{ fontSize: 19 }}>group</span>
+                </button>
                 <button className="draw-btn" style={S.addIconBtnRed}
                         title="Add expense · double-click for a no-spend day"
                         onClick={addExpense} onDoubleClick={addZeroDay}><MinusIcon /></button>
               </div>
+              {/* the items of the expense being added: always there, folded away and out of reach until the button is pressed */}
+              <div className={`parts-fold${split !== null ? " open" : ""}`} ref={(el) => { if (el) el.inert = split === null; }}>
+                <div><PartLines key={splitRun} api={partsApi} id={null} cur={cur} isMYR={isMYR} auto={split !== null} /></div>
+              </div>
+              <div style={{ height: 14 }} />
 
               {selItems.length === 0 ? (
                 <p style={S.emptyList}>No expenses recorded for this day.</p>
               ) : (
                 <div style={S.expList}>
                   {selItems.map((it, idx) => (
-                    <div key={it.id} className={`row-wrap${removing[it.id] ? " collapsing" : ""}`}>
+                    <div key={it.id} className={`row-wrap${removing[it.id] ? " collapsing" : ""}${removing[it.id] === "move" ? " gone" : ""}`}>
                       <div style={{ overflow: removing[it.id] ? "hidden" : "visible", minHeight: 0 }}>
                         <div style={{ display: "flex",
-                          animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${160 + idx * 45}ms backwards`,
+                          animation: removing[it.id] === true ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${160 + idx * 45}ms backwards`,
                           transformOrigin: "center center" }}>
                           {it.zero ? (
                           <div className="entry-row glass-soft nospend-row" style={S.entryRow}>
@@ -11372,12 +16710,21 @@ export default function PnlCalendar() {
                           ) : (
                           <div className="entry-row glass-soft exp" style={S.entryRow}>
                             <input style={{ ...S.entryAmt, color: "#ff5d6c" }} inputMode="numeric" value={dispStr(it.amount)}
+                                   readOnly={!!(it.parts && it.parts.length)} title={it.parts && it.parts.length ? "What its items come to" : undefined}
                                    onChange={(e) => editExpense(it.id, "amount", e.target.value)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
-                            <span style={S.entryDivider} />
+                            <span className="row-grip" title="Drag onto another day to move it" onMouseDown={stopDown}
+                                  onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "exp", day: selected, drop: (to) => moveApi.current.drop("exp", it.id, to) })} />
                             <input style={S.entryDesc} value={it.desc} placeholder=""
                                    onChange={(e) => editExpense(it.id, "desc", e.target.value)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
+                            {it.parts && (
+                              <button className={`parts-btn${partsOpen === it.id ? " on" : ""}`}
+                                      title={it.parts.map((p) => `${p.desc || "Item"} ${fmt(p.amount)}`).join(" · ") || "Items"}
+                                      onClick={() => setPartsOpen(partsOpen === it.id ? null : it.id)}>
+                                <span className="msym" style={{ fontSize: 15 }}>receipt_long</span>{it.parts.length}
+                              </button>
+                            )}
                             <span style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
                               <button className="ham-btn" style={S.catBtn} title="Category"
                                       onClick={() => setCatMenu(catMenu && catMenu.id === it.id ? null : { id: it.id, stage: "cats", closing: false })}>
@@ -11425,6 +16772,11 @@ export default function PnlCalendar() {
                           </div>
                           )}
                         </div>
+                        {it.parts && (
+                          <div className={`parts-fold${partsOpen === it.id ? " open" : ""}`} ref={(el) => { if (el) el.inert = partsOpen !== it.id; }}>
+                            <div><PartLines key={cur} api={partsApi} id={it.id} start={it.parts} cur={cur} isMYR={isMYR} /></div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -11435,9 +16787,10 @@ export default function PnlCalendar() {
            </div>
           </div>
 
-          <FoldCard title="Weekly expenses" name="weekly expenses" runKey={weekData.range}
-                    sub={<><CountNum value={weekData.total} duration={560} render={fmtLive} /> · {weekData.range}</>}>
+          <FoldCard title="Weekly expenses" name="weekly expenses" runKey={weekData.home}
+                    sub={<><CountNum value={weekData.total} duration={560} render={fmtLive} /> · {weekData.range}{weekData.planned > 0 && <span style={{ color: "#ff8d97" }}> · +{fmt(weekData.planned)} planned</span>}</>}>
             {renderWeek()}
+            <WeekPlans plans={plans} api={planApi} cur={cur} isMYR={isMYR} tick={dayTick} week={weekData.days[0].date.getTime()} />
           </FoldCard>
 
           {/* each part opens when it is scrolled to, not all of them when the top of the card first shows */}
@@ -11459,6 +16812,8 @@ export default function PnlCalendar() {
       {launched && recap && renderRecap()}
       {launched && cfgDraft && <TestCfg cfg={testCfg} closing={cfgClosing} year={year} month={month} fmt={fmt} onRun={runTestCfg} onClose={closeTestCfg} />}
 
+      {launched && scoreView && renderScoreInfo()}
+
       {launched && catView && (
         <div style={{ ...S.backdrop, animation: catViewClosing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={closeCatView}>
           <div className="glass" style={{ ...S.modal, width: "min(620px, 94vw)", animation: catViewClosing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }}
@@ -11467,8 +16822,10 @@ export default function PnlCalendar() {
               <span key={`ttl-${catView}`} className="bd-title" style={{ ...S.panelTitle, display: "inline-flex", alignItems: "center", gap: 9 }}>
                 {catView === "income"
                   ? <span style={S.bdIconWin}><span className="msym" style={{ fontSize: 20, color: CAT_COLORS.income }}>money</span></span>
+                  : catView === "left"
+                  ? <span style={S.bdIconWin}><span className="msym" style={{ fontSize: 20, color: CAT_COLORS.left }}>savings</span></span>
                   : <CatTitleReel cat={catView} />}
-                {catView === "income" ? "Income Sources" : catView === "bills" ? "Bills" : `${CATS[catView].label} Expenses`}
+                {catView === "income" ? "Income Sources" : catView === "left" ? "Left Over" : catView === "bills" ? "Bills" : `${CATS[catView].label} Expenses`}
                 <span key={`vs-${catView}`} style={S.bdVs}>
                   VS LAST MONTH{" "}
                   <span style={{ color: "#747c84" }}>
@@ -11479,22 +16836,22 @@ export default function PnlCalendar() {
               <button className="x-btn" style={S.closeBtn} onClick={closeCatView}>✕</button>
             </div>
             <div style={S.modeRow}>
-              {["income", ...CAT_ORDER].map((c) => {
+              {["income", ...CAT_ORDER, "left"].map((c) => {
                 const active = catView === c;
                 const hot = hoverBtn === c && suppressBtn !== c;
                 const col = CAT_COLORS[c];
                 return (
-                  <button key={c} title={c === "income" ? "Income sources" : CATS[c].label}
+                  <button key={c} title={c === "income" ? "Income sources" : c === "left" ? "Left over" : CATS[c].label}
                           onMouseEnter={() => { if (suppressBtn !== c) setHoverBtn(c); }}
                           onMouseLeave={() => { setHoverBtn(null); if (suppressBtn === c) setSuppressBtn(null); }}
                           onClick={() => { setCatView(c); setHoverBtn(null); setSuppressBtn(c); }}
-                          style={{ ...S.modeBtn, minWidth: 38,
+                          style={{ ...S.modeBtn, minWidth: 38, ...(c === "left" ? { marginLeft: "auto" } : null),
                             color: active ? col : hot ? "#e8eaec" : "#6d757d",
                             borderColor: active ? col : hot ? "#8a9299" : "#33373b",
                             background: active ? "#1e2124" : "none",
                             display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
                     <span className={`cat-swap${hot ? " on" : ""}`}>
-                      <span className="msym glyph g-base" style={{ fontSize: 17 }}>{c === "income" ? "savings" : CATS[c].icon}</span>
+                      <span className="msym glyph g-base" style={{ fontSize: 17 }}>{c === "income" ? "savings" : c === "left" ? "account_balance_wallet" : CATS[c].icon}</span>
                       <span className="msym glyph g-hover" style={{ fontSize: 17 }}>{CAT_HOVER_ICON[c]}</span>
                     </span>
                   </button>
@@ -11505,24 +16862,29 @@ export default function PnlCalendar() {
             <div style={{ display: "grid", transition: "height .34s cubic-bezier(0.4,0,0.2,1)", height: bdHeight, overflow: "hidden" }}>
               <div ref={bdRef} style={{ alignSelf: "start" }}>
                 {catBreakdown.rows.length === 0 ? (
-                  <div key={`empty-${catView}`} className="bd-item" style={S.flowEmpty}>{catView === "income" ? "No income recorded this month." : "Nothing recorded in this category this month."}</div>
+                  <div key={`empty-${catView}`} className="bd-item" style={S.flowEmpty}>{catView === "income" ? "No income recorded this month." : catView === "left" ? "Nothing left over this month." : "Nothing recorded in this category this month."}</div>
                 ) : (
                   <div key={`bd-${catView}`} style={S.bdList}>
                     {catBreakdown.rows.map((r, i) => {
                       const pct = Math.max(1, Math.round((r.amount / catBreakdown.total) * 100));
                       return (
-                        <div key={r.label} className="bd-item" style={{ ...S.bdRow, animationDelay: `${60 + i * 55}ms` }}>
-                          <span style={S.bdName}>{r.label}</span>
-                          <span style={{ ...S.bdPct, color: CAT_COLORS[catView] }}>{pct}%</span>
+                        <div key={r.key || r.label} className="bd-item" style={{ ...S.bdRow, animationDelay: `${60 + i * 55}ms` }}>
+                          <span style={r.icon ? { ...S.bdName, display: "flex", alignItems: "center", gap: 7 } : S.bdName}>
+                            {r.icon && <span className="msym" style={{ fontSize: 17, color: r.color || CAT_COLORS[catView], flexShrink: 0 }}>{r.icon}</span>}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r.label}</span>
+                          </span>
+                          <span style={{ ...S.bdPct, color: r.color || CAT_COLORS[catView] }}>{pct}%</span>
                           <span style={S.bdTrack}>
-                            <span className="bd-fill" style={{ width: `${pct}%`, background: CAT_COLORS[catView], animationDelay: `${100 + i * 55}ms` }} />
+                            <span className="bd-fill" style={{ width: `${Math.max(2, (r.amount / Math.max(1, ...catBreakdown.rows.map((x) => x.amount))) * 100)}%`, background: r.color || CAT_COLORS[catView], animationDelay: `${100 + i * 55}ms` }} />
                           </span>
                           <span style={S.bdAmt}>{fmt(r.amount)}</span>
                         </div>
                       );
                     })}
                     <div className="bd-item" style={{ ...S.bdTotal, animationDelay: `${60 + catBreakdown.rows.length * 55}ms` }}>
-                      Total {fmt(catBreakdown.total)}
+                      {catView === "left"
+                        ? `In goals ${fmt(catBreakdown.inGoals)} · Not in a goal ${fmt(catBreakdown.free)} · Left over ${fmt(catBreakdown.total)}`
+                        : `Total ${fmt(catBreakdown.total)}`}
                     </div>
                   </div>
                 )}
@@ -11579,20 +16941,76 @@ export default function PnlCalendar() {
         </div>
       )}
 
+      {settingsOpen && (
+        <SettingsPop onClose={() => setSettingsOpen(false)}>
+          <div className="set-row">
+            <span className="set-k"><b>Currency</b><small>What every amount is shown and typed in</small></span>
+            <span className="wr-seg">
+              {["IDR", "MYR"].map((c) => <button key={c} className={currency === c ? "on" : ""} onClick={() => pickCurrency(c)}>{c}</button>)}
+            </span>
+          </div>
+          <div className="set-row">
+            <span className="set-k"><b>Daily limit</b><small>For {MONTHS_FULL[month]} {year}</small></span>
+            <span className="set-v">
+              <input className="pc-in set-in" inputMode="numeric"
+                     value={isMYR ? (dailyLimit / MYR_RATE).toFixed(2) : toDisp(dailyLimit).toLocaleString("id-ID")}
+                     onChange={(e) => saveLimit(sanitizeAmount(e.target.value, isMYR))} />
+              <i>{currency}</i>
+            </span>
+          </div>
+          <div className="set-row">
+            <span className="set-k"><b>Same limit all year</b><small>Use {MONTHS_FULL[month]}'s limit for every month of {year}</small></span>
+            <SetDo onDo={() => applyLimitToYear(true)}>Apply</SetDo>
+          </div>
+        </SettingsPop>
+      )}
+
+      {launched && view !== "trade" && (() => {
+        const sideMonth = view === "month" || year !== now.getFullYear() ? month : now.getMonth();
+        const td = quickApi.current.today(), room = td.limit - td.spent, tk = keyOf(now.getFullYear(), now.getMonth(), now.getDate());
+        const foot = !(spending[tk] || []).length ? { text: "Nothing logged today", sub: `${fmt(td.limit)} to spend`, ink: "#e8eaec" }
+          : room >= 0 ? { text: `${fmt(room)} left today`, sub: `${fmt(td.spent)} of ${fmt(td.limit)} spent`, ink: "#8fd7a4", mood: "good" }
+          : { text: `${fmt(-room)} over today`, sub: `${fmt(td.spent)} of ${fmt(td.limit)} spent`, ink: "#ff8d97", mood: "bad" };
+        return (
+          <SideNav api={sideApi} foot={foot} hidden={yearIntro || greetOn} spy={SIDE_SPY.finance} spyKey={view === "month" ? `${year}-${month}` : ""}
+                   act={SIDE_ACT.finance}
+                   rows={[
+                     { head: "Overview" },
+                     { id: "year", icon: "grid_view", text: "Year", tail: year, on: view === "year" },
+                     { id: "month", icon: "calendar_month", text: "Month", tail: MONTHS_SHORT[sideMonth], on: view === "month" },
+                     { head: MONTHS_FULL[sideMonth] },
+                     { id: "cal", icon: "calendar_today", text: "Calendar", sub: true },
+                     { id: "weekly", icon: "show_chart", text: "Weekly expenses", sub: true },
+                     { id: "flow", icon: "account_tree", text: "Money flow", sub: true },
+                     { id: "goals", icon: "flag", text: "Goals", sub: true },
+                     { id: "debts", icon: "handshake", text: "Debts", sub: true },
+                     { head: "Recap" },
+                     { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
+                     { head: "Account" },
+                     { id: "users", pic: user ? user.pic : "", img: user ? user.img : undefined, bg: user ? user.bg : undefined, bgImg: user ? user.bgImg : undefined, text: user ? user.first : "", tail: "Switch", tip: "Change account" },
+                     ...(SHOW_TEST_TOOLS ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." },
+                   ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : [])] : []),
+                   ]} />
+        );
+      })()}
+      {launched && view !== "trade" && quickOpen && <QuickLog api={quickApi} cur={cur} isMYR={isMYR} onClose={closeQuick} />}
+      {launched && view !== "trade" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
       {launched && view !== "trade" && <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
           <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your browser refused to store the data (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
-          <button className="bk-btn ico" onClick={exportData} title="Export: save a backup of everything" aria-label="Export"><span className="msym">download</span></button>
-          <button className="bk-btn ico" onClick={() => fileRef.current?.click()} title="Import: restore from a backup file" aria-label="Import"><span className="msym">upload</span></button>
+          <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves a backup to the exports folder" : "Downloads a backup of everything"} /></button>
+          <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings entries back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
           {backupMsg && <span className="bk-msg">{backupMsg}</span>}
           {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the data you had before this import">Undo</button>}
+          <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
+          <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {SHOW_TEST_TOOLS && <>
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
-          <button className="bk-btn ico test" onClick={onTestDataClick} title="Add test data · click: with your saved settings · double-click: change the settings" aria-label="Add test data"><span className="msym">science</span></button>
-          <button className="bk-btn ico" onClick={clearTestData} title="Clear test data: remove only the generated test entries" aria-label="Clear test data"><span className="msym">delete_sweep</span></button>
+          <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
+          <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated entries only" /></button>
           {testMsg && <span className="bk-msg" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
         </span>
@@ -11637,11 +17055,11 @@ const S = {
   incomeList: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderRadius: 12, padding: "11px 13px", marginBottom: 14 },
   incomeChip: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(61,220,151,0.12)", border: "1px solid rgba(61,220,151,0.28)", color: "#5ee3a9", borderRadius: 999, padding: "5px 12px", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.12)", fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" },
   chipDay: { fontSize: 11, color: "#8a9299", fontWeight: 500 },
-  chipDel: { background: "none", border: "none", color: "#6d757d", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 },
+  chipDel: { background: "none", border: "none", color: "#8e969e", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 },
   incomeTotal: { marginLeft: "auto", fontSize: 13, color: "#9aa3ab", fontVariantNumeric: "tabular-nums" },
 
-  bigPnl: { fontSize: 38, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 10, fontVariantNumeric: "tabular-nums", display: "flex", alignItems: "baseline", gap: 12 },
-  bigPnlSub: { fontSize: 13, fontWeight: 500, color: "#9aa3ab" },
+  bigPnl: { fontSize: 46, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.1, textShadow: "0 0 34px color-mix(in srgb, currentColor 32%, transparent)", marginBottom: 10, fontVariantNumeric: "tabular-nums", display: "flex", alignItems: "baseline", gap: 12 },
+  bigPnlSub: { fontSize: 13, fontWeight: 500, color: "#9aa3ab", textShadow: "none" },
   pnlVs: { marginLeft: "auto", fontSize: 13, fontWeight: 500, color: "#9aa3ab", letterSpacing: 0, animation: "fadeRight .4s ease both" },
   bdVs: { marginLeft: 6, fontSize: 10.5, fontWeight: 600, color: "#50575e", letterSpacing: "0.1em", alignSelf: "center", animation: "fadeRight .35s ease .1s both" },
   wrKicker: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11.5, fontWeight: 700, color: "#9aa3ab", textTransform: "uppercase", letterSpacing: "0.16em" },
@@ -11657,9 +17075,10 @@ const S = {
   barMeta: { display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 4, fontVariantNumeric: "tabular-nums", marginTop: 8 },
   dayStats: { display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 20, fontVariantNumeric: "tabular-nums" },
   grid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 },
-  dowCell: { textAlign: "center", fontSize: 11, color: "#7d858d", padding: "6px 0 10px", fontWeight: 700, letterSpacing: "0.12em" },
+  dowCell: { textAlign: "center", fontSize: 11, color: "#959da5", padding: "6px 0 10px", fontWeight: 700, letterSpacing: "0.12em" },
   cell: { borderWidth: 1, borderStyle: "solid", borderRadius: 14, minHeight: 88, padding: 8, cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, fontVariantNumeric: "tabular-nums", transformOrigin: "center center" },
   cellDay: { position: "absolute", top: 6, left: 9, fontSize: 12, color: "#8a9299" },
+  cellDep: { position: "absolute", top: 6, right: 8, fontSize: 13, color: "#8fa9c4" },      // a deposit or a withdrawal on that day (trading side)
   dotGrid: { position: "absolute", bottom: 7, left: 10, display: "grid", gap: 3, justifyItems: "start" },
   dot: { width: 4, height: 4, borderRadius: 99 },
   cellTip: { borderRadius: 11, padding: "8px 13px", display: "flex", flexDirection: "column", gap: 3, fontSize: 12, boxShadow: "0 6px 18px rgba(0,0,0,0.35)" },
@@ -11680,7 +17099,7 @@ const S = {
   darkInput: { background: "rgba(24,27,31,0.62)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 11, color: "#e8eaec", padding: "10px 13px", fontSize: 14 },
   addIconBtn: { background: "linear-gradient(160deg,#54e6a8,#2bbd80)", color: "#07291c", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(61,220,151,0.28), inset 0 1px 0 rgba(255,255,255,0.35)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
   addIconBtnRed: { background: "linear-gradient(160deg,#ff7a86,#e0434f)", color: "#2b0d11", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(255,93,108,0.26), inset 0 1px 0 rgba(255,255,255,0.32)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
-  emptyList: { color: "#6d757d", fontSize: 13, margin: "6px 2px" },
+  emptyList: { color: "#8e969e", fontSize: 13, margin: "6px 2px" },
   expList: { display: "flex", flexDirection: "column", gap: 8 },
   entryRow: { width: "100%", display: "flex", alignItems: "center", borderRadius: 11, padding: "5px 7px", minWidth: 0, overflow: "visible" },
   entryAmt: { width: 150, padding: "8px 10px", fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
@@ -11710,15 +17129,15 @@ const S = {
   fold: { overflowX: "visible", overflowY: "clip", minHeight: 0 },
   foldLoose: { minHeight: 0 },
   flowHead: { display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 },
-  flowSub: { fontSize: 12, color: "#6d757d" },
+  flowSub: { fontSize: 12, color: "#8e969e" },
   plainArrow: { background: "none", border: "none", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "2px 4px" },
-  flowEmpty: { color: "#6d757d", fontSize: 13, padding: "18px 2px" },
+  flowEmpty: { color: "#8e969e", fontSize: 13, padding: "18px 2px" },
   insTitle: { fontSize: 11.5, fontWeight: 700, color: "#9aa3ab", textTransform: "uppercase", letterSpacing: "0.14em" },
-  insEmpty: { color: "#6d757d", fontSize: 13, padding: "12px 2px 8px" },
+  insEmpty: { color: "#8e969e", fontSize: 13, padding: "12px 2px 8px" },
   insText: { fontSize: 13.5, color: "#aeb5bb", lineHeight: 1.45 },
   goalTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
   goalName: { fontSize: 14.5, fontWeight: 700, color: "#e8eaec" },
-  goalNote: { fontSize: 11.5, fontWeight: 500, color: "#6d757d", marginLeft: 8 },
+  goalNote: { fontSize: 11.5, fontWeight: 500, color: "#8e969e", marginLeft: 8 },
   goalAmt: { fontSize: 13, fontWeight: 600, color: "#e8eaec", fontVariantNumeric: "tabular-nums" },
   goalBarRow: { display: "flex", alignItems: "center", gap: 12, marginTop: 9 },
   goalPct: { fontSize: 13, fontWeight: 700, minWidth: 44, textAlign: "right", fontVariantNumeric: "tabular-nums" },
@@ -11732,20 +17151,20 @@ const S = {
   bdPct: { fontSize: 14, fontWeight: 700, textAlign: "right", fontVariantNumeric: "tabular-nums" },
   bdTrack: { height: 8, background: "#3a3f44", borderRadius: 99, overflow: "hidden", display: "block" },
   bdAmt: { fontSize: 12, color: "#8a9299", fontVariantNumeric: "tabular-nums", minWidth: 54, textAlign: "right" },
-  bdTotal: { marginTop: 6, fontSize: 12, color: "#6d757d", textAlign: "right", fontVariantNumeric: "tabular-nums" },
+  bdTotal: { marginTop: 6, fontSize: 12, color: "#8e969e", textAlign: "right", fontVariantNumeric: "tabular-nums" },
   scoreCard: { display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", marginTop: 4, paddingTop: 16, borderTop: "1px solid #33373b" },
   scoreCenter: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" },
-  scoreNum: { fontSize: 40, fontWeight: 800, color: "#f2f5f8", lineHeight: 1, fontVariantNumeric: "tabular-nums", textShadow: "0 2px 18px rgba(180,210,240,0.16)" },
-  scoreCap: { fontSize: 10, fontWeight: 700, color: "#6d757d", letterSpacing: "0.14em", marginTop: 3 },
-  scoreWord: { fontSize: 26, fontWeight: 800, letterSpacing: "-0.01em" },
+  scoreNum: { fontFamily: "'Press Start 2P', 'Inter', sans-serif", WebkitFontSmoothing: "none", fontSize: 48, letterSpacing: 0, fontWeight: 400, color: "#f2f5f8", lineHeight: 1, fontVariantNumeric: "tabular-nums", textShadow: "0 2px 18px rgba(180,210,240,0.16)" },
+  scoreCap: { fontSize: 11, fontWeight: 700, color: "#8a9299", letterSpacing: "0.16em", marginTop: 6 },
+  scoreWord: { fontSize: 34, fontWeight: 800, letterSpacing: "-0.01em" },
   scorePill: { fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", padding: "4px 11px", borderRadius: 99 },
-  scoreLabel: { fontSize: 11, fontWeight: 700, color: "#6d757d", letterSpacing: "0.12em", marginTop: 4 },
+  scoreLabel: { fontSize: 11, fontWeight: 700, color: "#8e969e", letterSpacing: "0.12em", marginTop: 4 },
   scoreText: { fontSize: 13.5, color: "#c7cdd2", lineHeight: 1.55, margin: "8px 0 0", maxWidth: 460 },
   subRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, width: "100%", marginTop: 4 },
   subBox: { borderRadius: 14, padding: "13px 15px 15px" },
-  subLabel: { fontSize: 10.5, fontWeight: 700, color: "#6d757d", letterSpacing: "0.11em" },
+  subLabel: { fontSize: 10.5, fontWeight: 700, color: "#8e969e", letterSpacing: "0.11em" },
   subNote: { fontSize: 12, fontWeight: 600, color: "#8a9299", fontVariantNumeric: "tabular-nums" },
   subValue: { fontSize: 22, fontWeight: 800, margin: "5px 0 10px", fontVariantNumeric: "tabular-nums" },
   subTrack: { height: 6, background: "#2c3034", borderRadius: 99, overflow: "hidden", display: "block" },
-  footerRow: { marginTop: 32, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.05)", fontSize: 12, color: "#6d757d", display: "flex", justifyContent: "space-between" },
+  footerRow: { marginTop: 32, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.05)", fontSize: 12, color: "#8e969e", display: "flex", justifyContent: "space-between" },
 };

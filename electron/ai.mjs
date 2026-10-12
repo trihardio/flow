@@ -20,6 +20,7 @@ const load = () => {
       const model = await llama.loadModel({ modelPath: MODEL_PATH });
       return model.createEmbeddingContext();
     })();
+    engine.catch(() => { engine = null; });   // a failed load is tried again on the next question, not kept failed
   }
   return engine;
 };

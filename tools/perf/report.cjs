@@ -96,6 +96,16 @@ for (const e of ev) {
 }
 for (const [s, v] of Object.entries(stuck)) console.log(`  [${s}] ${v.join("  ")}`);
 
+// --inside=<step>: what the longest standstill of the graphics process in that step was made of
+const inside = (args.find((a) => a.startsWith("--inside=")) || "").slice(9);
+if (inside) {
+  const tasks = ev.filter((e) => e.ph === "X" && e.name === TASK && e.dur >= 7000 && ["CrGpuMain", "VizCompositorThread"].includes(thread[`${e.pid}:${e.tid}`]) && tstep(e.ts)[0] === inside).sort((a, b) => b.dur - a.dur);
+  for (const t of tasks.slice(0, 2)) {
+    console.log(`\n== inside the ${(t.dur / 1000).toFixed(0)}ms standstill of [${inside}] (${thread[`${t.pid}:${t.tid}`]}) ==`);
+    const kids = ev.filter((k) => k !== t && k.ph === "X" && k.pid === t.pid && k.tid === t.tid && k.ts >= t.ts && k.ts + k.dur <= t.ts + t.dur).sort((a, b) => b.dur - a.dur).slice(0, 22);
+    for (const k of kids) console.log(`    ${(k.dur / 1000).toFixed(1)}ms  +${((k.ts - t.ts) / 1000).toFixed(0)}  ${k.name}${k.args && k.args.desc ? "  " + String(k.args.desc).slice(0, 150) : ""}`);
+  }
+}
 console.log("\n== graphics programs built ==");
 const built = {};
 for (const e of ev) if (e.ph === "X" && e.name === "createGraphicsPipeline") (built[tstep(e.ts)[0]] ||= []).push(e);

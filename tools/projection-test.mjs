@@ -256,5 +256,64 @@ console.log("5. random data never breaks it");
   report(bad === 0 && runs > 1000, `${runs} random months: every figure a real number, nothing negative, the parts add up`);
 }
 
+console.log("6. planned expenses: what he says he will spend on a day to come");
+const runP = (data, y, m, d, plans, hour = 24) => projectMonth({ spending: data.spending, incomes: data.incomes, limits: data.limits || {}, y, m, d, hour, catOf, plans });
+{
+  // by hand: 40.000 every day since 1 July, today 14 Oct 2026, the day over
+  const sp = {};
+  for (let t0 = new Date(2026, 6, 1); t0 <= new Date(2026, 9, 14); t0.setDate(t0.getDate() + 1)) put(sp, t0.getFullYear(), t0.getMonth(), t0.getDate(), item(40000, "food"));
+  const data = { spending: sp, incomes: {} }, r0 = run(data, 2026, 9, 14);
+  const r1 = runP(data, 2026, 9, 14, [{ date: "2026-10-17", amount: 60000, desc: "haircut" }, { date: "2026-10-14", amount: 25000, desc: "dinner out" },
+    { date: "2026-10-13", amount: 99000, desc: "yesterday" }, { date: "2026-11-02", amount: 99000, desc: "next month" }, { date: "2026-10-20", amount: 0, desc: "nothing" }]);
+  near("no plans: the month ends on 31 × 40.000", r0.endSpend, 1240000, 1);
+  near("a plan in three days and one today add exactly what they are (85.000); yesterday's, next month's and an empty one add nothing", r1.endSpend - r0.endSpend, 85000, 0.001);
+  is("what is planned, in the order of its days", r1.planDue.map((x) => `${x.day} ${x.desc} ${x.amount}`), ["14 dinner out 25000", "17 haircut 60000"]);
+  near("the path ends where the figure does", r1.path[r1.dim], r1.endSpend, 0.001);
+  near("the path on the 16th is as without plans but for today's 25.000", r1.path[16] - r0.path[16], 25000, 0.001);
+  near("and from the 17th on it holds the haircut too", r1.path[17] - r0.path[17], 85000, 0.001);
+  near("the range is no wider for it", r1.sd, r0.sd, 0.001);
+  is("with no plans, an empty list or none at all, every figure is the same", JSON.stringify(runP(data, 2026, 9, 14, [])) === JSON.stringify(run(data, 2026, 9, 14)), true);
+  // a plan named as a bill that is due stands in for it
+  const sb = {};
+  for (let t0 = new Date(2026, 5, 1); t0 <= new Date(2026, 9, 14); t0.setDate(t0.getDate() + 1)) put(sb, t0.getFullYear(), t0.getMonth(), t0.getDate(), item(40000, "food"));
+  [6, 7, 8].forEach((mm) => put(sb, 2026, mm, 25, item(900000, "rent")));
+  const db = { spending: sb, incomes: {} }, b0 = run(db, 2026, 9, 14), b1 = runP(db, 2026, 9, 14, [{ date: "2026-10-25", amount: 950000, desc: "Rent" }]);
+  is("the rent is due on the 25th", b0.billsDue.map((x) => `${x.key} ${x.amount}`), ["rent 900000"]);
+  near("planned by name at 950.000, it is counted once, at what was planned", b1.endSpend - b0.endSpend, 50000, 0.001);
+}
+// The backtest again on four kinds of months, with half of the big one-off buys that really came later in the month
+// given as plans (as he would enter a purchase he knows is coming), against the same projection without them
+const planTest = (name, make, seeds) => {
+  let e0 = 0, e1 = 0, n = 0, inBand = 0, given = 0, hit0 = 0, hit1 = 0;
+  for (let seed = 1; seed <= seeds; seed++) {
+    const data = make(rng(seed * 7919)), pick = rng(seed * 104729 + 13);
+    for (let m = 4; m <= 10; m++) {
+      const dim = new Date(2026, m + 1, 0).getDate(), actual = monthSpent(data, 2026, m);
+      CUTS.forEach((c) => {
+        const seen = cut(data, 2026, m, c), r0 = run(seen, 2026, m, c);
+        if (!r0 || !actual) return;
+        const plans = [];
+        for (let dd = c + 1; dd <= dim; dd++) (data.spending[keyOf(2026, m, dd)] || []).forEach((it) => { if (it.amount >= r0.bigFrom && catOf(it) !== "bills" && pick() < 0.5) plans.push({ date: keyOf(2026, m, dd), amount: it.amount, desc: it.desc }); });
+        const r1 = runP(seen, 2026, m, c, plans);
+        const a0 = Math.abs(r0.endSpend - actual) / actual, a1 = Math.abs(r1.endSpend - actual) / actual;
+        e0 += a0; e1 += a1; n++; given += plans.length;
+        if (a0 <= 0.1) hit0++;
+        if (a1 <= 0.1) hit1++;
+        if (Math.abs(r1.endSpend - actual) <= 1.28 * r1.sd) inBand++;
+      });
+    }
+  }
+  const pct = (v) => (v * 100).toFixed(1) + "%";
+  // big buys that come by chance are no easier to count for knowing some of them (the rest are as uncertain as before),
+  // so the claim is only that plans never make it worse by more than a quarter of a point; real-life months must gain
+  report(e1 / n <= e0 / n + 0.0025, `${name}: off by ${pct(e1 / n)} with half of the big buys planned, ${pct(e0 / n)} without (${given} plans over ${n} projections); within 10% of the real end ${Math.round((hit1 / n) * 100)}% of the time, ${Math.round((hit0 / n) * 100)}% without; the range holds the real end ${Math.round((inBand / n) * 100)}% of the time`);
+  return { with: e1 / n, without: e0 / n, band: inBand / n };
+};
+const planned = {};
+Object.keys(SPEND_STYLES).filter((k) => /balanced|erratic|big/i.test(k)).slice(0, 3).forEach((k) => { planned[k] = planTest(`test data: ${k}`, (R) => appYear(k, R), 60); });
+planned.life = planTest("real-life months", lifeYear, 150);
+report(planned.life.with < planned.life.without, `real-life months are closer with plans than without (${(planned.life.with * 100).toFixed(1)}% against ${(planned.life.without * 100).toFixed(1)}%)`);
+report(Object.values(planned).every((r) => r.band > 0.65 && r.band < 0.97), `with plans the likely range stays honest on all ${Object.keys(planned).length} (${Object.values(planned).map((r) => Math.round(r.band * 100) + "%").join(", ")}; aim 80%)`);
+
 console.log(fails ? `\n${fails} of ${checks} checks FAILED` : `\nall ${checks} checks passed`);
 process.exit(fails ? 1 : 0);

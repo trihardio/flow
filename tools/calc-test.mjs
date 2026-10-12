@@ -2,7 +2,7 @@
 //   node tools/calc-test.mjs
 // 1 the reference screenshots · 2 no full TP · 3 a backtest against an independent "exchange" · 4 targets out of order
 // 5 long / short, automatic and locked · 6 levels that can't be right · 7 what gets typed or pasted into a box
-// 8 extreme but real inputs · 9 60,000 random positions · 10 30,000 random mistakes
+// 8 extreme but real inputs · 9 60,000 random positions · 10 30,000 random mistakes · 11 the IM typed by hand
 import fs from "node:fs";
 const src = fs.readFileSync(process.argv.slice(2).find((x) => !x.startsWith("--")) || new URL("../src/App.jsx", import.meta.url), "utf8");
 const a = src.indexOf("/* ---------- position calculator: the maths ----------");
@@ -258,6 +258,50 @@ for (let i = 0; i < 30000; i++) {
   else if (x.errors.some((e) => !e.msg || !e.fields.length)) miss(`${kind}: an error without words or a box`, inp, x);
 }
 is("mistakes let through, or blamed on the wrong box", missed, 0);
+
+console.log("11. the IM typed by hand: the leverage stays, the position is that IM at that leverage, and the stop loses what that comes to");
+const AV = { entry: 11.088, sl: 10.639, risk: 3.29, maxLev: 75, tps: [tp(12.0, 25), tp(12.442, 30)], fullTp: 12.91 };     // a position of $81.25
+const AVD = (11.088 - 10.639) / 11.088;                                                                                    // its stop is 4.049% away
+r = calc(AV);
+const AV0 = r;
+is("no IM given: as it always was (75x, $1.083), and no note", [r.lev, r.im, r.notes], [75, 1.083, []]);
+r = calc({ ...AV, im: 1.3 });                                                                                              // Bybit took $1.30 where the calculator said $1.083
+is("IM $1.30: still 75x, the IM exactly as typed, no note", [r.lev, r.im, r.notes.length], [75, 1.3, 0]);
+near("     the position is 1.3 × 75 = $97.50", r.size, 97.5, 1e-9); near("     the stop loses 97.5 × 4.049% = $3.948", r.risk, 97.5 * AVD, 1e-9);
+report(agrees(r, AV), "     agrees with the exchange"); near("     the RR is the one it had", r.rr[0].ratio, AV0.rr[0].ratio, 1e-9);
+r = calc({ ...AV, im: 5 });
+is("IM $5: still 75x", [r.lev, r.im], [75, 5]); near("     the stop loses 375 × 4.049% = $15.185", r.risk, 375 * AVD, 1e-9);
+r = calc({ ...AV, im: 0.5 });
+is("IM $0.50: still 75x", [r.lev, r.im], [75, 0.5]); near("     the stop loses 37.5 × 4.049% = $1.519", r.risk, 37.5 * AVD, 1e-9);
+r = calc({ entry: 100, sl: 95, risk: 1, maxLev: 50 });
+is("a $1 risk on a 5% stop: 20x, IM $1", [r.lev, r.im], [20, 1]);
+r = calc({ entry: 100, sl: 95, risk: 1, maxLev: 50, im: 1.2 });
+is("     IM $1.20 typed: still 20x", [r.lev, r.im], [20, 1.2]); near("     a $24 position, and the stop loses $1.20", r.risk, 1.2, 1e-9);
+E("IM typed as 0", { entry: 100, sl: 95, risk: 5, maxLev: 10, im: 0 }, ["im"]);
+is("an empty IM box (null) is not an error", calc({ entry: 100, sl: 95, risk: 5, maxLev: 10, im: null }).errors.length, 0);
+broke = 0; shown = 0; let tried = 0;
+for (let i = 0; i < 40000; i++) {
+  const inp = randomTrade();
+  if (inp.sl === inp.entry || inp.tps.some((t) => t.price === inp.entry) || inp.fullTp === inp.entry) continue;
+  const auto = calc(inp);
+  if (auto.errors.length) continue;
+  inp.im = +(10 ** rnd(-1, 3.5)).toFixed(pick([0, 1, 2, 3])) || 1;                  // $0.10 to $3,000, as he would type it
+  let x;
+  try { x = calc(inp); } catch (e) { breakIt("threw " + e.message, inp); continue; }
+  tried++;
+  if (x.errors.length) { breakIt("a typed IM made an error", inp, x); continue; }
+  if (![x.lev, x.im, x.size, x.qty, x.risk, x.total].every(Number.isFinite)) { breakIt("a number that is not a number", inp, x); continue; }
+  if (x.lev !== auto.lev) { breakIt("a typed IM moved the leverage", inp, x); continue; }
+  if (x.im !== inp.im || x.notes.length) { breakIt("the IM is not the one typed", inp, x); continue; }
+  if (!agrees(x, inp)) { breakIt("disagrees with the exchange", inp, x); continue; }
+  const tol = 1e-9 * Math.max(1, x.size);
+  if (Math.abs(x.size - inp.im * auto.lev) > tol || Math.abs(x.risk - inp.im * auto.lev * Math.abs(x.slMove)) > tol) { breakIt("the position or the stop's loss is not IM × leverage", inp, x); continue; }
+  // everything scales with the IM: the plan, and so the RR, are the automatic one's
+  const k = x.size / auto.size;
+  if (Math.abs(x.total - auto.total * k) > 1e-9 * Math.max(1, Math.abs(x.total)) || x.rr.some((q, j) => Math.abs(q.ratio - auto.rr[j].ratio) > 1e-9 * Math.max(1, Math.abs(q.ratio)))) { breakIt("the plan did not scale with the IM", inp, x); continue; }
+  if (x.long !== auto.long || x.targets.length !== auto.targets.length) { breakIt("a typed IM changed the side or the targets", inp, x); continue; }
+}
+is(`random positions with a typed IM that broke a rule (${tried} tried)`, broke, 0);
 
 console.log(fails ? `\n${fails} of ${checks} FAILED` : `\nall ${checks} checks passed`);
 process.exit(fails ? 1 : 0);

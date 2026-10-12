@@ -2,6 +2,10 @@
 window.flowAI = { pick: () => Promise.resolve(null) };
 window.flowFX = { rates: () => Promise.resolve(null), quote: () => Promise.resolve(null) };
 const P = (window.__perf = { frames: [], marks: [], warmed: [] });
+// --cold: the app is told the system's cache of graphics programs is empty, as on the installed app's first launch
+if (process.argv.includes("--flow-gfx-cold")) window.flowGfx = { cold: true, settle: () => Promise.resolve(), primed: () => { P.primed = Math.round(performance.now()); } };
+// --no-rest: as the app was before it drew the remaining screens in quiet moments (no idle callbacks: nothing is filed either)
+if (process.argv.includes("--flow-no-rest")) delete window.requestIdleCallback, (window.requestIdleCallback = undefined);
 const tick = (t) => { P.frames.push(t); requestAnimationFrame(tick); };
 requestAnimationFrame(tick);
 window.__mark = (name) => { P.marks.push([name, performance.now()]); performance.mark("H:" + name); };
