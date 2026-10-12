@@ -791,11 +791,13 @@ const FLOW_START_MS = 60, FLOW_SRC_MS = 520, FLOW_RIB_MS = 640, FLOW_LAND = 0.8;
    pixel with the CSS version, the page's content hidden. */
 const PAGE_BG_H = 3800;
 const PAGE_BG = (() => {
+  // 12 October 2026 (liquid glass): a little cooler and deeper, and the glows carry a faint colour (steel blue, a
+  // touch of teal and of violet) for the glass to pick up. It was grey glows on #272b30 → #121417
   const glows = [   // x in % of the width, y, the two radii, the colour, its strength, where it has faded out. The first is on top
-    [8, -80, 1100, 720, "168,182,198", 0.17, 0.62], [104, 240, 900, 760, "128,142,158", 0.11, 0.64], [-6, 1180, 1000, 760, "150,164,180", 0.10, 0.64],
-    [106, 2050, 1000, 800, "140,154,170", 0.10, 0.64], [40, 2950, 1100, 760, "120,134,150", 0.09, 0.64],
+    [8, -80, 1100, 720, "164,186,212", 0.18, 0.62], [104, 240, 900, 760, "86,146,204", 0.16, 0.66], [-6, 1180, 1000, 760, "70,170,146", 0.12, 0.66],
+    [106, 2050, 1000, 800, "120,108,196", 0.12, 0.66], [40, 2950, 1100, 760, "84,136,190", 0.11, 0.66],
   ];
-  const base = [[0, "#272b30"], [420, "#212529"], [1000, "#1b1e22"], [1900, "#16191c"], [3000, "#121417"]];
+  const base = [[0, "#252a31"], [420, "#1f2329"], [1000, "#191c21"], [1900, "#14161a"], [3000, "#0f1114"]];
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${PAGE_BG_H}"><defs>`
     + `<linearGradient id="b" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="3000">${base.map(([y, c]) => `<stop offset="${y / 3000}" stop-color="${c}"/>`).join("")}</linearGradient>`
     + glows.map(([, , , , rgb, a, end], i) => `<radialGradient id="g${i}"><stop offset="0" stop-color="rgb(${rgb})" stop-opacity="${a}"/><stop offset="${end}" stop-color="rgb(${rgb})" stop-opacity="0"/></radialGradient>`).join("")
@@ -976,15 +978,26 @@ const spendColor = (spent, limit) => {
   const t = (spent - soft) / (limit - soft);
   return rgb([lerp(GREEN[0], YELLOW[0], t), lerp(GREEN[1], YELLOW[1], t), lerp(GREEN[2], YELLOW[2], t)]);
 };
+/* Liquid glass tiles (12 October 2026, his brief: "the ios 27 liquid glass UI"). A day tile and a month box are clear
+   glass: a faint wash of their colour and a see-through edge of it, so the page shows through them. The colour itself
+   is carried by the bar rising in the tile (the liquid) and by the figure. They were solid dark tiles (#26292c, edges
+   #33373b) with twice the wash. One place for all four calendars (finance and trading, days and months). */
+const TILE = {
+  empty: "rgba(255,255,255,0.03)", emptyLine: "rgba(255,255,255,0.075)",
+  up: "rgba(61,220,151,0.06)", upLine: "rgba(61,220,151,0.26)",
+  down: "rgba(255,93,108,0.075)", downLine: "rgba(255,93,108,0.32)",
+  warn: "rgba(245,211,75,0.065)", warnLine: "rgba(245,211,75,0.30)",
+  flat: "rgba(255,255,255,0.045)", flatLine: "rgba(255,255,255,0.12)",
+};
 const spendTint = (spent, limit) => {
-  if (spent > limit) return "rgba(255,93,108,0.12)";
-  if (spent <= limit * 0.9) return "rgba(61,220,151,0.10)";
-  return "rgba(245,211,75,0.10)";
+  if (spent > limit) return TILE.down;
+  if (spent <= limit * 0.9) return TILE.up;
+  return TILE.warn;
 };
 const spendBorder = (spent, limit) => {
-  if (spent > limit) return "#5a2830";
-  if (spent <= limit * 0.9) return "#1e4436";
-  return "#57501f";
+  if (spent > limit) return TILE.downLine;
+  if (spent <= limit * 0.9) return TILE.upLine;
+  return TILE.warnLine;
 };
 const remainColor = (remaining) => {
   if (remaining < WARN_RED) return rgb(RED);
@@ -8813,8 +8826,8 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                         {MONTHS_SHORT.map((name, m) => {
                           const mo = st.months[m];
                           const isNow = yr === now.getFullYear() && m === now.getMonth();
-                          const bg = !mo.n ? "#26292c" : mo.pnl >= 0 ? "rgba(61,220,151,0.08)" : "rgba(255,93,108,0.10)";
-                          const border = isNow ? "#7fb6e0" : !mo.n ? "#33373b" : mo.pnl >= 0 ? "#1e4436" : "#5a2830";
+                          const bg = !mo.n ? TILE.empty : mo.pnl >= 0 ? TILE.up : TILE.down;
+                          const border = isNow ? "#7fb6e0" : !mo.n ? TILE.emptyLine : mo.pnl >= 0 ? TILE.upLine : TILE.downLine;
                           return (
                             <div key={name} className="ycell"
                                  style={{ ...S.yearCell, background: bg, borderColor: border, animation: active ? `tileIn .42s var(--ease) ${m * 22}ms backwards` : "none" }}
@@ -8876,7 +8889,7 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                 <button className="cur-btn" style={S.currency} title={`Click: ${M.unit} ⇄ IDR · three quick clicks: MYR`} onClick={onCurClick}>
                   <CurRoll idx={CUR_LIST.indexOf(cur)} usd={M.unit} />
                 </button>
-              ) : <span style={{ ...S.currency, cursor: "default" }} title="Realised PnL, in rupiah">{M.base}</span>}
+              ) : <span className="cur-tag" style={{ ...S.currency, cursor: "default" }} title="Realised PnL, in rupiah">{M.base}</span>}
             </div>
           </div>
 
@@ -8947,8 +8960,8 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                 // the tile itself only carries a faint wash of it
                 const net = !day ? 0 : day.pnl > 0 ? 1 : day.pnl < 0 ? -1 : 0;
                 const ink = net > 0 ? C_GREEN : net < 0 ? C_RED : "#e3cd77";
-                const bg = !day ? "#26292c" : net > 0 ? "rgba(61,220,151,0.055)" : net < 0 ? "rgba(255,93,108,0.06)" : "#292c2f";
-                const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : !day ? "#33373b" : net > 0 ? "#234236" : net < 0 ? "#4f2a30" : "#3d4045";
+                const bg = !day ? TILE.empty : net > 0 ? TILE.up : net < 0 ? TILE.down : TILE.flat;
+                const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : !day ? TILE.emptyLine : net > 0 ? TILE.upLine : net < 0 ? TILE.downLine : TILE.flatLine;
                 const beSum = day ? day.pnl - day.profit + day.loss : 0;
                 return (
                   <div key={d} className={`cell${i < 7 ? " tip-below" : ""}${d === todayNum ? " today" : ""}${net < 0 ? " over" : ""}`}
@@ -13047,7 +13060,7 @@ export default function PnlCalendar() {
            !important because index.html and the boot code give body a plain inline colour, which would cover it. */
         body {
           min-height: 100vh;
-          background: ${PAGE_BG} no-repeat 0 0 / 100% ${PAGE_BG_H}px #121417 !important;
+          background: ${PAGE_BG} no-repeat 0 0 / 100% ${PAGE_BG_H}px #0f1114 !important;
         }
         :root {
           --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -13055,6 +13068,11 @@ export default function PnlCalendar() {
           --glass: rgba(43, 44, 46, 0.55);
           --glass-hi: rgba(255, 255, 255, 0.10);
           --glass-line: rgba(255, 255, 255, 0.09);
+          /* liquid glass (12 October 2026): the lit edge as a ring, as inset lines, and the two-part shadow */
+          --lg-rim: linear-gradient(150deg, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.12) 14%, rgba(255,255,255,0.035) 34%,
+                                    rgba(255,255,255,0) 52%, rgba(255,255,255,0.03) 74%, rgba(255,255,255,0.15) 100%);
+          --lg-edge: inset 0 1px 0 rgba(255,255,255,0.15), inset 0 0 0 1px rgba(255,255,255,0.05), inset 0 -1px 0 rgba(255,255,255,0.035);
+          --lg-drop: 0 1px 2px rgba(0,0,0,0.20), 0 10px 24px -10px rgba(0,0,0,0.42), 0 36px 84px -24px rgba(0,0,0,0.62);
         }
 
         /* everything cascades in when a month is opened from the year panel */
@@ -13100,32 +13118,34 @@ export default function PnlCalendar() {
         .cal-wrap > * { position: relative; z-index: 1; }
 
         /* ---------- liquid glass surfaces ---------- */
+        /* Liquid glass (12 October 2026, see the LIQUID GLASS block at the end): a see-through fill lighter at the
+           top, an edge lit from the top-left, a shadow in two parts. Until then: var(--glass) flat, a 0.10 top line,
+           one shadow; glass-soft rgba(36,40,45,0.44) with a 0.07 top line */
         .glass {
           position: relative;
-          background: var(--glass);
+          background: linear-gradient(180deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.025) 38%, rgba(255,255,255,0.012) 100%), rgba(30,33,38,0.62);
           backdrop-filter: blur(16px) saturate(135%);
           -webkit-backdrop-filter: blur(16px) saturate(135%);
-          border: 1px solid var(--glass-line);
-          box-shadow:
-            0 18px 44px rgba(0,0,0,0.38),
-            inset 0 1px 0 var(--glass-hi),
-            inset 0 -1px 0 rgba(0,0,0,0.22);
+          border: 1px solid rgba(255,255,255,0.07);
+          box-shadow: var(--lg-edge), var(--lg-drop);
           transition: box-shadow .45s var(--ease), border-color .45s var(--ease), transform .45s var(--ease);
         }
-        /* the specular edge that makes it read as glass */
+        /* the sheen across the top, the specular light that makes it read as glass. A fixed height (it was the whole
+           box), so a card that folds never draws it again */
         .glass::before {
-          content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+          content: ""; position: absolute; inset: 0 0 auto 0; height: min(100%, 280px); border-radius: inherit; pointer-events: none;
           z-index: 0;
-          background: linear-gradient(160deg, rgba(255,255,255,0.11) 0%, rgba(255,255,255,0.03) 20%, transparent 44%);
+          background: radial-gradient(90% 100% at 0% 0%, rgba(255,255,255,0.075), transparent 62%),
+                      linear-gradient(105deg, transparent 22%, rgba(255,255,255,0.035) 38%, transparent 54%);
         }
         .glass > *, .cell > *, .ycell > * { position: relative; z-index: 1; }
-        .glass:hover { border-color: rgba(255,255,255,0.16); box-shadow: 0 26px 60px rgba(0,0,0,0.46), inset 0 1px 0 rgba(255,255,255,0.16); }
+        .glass:hover { border-color: rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,0.19), inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 -1px 0 rgba(255,255,255,0.04), var(--lg-drop); }
 
 
         .glass-soft {
-          background: rgba(36, 40, 45, 0.44);
-          border: 1px solid rgba(255,255,255,0.07);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.07);
+          background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.018)), rgba(30,33,38,0.36);
+          border: 1px solid rgba(255,255,255,0.06);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), 0 6px 16px -10px rgba(0,0,0,0.5);
         }
 
         ::selection { background: rgba(61,220,151,0.28); color: #f2f6fa; }
@@ -13142,8 +13162,8 @@ export default function PnlCalendar() {
           transition: border-color .28s var(--ease), box-shadow .28s var(--ease), background .28s ease;
         }
         input:focus {
-          box-shadow: 0 0 0 3px rgba(61,220,151,0.14);
-          border-color: rgba(61,220,151,0.55) !important;
+          box-shadow: 0 0 0 3px rgba(255,255,255,0.10);
+          border-color: rgba(255,255,255,0.55) !important;
           outline: none !important;
         }
         .desc-field:focus { box-shadow: 0 0 0 3px rgba(154,163,171,0.14); border-color: rgba(200,210,220,0.45) !important; }
@@ -15799,6 +15819,7 @@ export default function PnlCalendar() {
         .ghost-plus:hover { background: #3ddc97 !important; border-color: #3ddc97 !important; color: #111 !important; font-weight: 800 !important; }
         .limit-input { background: transparent; border: 1px solid transparent; transition: background .2s ease, border-color .2s ease; }
         .limit-input:hover, .limit-input:focus { background: #26292c !important; border-color: #3a3f44 !important; outline: none; }
+        .limit-input:focus { border-color: rgba(255,255,255,0.55) !important; }
         .amt-field { transition: border-color .25s ease, box-shadow .25s ease; outline: none !important; }
         .amt-field.green:focus { border-color: #3ddc97 !important; box-shadow: 0 0 0 2px rgba(61,220,151,0.14); }
         .amt-field.red:focus { border-color: #ff5d6c !important; box-shadow: 0 0 0 2px rgba(255,93,108,0.14); }
@@ -16023,6 +16044,106 @@ export default function PnlCalendar() {
         @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
         @keyframes modalPop { 0% { opacity: 0; transform: scale(0.94) translateY(12px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
         @keyframes modalPopOut { 0% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(0.96) translateY(8px); } }
+
+        /* ================= LIQUID GLASS (12 October 2026) =================
+           His brief: "overall improve the UI design ... the overall inspo is the ios 27 liquid glass UI", with other
+           finance apps and trading terminals as reference. The layout, the fonts and every colour role stay; what
+           changes is the material. Everything here is static paint, written last so it wins over the rules above at
+           the same strength. The save point from before it is savepoints/before_glass_redesign.jsx.
+           - A glass surface is a see-through fill that is lighter at the top, a fine edge that catches the light
+             (brightest at the top-left corner, faint along the sides, a second softer glint at the bottom-right),
+             and a soft shadow under it in two parts: one close, one wide.
+           - On the cards that fold (.flow-card) the edge is made of inset shadows and the sheen has a fixed height,
+             never a mask or a gradient sized from the card: a fold changes the card's height on every frame, and
+             what is sized from the height is drawn again each time (the fold lag of 4 October 2026).
+           - The edge drawn with a mask (just below) is only on things whose size never moves: the month's hero,
+             the calendar, the floating buttons.
+           - No new backdrop-filter anywhere. */
+        html { background: #0f1114; }
+
+        /* the light-catching edge, as a ring cut out of a gradient: one masked layer, painted once */
+        .hero::after, .cal-wrap::after, .snav-burger::after, .calc-fab.glass::after, .year-nav::after {
+          content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 3; padding: 1px;
+          background: var(--lg-rim);
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+        }
+
+        /* the shared material (.glass, .glass-soft) is changed where it is first written, near the top of the styles,
+           so that everything written after it that refines it (the score boxes' wash, the pop-ups' own fills) still wins */
+
+        /* ---- the cards of a month ---- */
+        .flow-card.glass {
+          background: linear-gradient(180deg, rgba(255,255,255,0.058) 0px, rgba(255,255,255,0.02) 220px, rgba(255,255,255,0.008) 520px) 0 0 / 100% 520px no-repeat,
+                      rgba(27,30,35,0.58);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 -1px 0 rgba(255,255,255,0.03), var(--lg-drop);
+        }
+        .flow-card.glass:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), inset 0 0 0 1px rgba(255,255,255,0.045), inset 0 -1px 0 rgba(255,255,255,0.03), var(--lg-drop); }
+        .card-tag { box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); backdrop-filter: none; }
+        .hero-tag, .hero-vs { box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); }
+
+        /* ---- the month's hero: tinted glass, its colour in the edge too ---- */
+        .hero {
+          background: radial-gradient(900px 300px at 0% 0%, color-mix(in srgb, var(--hc) 22%, transparent), transparent 70%),
+                      radial-gradient(640px 260px at 100% 100%, color-mix(in srgb, var(--hc) 9%, transparent), transparent 72%),
+                      linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.015) 60%), rgba(24,27,31,0.5);
+          box-shadow: inset 0 1.5px 0 color-mix(in srgb, var(--hc) 62%, transparent), inset 0 0 0 1px rgba(255,255,255,0.04),
+                      0 -1px 26px color-mix(in srgb, var(--hc) 16%, transparent), var(--lg-drop);
+        }
+        .hero::after { background: linear-gradient(150deg, color-mix(in srgb, var(--hc) 70%, rgba(255,255,255,0.6)) 0%, color-mix(in srgb, var(--hc) 30%, transparent) 16%,
+                                                   rgba(255,255,255,0.03) 36%, rgba(255,255,255,0) 54%, rgba(255,255,255,0.03) 76%, color-mix(in srgb, var(--hc) 34%, rgba(255,255,255,0.14)) 100%); }
+        .hero-tile:first-child {
+          background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02)), color-mix(in srgb, var(--tc) 10%, rgba(20,22,26,0.4));
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 0 0 1px color-mix(in srgb, var(--tc) 16%, rgba(255,255,255,0.03)), 0 10px 26px -14px rgba(0,0,0,0.6);
+        }
+        .term .hero-tile, .term .hero-tile:first-child, .term .hero-tile:not(:first-child) {
+          background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.018)), rgba(14,16,19,0.45);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), inset 0 0 0 1px rgba(255,255,255,0.035);
+        }
+
+        /* ---- the calendar's tray ---- */
+        .cal-wrap {
+          background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.016) 40%, rgba(255,255,255,0.008) 100%), rgba(24,27,31,0.42);
+          box-shadow: var(--lg-drop) !important;
+        }
+
+        /* ---- day tiles and month boxes: clear glass chips, lit from the top ---- */
+        .cell, .ycell { box-shadow: inset 0 1px 0 rgba(255,255,255,0.11), inset 0 -1px 0 rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.22), 0 8px 18px -10px rgba(0,0,0,0.55); }
+        .cell:hover, .ycell:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.18), 0 2px 4px rgba(0,0,0,0.22), 0 16px 28px -12px rgba(0,0,0,0.6); }
+        .cell.today { box-shadow: 0 0 0 1px rgba(127,182,224,0.5), 0 0 22px rgba(127,182,224,0.28), inset 0 1px 0 rgba(255,255,255,0.12); }
+
+        /* ---- controls: glass capsules ---- */
+        .snav-burger {
+          border-radius: 50%;
+          background: linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.045)), rgba(32,35,40,0.6);
+          box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
+        }
+        .snav-burger:hover { background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.07)), rgba(36,39,44,0.62); }
+        .snav-burger i { z-index: 4; }
+        .calc-fab.glass, .year-nav {
+          background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)) !important;
+          border-color: rgba(255,255,255,0.06) !important;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.22), 0 14px 32px -10px rgba(0,0,0,0.55) !important;
+        }
+        .calc-fab.glass { border-radius: 50%; width: 48px; height: 48px; }
+        .year-nav { border-radius: 24px; }
+        /* the month switcher is one glass capsule, the way a toolbar groups its controls; the currency pill stands beside it */
+        .month-nav { padding: 2px 6px; border-radius: 99px; background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.022));
+                     box-shadow: inset 0 1px 0 rgba(255,255,255,0.11), inset 0 0 0 1px rgba(255,255,255,0.055), 0 4px 14px -8px rgba(0,0,0,0.55); }
+        .term .month-nav { border-radius: 6px; padding: 2px 4px; }
+        .term .cur-btn, .term .cur-tag, .term .chart-btn { border-radius: 5px !important; }
+        .cur-btn, .chart-btn, .x-btn { box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 12px -6px rgba(0,0,0,0.5); }
+        .ghost-plus { background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025)); border-color: rgba(255,255,255,0.10);
+                      box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); }
+        .bk-tip, .info-tip { box-shadow: 0 22px 50px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 0 rgba(255,255,255,0.12); }
+
+        /* ---- the sidebar: solid, as it was, with the same lit edge ---- */
+        .snav { background: linear-gradient(180deg, #282c31 0%, #1d2024 55%, #191b1f 100%);
+                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.13); }
+        .sd-act { background: linear-gradient(180deg, rgba(255,255,255,0.11), rgba(255,255,255,0.06)); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.12); }
+
+        /* ---- pop-ups ---- */
+        .wr-tile { box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), inset 0 0 0 1px rgba(255,255,255,0.04); }
       `}</style>
 
       {/* one hidden icon, always present: it gets the icon font set up during the opening screen, so the first
@@ -16353,8 +16474,8 @@ export default function PnlCalendar() {
                           const profit = ms.income - ms.spent;
                           const isNow = yr === now.getFullYear() && m === now.getMonth();
                           const color = !hasAnything ? "#8a9299" : profit >= 0 ? "#3ddc97" : "#ff5d6c";
-                          const bg = !hasAnything ? "#26292c" : profit >= 0 ? "rgba(61,220,151,0.08)" : "rgba(255,93,108,0.10)";
-                          const border = isNow ? "#7fb6e0" : !hasAnything ? "#33373b" : profit >= 0 ? "#1e4436" : "#5a2830";
+                          const bg = !hasAnything ? TILE.empty : profit >= 0 ? TILE.up : TILE.down;
+                          const border = isNow ? "#7fb6e0" : !hasAnything ? TILE.emptyLine : profit >= 0 ? TILE.upLine : TILE.downLine;
                           return (
                             <div key={name} className="ycell"
                                  style={{ ...S.yearCell, background: bg, borderColor: border,
@@ -16548,8 +16669,8 @@ export default function PnlCalendar() {
               const dIncomes = monthIncomes.filter((it) => it.day === d);
               const incTotal = dIncomes.reduce((s, it) => s + it.amount, 0);
               const color = spendColor(spent, dailyLimit);
-              const bg = !has ? "#26292c" : spendTint(spent, dailyLimit);
-              const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : has ? spendBorder(spent, dailyLimit) : "#33373b";
+              const bg = !has ? TILE.empty : spendTint(spent, dailyLimit);
+              const border = selected === d ? "#ffffff" : d === todayNum ? "#7fb6e0" : has ? spendBorder(spent, dailyLimit) : TILE.emptyLine;
               const dayPnl = dailyLimit - spent;
               const dots = [...dIncomes.map(() => "g"), ...(has ? items.map((it) => (it.zero ? "z" : "r")) : [])];
               const dayKey = keyOf(year, month, d);
@@ -17028,7 +17149,7 @@ const S = {
   title: { margin: 0, fontFamily: "'Press Start 2P', 'Inter', sans-serif", fontSize: 24, fontWeight: 400, lineHeight: 1, letterSpacing: 0, WebkitFontSmoothing: "none" },
   navBox: { display: "flex", alignItems: "center", gap: 8 },
   monthLabelBtn: { fontSize: 16, fontWeight: 600, minWidth: 90, textAlign: "center", background: "none", border: "none", cursor: "pointer", padding: "4px 6px" },
-  currency: { fontSize: 13, color: "#9aa3ab", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 10, padding: "5px 12px", marginLeft: 4, cursor: "pointer", transition: "border-color .18s, color .18s" },
+  currency: { fontSize: 13, fontWeight: 600, color: "#aab1b8", background: "linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03))", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 99, padding: "5px 13px", marginLeft: 4, cursor: "pointer", transition: "border-color .18s, color .18s" },
   curMenu: { position: "absolute", top: "calc(100% + 8px)", right: 0, borderRadius: 12, padding: 3, display: "flex", flexDirection: "column", gap: 2, zIndex: 40, minWidth: 78, boxShadow: "0 10px 24px rgba(0,0,0,0.45)", animation: "fadeDown .18s ease both" },
   curOpt: { border: "none", borderRadius: 7, padding: "8px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer", textAlign: "left", transition: "background .18s ease, color .18s ease", letterSpacing: "0.02em" },
 
@@ -17036,7 +17157,7 @@ const S = {
   yearBigWrap: { display: "flex", alignItems: "center", gap: 8 },
   yearBig: { fontSize: 48, fontWeight: 400, lineHeight: 1, letterSpacing: 0, marginTop: 12, display: "inline-flex", alignItems: "flex-start" },
   yearBarWrap: { flex: 1, minWidth: 260, paddingTop: 14 },
-  chartBtn: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)", color: "#9aa3ab", borderRadius: 10, width: 34, height: 30, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  chartBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 99, width: 36, height: 30, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   // the twelve months fill their year: three equal rows in whatever height the year block has (--yb), less its tag and a gap
   yearGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gridTemplateRows: "repeat(3, 1fr)", gap: 12, height: "calc(var(--yb) - 40px)" },
   yearCell: { borderWidth: 1, borderStyle: "solid", borderRadius: 16, minHeight: 116, padding: 12, cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontVariantNumeric: "tabular-nums" },
@@ -17046,10 +17167,10 @@ const S = {
 
   incomeRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 },
   incomeLabel: { fontSize: 13, color: "#9aa3ab" },
-  incomeInput: { background: "rgba(44,48,53,0.55)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 11, color: "#e8eaec", padding: "9px 13px", fontSize: 15 },
+  incomeInput: { background: "rgba(8,10,13,0.30)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, color: "#e8eaec", padding: "9px 13px", fontSize: 15 },
   ghostOverlay: { position: "absolute", left: 0, top: 0, height: "100%", display: "flex", alignItems: "center", padding: "0 12px", fontSize: 14, pointerEvents: "none", fontVariantNumeric: "tabular-nums", whiteSpace: "pre" },
   ghostPlusBtn: { borderRadius: 11, width: 36, height: 38, fontSize: 20, fontWeight: 600, cursor: "pointer", lineHeight: 1 },
-  arrowBtn: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)", color: "#9aa3ab", borderRadius: 11, width: 36, height: 38, fontSize: 14, cursor: "pointer" },
+  arrowBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 12, width: 36, height: 38, fontSize: 14, cursor: "pointer", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10)" },
   limitWrap: { display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", position: "relative" },
   limitInput: { color: "#e8eaec", padding: "8px 10px", fontSize: 14, width: 100, borderRadius: 6 },
   incomeList: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderRadius: 12, padding: "11px 13px", marginBottom: 14 },
@@ -17094,9 +17215,9 @@ const S = {
   panelTitle: { fontSize: 15, fontWeight: 700 },
   panelTotal: { fontSize: 13, color: "#9aa3ab", marginLeft: "auto", fontVariantNumeric: "tabular-nums" },
   sectionLabel: { fontSize: 11.5, fontWeight: 700, color: "#9aa3ab", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 9 },
-  closeBtn: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.10)", color: "#9aa3ab", borderRadius: 10, width: 30, height: 30, cursor: "pointer", fontSize: 12 },
+  closeBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 99, width: 30, height: 30, cursor: "pointer", fontSize: 12 },
   addRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center" },
-  darkInput: { background: "rgba(24,27,31,0.62)", border: "1px solid rgba(255,255,255,0.10)", borderRadius: 11, color: "#e8eaec", padding: "10px 13px", fontSize: 14 },
+  darkInput: { background: "rgba(8,10,13,0.32)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, color: "#e8eaec", padding: "10px 13px", fontSize: 14 },
   addIconBtn: { background: "linear-gradient(160deg,#54e6a8,#2bbd80)", color: "#07291c", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(61,220,151,0.28), inset 0 1px 0 rgba(255,255,255,0.35)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
   addIconBtnRed: { background: "linear-gradient(160deg,#ff7a86,#e0434f)", color: "#2b0d11", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(255,93,108,0.26), inset 0 1px 0 rgba(255,255,255,0.32)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
   emptyList: { color: "#8e969e", fontSize: 13, margin: "6px 2px" },
