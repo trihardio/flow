@@ -18,7 +18,7 @@ const { projectMonth } = new Function("keyOf", "monthKeyOf", "canonKey", "DEFAUL
 // the app's own test-data generator, read out of the file the same way
 const ga = src.indexOf("/* ---------- test data: the generator ----------"), gb = src.indexOf("/* ---------- test data: end of the generator ----------");
 if (ga < 0 || gb < ga) throw new Error("generator block not found");
-const { SPEND_STYLES, DEFAULT_TEST_CFG, testMonth } = new Function(src.slice(ga, gb) + "\nreturn { SPEND_STYLES, DEFAULT_TEST_CFG, testMonth };")();
+const { SPEND_STYLES, SPEND_PATTERNS, DEFAULT_TEST_CFG, testMonth } = new Function(src.slice(ga, gb) + "\nreturn { SPEND_STYLES, SPEND_PATTERNS, DEFAULT_TEST_CFG, testMonth };")();
 
 let fails = 0, checks = 0;
 const quiet = process.argv.includes("--quiet");
@@ -225,6 +225,8 @@ const backtest = (name, make, seeds) => {
 };
 const results = {};
 Object.keys(SPEND_STYLES).forEach((k) => { results[k] = backtest(`test data: ${k}`, (R) => appYear(k, R), 120); });
+// the spreads (20 October 2026: their own choice now, laid over an amount), each over the middle amount
+Object.keys(SPEND_PATTERNS).filter((k) => k !== "steady").forEach((k) => { results[k] = backtest(`test data: balanced, ${k}`, (R) => appYear("balanced", R, SPEND_PATTERNS[k]), 120); });
 results.bills = backtest("balanced + bills", (R) => appYear("balanced", R, { bills: 2.5 }), 120);
 results.weekdays = backtest("weekdays only", (R) => appYear("balanced", R, { dows: [true, true, true, true, true, false, false] }), 120);
 results.life = backtest("real-life months", lifeYear, 300);
@@ -310,7 +312,8 @@ const planTest = (name, make, seeds) => {
   return { with: e1 / n, without: e0 / n, band: inBand / n };
 };
 const planned = {};
-Object.keys(SPEND_STYLES).filter((k) => /balanced|erratic|big/i.test(k)).slice(0, 3).forEach((k) => { planned[k] = planTest(`test data: ${k}`, (R) => appYear(k, R), 60); });
+["balanced", "big"].forEach((k) => { planned[k] = planTest(`test data: ${k}`, (R) => appYear(k, R), 60); });
+planned.erratic = planTest("test data: balanced, erratic", (R) => appYear("balanced", R, SPEND_PATTERNS.erratic), 60);
 planned.life = planTest("real-life months", lifeYear, 150);
 report(planned.life.with < planned.life.without, `real-life months are closer with plans than without (${(planned.life.with * 100).toFixed(1)}% against ${(planned.life.without * 100).toFixed(1)}%)`);
 report(Object.values(planned).every((r) => r.band > 0.65 && r.band < 0.97), `with plans the likely range stays honest on all ${Object.keys(planned).length} (${Object.values(planned).map((r) => Math.round(r.band * 100) + "%").join(", ")}; aim 80%)`);

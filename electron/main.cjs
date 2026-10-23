@@ -61,6 +61,34 @@ const freeName = (dir, name) => {
   return out;
 };
 const exportSide = (name) => { const m = new RegExp(`^(?:[a-z0-9]+-)?(${Object.keys(EXPORT_SIDES).join("|")})-`).exec(name); return m ? EXPORT_SIDES[m[1]] : null; };
+/* A copy a day (13 October 2026): on the first launch of a day the page hands over what Export would write, one file
+   per side that has entries (autoBackup in App.jsx). It goes into "automatic backups" under EXPORT_DIR, named as an
+   export is ("rassam-pnl-export-13-10-2026.json"), so any of them can be handed to Import.
+   - Never over a file that is already there: a day's file is how things stood when the app was first opened that day.
+   - Only the last AUTO_KEEP days of each account's each side are kept. What is removed is only ever a file in that
+     folder whose whole name fits AUTO_NAME; an export he made himself is in another folder and is never touched.
+   Resolves to true (written), "there" (that day's file exists) or false (refused, or the folder can't be written). */
+const AUTO_DIR = path.join(EXPORT_DIR, "automatic backups");
+const AUTO_KEEP = 7;
+const AUTO_NAME = new RegExp(`^([a-z0-9]+-(?:${Object.keys(EXPORT_SIDES).join("|")}))-(\\d{2})-(\\d{2})-(\\d{4})\\.json$`);
+// Nothing here holds the shell up: the file is written and the old ones removed without waiting on the disk in between
+// other work (the prices and the AI helper are asked through this same process). "wx" writes only if the file is not
+// there yet, in one step: no look first and write after.
+const keepBackup = async (name, text) => {
+  const m = AUTO_NAME.exec(String(name));
+  if (!m || typeof text !== "string" || !text || text.length > 64e6) return false;
+  try {
+    await fs.promises.mkdir(AUTO_DIR, { recursive: true });
+    try { await fs.promises.writeFile(path.join(AUTO_DIR, m[0]), text, { flag: "wx" }); }
+    catch (err) { if (err.code === "EEXIST") return "there"; throw err; }
+    const day = (x) => Number(x[4] + x[3] + x[2]);
+    const mine = (await fs.promises.readdir(AUTO_DIR)).map((f) => AUTO_NAME.exec(f)).filter((x) => x && x[1] === m[1]).sort((a, b) => day(b) - day(a));
+    await Promise.all(mine.slice(AUTO_KEEP).map((old) => fs.promises.unlink(path.join(AUTO_DIR, old[0])).catch(() => { /* stays */ })));
+    return true;
+  } catch (err) { return false; }
+};
+// where the copies go and how many days are kept, for the page's settings to say (this file owns both)
+const backupInfo = () => ({ days: AUTO_KEEP, folder: path.basename(AUTO_DIR) });
 const DATA_DIR = path.join(app.getPath("appData"), "flow");
 const OLD_DATA_DIR = path.join(app.getPath("appData"), "trace");
 const hasData = (dir) => fs.existsSync(path.join(dir, "Local Storage"));
@@ -82,7 +110,7 @@ app.setName("Flow");
    When that is the case the page is told (--flow-gfx-cold, read in preload.cjs) and builds them all before its opening
    plays (warmPrime in App.jsx); when it is done a note is left in that same folder, so it goes with the cache if the
    system clears it. The note names the system and the engine: a new one of either builds its programs anew. */
-const GFX_VER = `${os.release()}|${process.versions.electron}|2`;      // (the last figure: raised when the preparation draws more than it did, so it is gone through once more)
+const GFX_VER = `${os.release()}|${process.versions.electron}|3`;      // (the last figure: raised when the preparation draws more than it did, so it is gone through once more)
 const GFX_AI_MAX_MS = 30000;          // the page waits for the AI helper's one-time setup this long at most (it took 24s when measured)
 const gfxHome = (() => {
   if (process.platform !== "darwin") return "";
@@ -116,7 +144,7 @@ app.commandLine.appendSwitch("js-flags", "--expose-gc");
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
 /* ---------- on-device AI ---------- */
-const AI_KINDS = new Set(["cat", "goal"]);
+const AI_KINDS = new Set(["cat", "goal", "sym"]);
 let aiProc = null;
 let aiSeq = 0;
 const aiWaiting = new Map();          // request id -> resolve
@@ -321,6 +349,69 @@ const readQuote = async (market, symbol, key) => {
   if (!reached) { quoteDown.clear(); return null; }
   return { none: true };              // online, and nobody lists that name
 };
+/* ---------- the money exchanger's rates (20 October 2026: "live prices updated from the internet", "make sure the
+   prices are accurate"): the same kind of request as the rates above, from two sources the app already asks ----------
+   - the whole table, every currency against the US dollar, from ExchangeRate-API (open.er-api.com, the rates' fallback
+     above): mid-market rates, but made once a day. Kept here for an hour.
+   - live rates for the currencies on screen, from TradingView's forex table (the one the stock prices come from):
+     ICE's mid-market quotes, streaming. Each currency is asked as USDxxx and as xxxUSD. What it doesn't give, from
+     Yahoo's forex quotes (the stocks' second source too).
+   Bitcoin-based tables (CoinGecko's exchange_rates) were not used: a currency's rate worked out from bitcoin's price in
+   it carries that market's premium, a percent or two off. */
+let fxTable = null, fxTableAt = 0;
+const fetchFxTable = async () => {
+  if (fxTable && Date.now() - fxTableAt < 60 * 60 * 1000) return fxTable;
+  try {
+    const res = await askJson("https://open.er-api.com/v6/latest/USD");
+    const j = res.ok ? await res.json() : null;
+    if (j && j.rates && j.rates.IDR > 0 && j.rates.USD === 1) {
+      const rates = {};
+      for (const [c, v] of Object.entries(j.rates)) if (/^[A-Z]{3}$/.test(c) && Number(v) > 0) rates[c] = Number(v);
+      fxTable = { rates, at: (Number(j.time_last_update_unix) || 0) * 1000, src: "ExchangeRate-API" };
+      fxTableAt = Date.now();
+    }
+  } catch (e) { /* offline, or down: the last table, if any */ }
+  return fxTable;
+};
+const fetchFxLive = async (codes) => {
+  const list = [...new Set((Array.isArray(codes) ? codes : []).filter((c) => typeof c === "string" && /^[A-Z]{3}$/.test(c) && c !== "USD"))].slice(0, 12);
+  if (!list.length) return { rates: {}, at: Date.now(), src: "TradingView" };
+  const rates = {}, from = [];
+  if (!((quoteDown.get("TradingView forex") || 0) > Date.now())) {
+    try {
+      const { url, init } = tvScan("forex", list.flatMap((c) => [`FX_IDC:USD${c}`, `FX_IDC:${c}USD`]));
+      const res = await askJson(url, init, QUOTE_TIMEOUT_MS);
+      const j = await res.json();
+      // of the two ways round, the one written with more digits: USDIDR 17995 over IDRUSD 0.00005541, EURUSD 1.1218 over USDEUR 0.8913
+      const digits = {};
+      for (const r of j && Array.isArray(j.data) ? j.data : []) {
+        const m = /^FX_IDC:([A-Z]{3})([A-Z]{3})$/.exec(r && r.s), v = r && r.d && Number(r.d[0]);
+        if (!m || !(v > 0) || (m[1] !== "USD") === (m[2] !== "USD")) continue;
+        const code = m[1] === "USD" ? m[2] : m[1], n = v * (Number(r.d[2]) || 1);
+        if (n > (digits[code] || 0)) { digits[code] = n; rates[code] = m[1] === "USD" ? v : 1 / v; }
+      }
+      from.push("TradingView");
+    } catch (e) { quoteDown.set("TradingView forex", Date.now() + QUOTE_REST_MS); }
+  }
+  /* what TradingView did not give (it can't be reached: on 20 October 2026 its scanner's name stopped resolving on his
+     line for a while; or it has no quote for that currency), from Yahoo's forex quotes, one currency a request */
+  const left = list.filter((c) => !(c in rates)).slice(0, 6);
+  if (left.length && !((quoteDown.get("Yahoo forex") || 0) > Date.now())) {
+    const got = await Promise.all(left.map(async (c) => {
+      try {
+        const res = await askJson(`https://query1.finance.yahoo.com/v8/finance/chart/${c}=X?interval=1d&range=1d`, {}, QUOTE_TIMEOUT_MS);
+        if (res.status === 429) return "down";
+        const j = await res.json(), m = j && j.chart && Array.isArray(j.chart.result) && j.chart.result[0] && j.chart.result[0].meta;
+        return m && m.currency === c && m.regularMarketPrice > 0 ? [c, Number(m.regularMarketPrice)] : null;
+      } catch (e) { return "down"; }
+    }));
+    const ok = got.filter(Array.isArray);
+    for (const [c, v] of ok) rates[c] = v;
+    if (ok.length) from.push("Yahoo");
+    else if (got.includes("down")) quoteDown.set("Yahoo forex", Date.now() + QUOTE_REST_MS);
+  }
+  return from.length ? { rates, at: Date.now(), src: from.join(", ") } : null;
+};
 const fetchQuote = (market, symbol) => {
   if (typeof market !== "string" || !Object.hasOwn(QUOTE_SOURCES, market) || typeof symbol !== "string" || !/^[A-Z0-9]{2,12}$/.test(symbol)) return null;
   const key = `${market}:${symbol}`;
@@ -397,7 +488,11 @@ app.whenReady().then(() => {
   ipcMain.handle("ai:pick", (e, kind, text, labels) => aiPick(kind, text, labels));
   ipcMain.handle("fx:rates", () => fetchRates());
   ipcMain.handle("fx:quote", (e, market, symbol) => fetchQuote(market, symbol));
+  ipcMain.handle("fx:table", () => fetchFxTable());
+  ipcMain.handle("fx:live", (e, codes) => fetchFxLive(codes));
   ipcMain.handle("gfx:settle", () => aiReady);
+  ipcMain.handle("backup:keep", (e, name, text) => keepBackup(name, text));
+  ipcMain.handle("backup:info", () => backupInfo());
   ipcMain.on("gfx:primed", gfxPrimed);
 
   createWindow();
