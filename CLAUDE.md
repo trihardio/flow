@@ -9,12 +9,15 @@ It was called Trace until 2 October 2026. Everything is named flow now, at his r
 
 A second side is built on the same lines: a trading PnL tracker with three sections, crypto, Indonesian stocks (Rassam calls that one the IDX/IHSG panel) and, since 8 October 2026, forex. The way in is the selections panel, then a trading selection with, from left to right, the Bitcoin coin, the IDX globe and the forex die (three coins until 11 October 2026). All three open the same tracker (`TradeTracker`): the coin in USDT, the globe in rupiah, the die in US dollars. Since 20 October 2026 each opens on **Home**, a dashboard of widgets he can move, resize, add and remove, finance too (`notes/dashboard.md`); the yearly panel is one press away, and Settings' Start screen switches any side back to Classic.
 
+A third, since 23 October 2026: **Health** (`HealthApp`; his words: "an app called health … tracks my fitness and everything, basically for my day to day life"), the activity rings standing on the selections panel between the wallet (finance) and the coin (trading), where he asked for it the same day ("in between finance and trading apps"; it was to the right of the coin for its first hours, out of sight until the coin was in the middle, and he could not find it). It goes straight in, with no panel between. See "Health" in the architecture notes.
+
 ## Project layout
-- The whole app lives in one file: `src/App.jsx` (~645 KB, React). Keep it as a single file unless the user asks to split it.
+- The whole app lives in one file: `src/App.jsx` (~1.3 MB, React). Keep it as a single file unless the user asks to split it.
 - `src/main.jsx` mounts it and loads `src/fonts.css`. Vite is the dev server and bundler (`npm run dev`, `npm run build`).
 - `src/fonts.css` + `src/fonts/`: Inter, Material Symbols Outlined, Ballet, Mrs Saint Delafield and Press Start 2P, stored locally. Never load fonts or anything else from the internet.
 - `electron/` is the Mac app shell:
   - `main.cjs`: window, serves `dist/` from `app://trace`, blocks every internet request the page could make, runs and caches the AI helper.
+    - It also reads one file for Health (`phoneRead`, `health:phone`, `window.flowHealth.phone()`; 23 October 2026): `flow-health.txt`, which a Shortcut on his iPhone saves in iCloud Drive every day, looked for in the Shortcuts folder (`~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents`), in iCloud Drive itself and in a Flow folder there; the newest wins. A file on the disk, not a request: iCloud does the syncing. See Health.
     - Two deliberate exceptions, both asked for by Rassam, both made by this process itself with Node's own `fetch` (`askJson`), never through the browser engine (the page itself still can't reach anything, and everything works offline with the last data). Add no other request.
       - `fetchRates`: the latest USDT → IDR / MYR rate (CoinGecko, then open.er-api.com as a fallback), when the crypto side asks.
       - `fetchQuote(market, symbol)`: the latest price of the coin or stock typed in a calculator (2 October 2026: "fetch data from the internet in real time"). Sources per market in `QUOTE_SOURCES`, best first: crypto is Bybit, Binance futures, Gate.io futures, Binance's public spot mirror, TradingView; stocks are TradingView, then Yahoo. A source that can't be reached rests ten minutes; the one that last knew a name is asked first.
@@ -76,6 +79,7 @@ Until 13 October 2026 everything was in this file, and every session read all of
   - `notes/trading.md`: Trading tracker: data and sums, day tiles, the crypto journal, the IDX journal, pictures, deposits, PnL analysis, Performance, Coins / Stocks, the win / loss ring, Breakdown, test data, wrapped, currency and rates, the finance side's design on the trading sides.
   - `notes/calculators.md`: Position calculator, Stock calculator, live prices, how results arrive, undo / redo.
   - `notes/forex.md`: Forex: the MetaTrader journal, its calculator, the forex die, the trading panel as a row of three.
+  - `notes/health.md`: Health, the third app (the rings on the selections panel, to-dos, the week, activity, body, diet, gym, the vision board, steps from the iPhone, a timetable read from a picture), and what the merge with the full app chose.
   - `notes/time-plan.md`: the time plan (⌘T, Home's Time plan widget): one typed line of steps and minutes, and when it ends.
   - `notes/exchanger.md`: the money exchanger (double click on the currency pill, ⌘E, Home's Exchange): its rows, its rates and where they come from, the list of currencies, its animations, and the calculator beside it.
   - `notes/charts.md`: Chart pop-up browsing and Compare, Scroll wheel steps, Charts (their look, the weekly chart's axis, income bars).

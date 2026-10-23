@@ -325,7 +325,7 @@ const userFilePre = () => `${fileFirst(USER.first) || USER.id || "flow"}${USER.t
 // an account deleted: everything saved under its keys, and its pictures. Never the first account: its keys are the plain ones
 const userErase = async (id) => {
   if (id === "main") return;
-  for (const k of [STORE_KEY, TEST_CFG_KEY, FX_EX_KEY, TP_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])]) await rawStore.del(`u:${id}:${k}`);
+  for (const k of [STORE_KEY, TEST_CFG_KEY, FX_EX_KEY, TP_KEY, HL_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])]) await rawStore.del(`u:${id}:${k}`);
   try { indexedDB.deleteDatabase(`flow-shots-${id}`); } catch (e) {}
   // the filed screens for the warm-up may show its figures: they all go (each screen is filed again once opened)
   try { const db = await warmOpen(); if (db) db.transaction("screens", "readwrite").objectStore("screens").clear(); } catch (e) {}
@@ -337,7 +337,7 @@ const userErase = async (id) => {
    on its trades are never swept (USER.aside, shotSweep): to the emptied account they belong to no trade. */
 const ASIDE_KEY = "flow-aside", ASIDE_PRE = "aside:";
 const PRIME_AGAIN = "flow-prime-again";      // the first launch's preparation is to be gone through once more (see gfxCold)
-const userKeys = (id) => [STORE_KEY, TEST_CFG_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])].map((k) => (id === "main" ? k : `u:${id}:${k}`));
+const userKeys = (id) => [STORE_KEY, TEST_CFG_KEY, HL_KEY, ...Object.values(MARKETS).flatMap((m) => [m.key, m.prefsKey])].map((k) => (id === "main" ? k : `u:${id}:${k}`));
 const asideRead = async () => { try { const v = JSON.parse((await rawStore.get(ASIDE_KEY)).value); return v && typeof v === "object" ? v : {}; } catch (e) { return {}; } };
 // the filed screens for the warm-up show an account's figures: they all go (each is filed again once opened)
 const warmClear = async () => {
@@ -456,6 +456,20 @@ const autoSaid = () => {
    hovering over them. not too big ui"): its name, and one short line. Always there, only shown; it takes the place of
    the system's own tooltip, so the button has no title. */
 const BkTip = ({ name, say }) => <span className="bk-tip"><b>{name}</b>{say}</span>;
+/* Something in the footer that comes and goes (a note such as "Backup restored", the Undo after an import): it slides in,
+   and when it is cleared it stays FOOT_OUT_MS longer to fade out where it stands instead of vanishing (22 October
+   2026). `show(leaving, last)` draws it; `last` is the value it had, for a note that is fading out. */
+const FOOT_OUT_MS = 260;
+const Linger = ({ on, show }) => {
+  const [last, setLast] = useState(on);
+  useEffect(() => {
+    if (on) { setLast(on); return; }
+    const t = setTimeout(() => setLast(null), FOOT_OUT_MS);
+    return () => clearTimeout(t);
+  }, [on]);
+  const v = on || last;
+  return v ? show(!on, v) : null;
+};
 
 /* ---------- warm-up: the screens he has opened before are drawn once more, all but invisibly, under the opening screen ----------
    The first time a screen is shown after a launch it pays for things its second showing doesn't: its text is shaped in
@@ -925,7 +939,7 @@ const TOUR_LIVE_MS = 120;              // what a press sets moving runs by itsel
 const TOUR_ENDS = [8, 16, 24, 32];     // keyframes: drawn this many ms after their start and before their end as well
 const stageTour = async (tell = () => {}) => {
   const veil = typeof document !== "undefined" ? document.querySelector(".launch-veil") : null;
-  if (!veil || warm.tour || !veil.querySelector(".launch-wrap.pick:not(.pick-coin)")) return;
+  if (!veil || warm.tour || !veil.querySelector(".launch-wrap.pick:not(.pick-coin):not(.pick-rings)")) return;
   const end = performance.now() + TOUR_MAX_MS;
   const ok = () => performance.now() < end && document.visibilityState !== "hidden" && veil.isConnected;
   // a frame; one that comes late is counted (the graphics process was building something: see the second go below)
@@ -1035,7 +1049,8 @@ const stageTour = async (tell = () => {}) => {
       leave();
       if (tour.undo) { tour.undo(); tour.undo = null; await beat(); }
       for (let i = 0; i < 5 && !q(".launch-wrap.pick"); i++) { const b = q(".pick-back"); if (!b) break; b.click(); await beat(); }
-      if (q(".launch-wrap.pick-coin")) { const w = q(".wallet-unit.active"); if (w) w.click(); await beat(); }
+      if (q(".launch-wrap.pick-coin")) { const r = q(".ring-unit"); if (r) r.click(); await beat(); }
+      if (q(".launch-wrap.pick-rings")) { const w = q(".wallet-unit.active"); if (w) w.click(); await beat(); }
       veil.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, view: window, clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 }));
       await beat();
       still();
@@ -1043,10 +1058,12 @@ const stageTour = async (tell = () => {}) => {
       still();
     } catch (e) {}
   };
-  const coin = ".coin-unit:not(.fx)", die = ".coin-unit.fx", globe = ".idx-unit", wallet = ".wallet-unit.active";
+  const coin = ".coin-unit:not(.fx)", die = ".coin-unit.fx", globe = ".idx-unit", wallet = ".wallet-unit.active", rings = ".ring-unit";
   const go = async (say) => {
     await over(".who-btn");
     await over(wallet);
+    await press(rings); await over(rings);        // the rings (Health) in the middle, and their way in
+    await enter(rings);
     await press(coin); await over(coin);
     say(0.12);
     await press(coin);                    // the trading panel
@@ -1064,6 +1081,7 @@ const stageTour = async (tell = () => {}) => {
     await press(coin); await enter(coin);
     say(0.7);
     await press(".pick-back");            // the selections panel, the coin in the middle
+    await press(rings);                   // the rings in the middle
     await press(wallet);                  // the wallet in the middle
     await press(wallet);                  // the wallets panel
     await over(wallet);
@@ -1150,6 +1168,16 @@ const DOTS_PER_ROW = 12;
 // A chart line's first stretch runs from the y-axis to its first point. It sets off at this share of that point's
 // value, so it comes in with a slight rise. From zero it was a wall from the corner up to January, which he found weird.
 const CHART_LEAD = 0.9;
+/* A round top for a scale of three steps over 0 (22 October 2026: the weekly chart read 194Rb, 388Rb, 588Rb, thirds of
+   1.15 × its highest point). The step is the smallest of NICE_STEPS × a power of ten that holds `v` in three, worked out
+   in the units shown (`unit`: 1 for rupiah, the rate for ringgit), so the lines read 150Rb / 300Rb / 450Rb or 40k / 80k /
+   120k. At most a third of the height goes spare. */
+const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+const niceTop = (v, unit = 1, steps = 3) => {
+  const need = Math.max(v / unit / steps, 1);
+  const mag = 10 ** Math.floor(Math.log10(need));
+  return (NICE_STEPS.find((k) => k * mag >= need - 1e-9) || 10) * mag * steps * unit;
+};
 // the card leaving its wallet and going back in (see the styles): how long each way takes, and its speed curve
 const CARD_OUT_MS = 500, CARD_IN_MS = 420;
 const CARD_OUT_EASE = "cubic-bezier(0.3,0,0.15,1)", CARD_IN_EASE = "cubic-bezier(0.4,0,0.2,1)";
@@ -1301,8 +1329,9 @@ const TRADE_FLIP_MS = 900;
 // the IDX globe: how long its turn and the wordmark under it are shown before the stage starts to fade
 const IDX_REVEAL_MS = 1900;
 const IDX_SPIN_MS = 1500;          // one full turn of the globe when it is pressed
-const MARKET_ROW = ["crypto", "idx", "fx"];
-const MARKET_SAID = { crypto: "Crypto", idx: "Indonesian stocks", fx: "Forex" };      // the line under the one in the middle      // the trading panel from left to right: the coin, the IDX globe, the forex coin
+const MARKET_ROW = ["crypto", "idx", "fx"];      // the trading panel from left to right: the coin, the IDX globe, the forex coin
+const MARKET_SAID = { crypto: "Crypto", idx: "Indonesian stocks", fx: "Forex" };      // the line under the one in the middle
+const PICK_ROW = ["wallet", "rings", "coin"];      // the selections panel from left to right: the wallet (finance), the rings (Health), the coin (trading)
 const IDX_TILT = 16;               // how far its axis leans from upright, degrees
 
 // Month title, pixel font: "t" is drawn one font pixel (3px) further right in its box than the other letters, which
@@ -2530,6 +2559,87 @@ const AmountField = ({ value, setValue, onSubmit, accent, cur, ghost, width, all
   </span>
 );
 
+/* Every press is felt (22 October 2026: "make sure everything has animations, pressing a button, opening a ui"). A
+   button, and anything else drawn as pressable (a pointer cursor), sinks a little while it is held and springs back
+   when let go; a quick click still shows the whole dip, Enter or Space on a button too. It is the separate `scale`
+   property, animated from here (Web Animations): it adds to whatever `transform` the thing already has (its lift under
+   the pointer, a slide, its place) and needs no `transition` in the style sheet. The shared `button:active` scale that
+   was there before snapped on most buttons: a class's own `transition`, or an inline one, took the shared one's place.
+   How far: about PRESS_PX / 2 in at each edge, so a wide row moves as little as a small button; never below PRESS_MIN.
+   Left out: what is typed in, what is dragged (.row-grip, a grab cursor), marks in a chart, the 3D on the stage (the
+   wallets, cards, coin, globe and die have presses of their own), what has a press of its own in the style sheet
+   (PRESS_OWN), and anything marked data-nopress. Plain script, no React state: nothing on the page is drawn again. */
+const PRESS_PX = 5, PRESS_MIN = 0.94, PRESS_IN_MS = 110, PRESS_OUT_MS = 300, PRESS_TAP_MS = 380, PRESS_SLIP = 8;
+const PRESS_OWN = ".cell, .ycell, .calc-fab, .pc-go, .ynav-btn, .goal-io, .goal-save, .limit-label, .tcfg-go, .sd-act, .acc-go, .ql-chip, .jr-add, .log-pill, .dg-btn, .dg-snap, .wd-act, .fx-cur, .fx-swap, .dg-pre-it, .calc-k, .sp-h, .pc-x";
+const PRESS_SKIP = "input, textarea, select, [contenteditable], .row-grip, [data-nopress], .warm-host";
+const PRESS_DOWN = "cubic-bezier(0.3, 0, 0.2, 1)", PRESS_UP = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+// a press that can't do anything yet because a box is empty (a goal's or a debt's + / − with no amount): the cursor goes
+// into that box and it gives a small shake, so the press is answered. The separate `translate`, like the press's `scale`
+const nudge = (box) => {
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  if (box.animate) box.animate([{ translate: "0 0" }, { translate: "-4px 0" }, { translate: "3px 0" }, { translate: "-2px 0" }, { translate: "1px 0" }, { translate: "0 0" }], { duration: 340, easing: "ease-out" });
+};
+const nudgeNear = (e) => nudge(e && e.currentTarget && e.currentTarget.parentElement && e.currentTarget.parentElement.querySelector("input"));
+const pressKit = (() => {
+  if (typeof window === "undefined" || typeof Element === "undefined" || !Element.prototype.animate) return null;
+  let held = null;
+  const cursor = (el) => getComputedStyle(el).cursor;
+  // what a press on `from` presses: the button it is in, else the outermost of the pointer-cursor boxes around it
+  // (the cursor is handed down, so the text inside a pressable row has it too)
+  const target = (from) => {
+    if (!(from instanceof Element) || from.closest(PRESS_SKIP)) return null;
+    const btn = from.closest('button, [role="button"]');
+    if (btn) return btn.disabled || btn.matches(PRESS_OWN) || btn.closest(".warm-host") ? null : btn;
+    let el = from;
+    while (el && el instanceof SVGElement) el = el.parentElement;
+    if (!el || el === document.body || cursor(el) !== "pointer") return null;
+    for (let n = 0; n < 12 && el.parentElement && el.parentElement !== document.body && cursor(el.parentElement) === "pointer"; n++) el = el.parentElement;
+    if (el.matches(PRESS_OWN) || el.closest(".launch-veil")) return null;
+    return el;
+  };
+  const now = (el) => { const v = getComputedStyle(el).scale; return v === "none" ? 1 : parseFloat(v) || 1; };
+  const depth = (el) => { const r = el.getBoundingClientRect(), big = Math.max(r.width, r.height); return big < 4 ? 0 : Math.max(PRESS_MIN, 1 - PRESS_PX / big); };
+  const play = (el, frames, ms, fill) => { if (el.__press) el.__press.cancel(); el.__press = el.animate(frames, { duration: ms, fill }); return el.__press; };
+  // let go: back to 1 from wherever it is; a press shorter than the sink still dips all the way first
+  const release = () => {
+    if (!held) return;
+    const { el, s, t0 } = held;
+    held = null;
+    window.removeEventListener("pointermove", slip, true);
+    const v = now(el);
+    if (performance.now() - t0 < PRESS_IN_MS) play(el, [{ scale: String(v), easing: PRESS_DOWN }, { scale: String(s), offset: 0.28, easing: PRESS_UP }, { scale: "1" }], PRESS_TAP_MS);
+    else play(el, [{ scale: String(v), easing: PRESS_UP }, { scale: "1" }], PRESS_OUT_MS);
+  };
+  // the pointer moved off while held (a drag, a scroll, marking text): spring back at once
+  const slip = (e) => { if (held && Math.hypot(e.clientX - held.x, e.clientY - held.y) > PRESS_SLIP) release(); };
+  const down = (e) => {
+    if (e.button !== 0 || !e.isPrimary) return;
+    release();
+    const el = target(e.target);
+    if (!el) return;
+    const s = depth(el);
+    if (!s) return;
+    play(el, [{ scale: String(now(el)), easing: PRESS_DOWN }, { scale: String(s) }], PRESS_IN_MS, "forwards");
+    held = { el, s, t0: performance.now(), x: e.clientX, y: e.clientY };
+    window.addEventListener("pointermove", slip, true);
+  };
+  const key = (e) => {
+    if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
+    const el = document.activeElement;
+    if (!el || !el.matches || !el.matches('button, [role="button"]') || el.disabled || el.matches(PRESS_OWN) || el.closest(PRESS_SKIP)) return;
+    const s = depth(el);
+    if (s) play(el, [{ scale: String(now(el)), easing: PRESS_DOWN }, { scale: String(s), offset: 0.28, easing: PRESS_UP }, { scale: "1" }], PRESS_TAP_MS);
+  };
+  window.addEventListener("pointerdown", down, { capture: true, passive: true });
+  window.addEventListener("pointerup", release, { capture: true, passive: true });
+  window.addEventListener("pointercancel", release, { capture: true, passive: true });
+  window.addEventListener("blur", release);
+  window.addEventListener("keydown", key, { capture: true, passive: true });
+  if (window.__perf) window.__perf.press = { target, depth };      // tools/perf journey `press` asks it what a press would sink
+  return { target, release };
+})();
+
 /* A logged row is moved to another day by its bar (11 October 2026: "drag and drop (mac style)", by "the gray bar
    inbetween expense rp text and description"; "all the transitions … very smooth and seamless. no lag"). Held and moved
    a few px, the row dims where it is and a small copy of it (amount, bar, name) comes out of the bar and stays under the
@@ -3690,8 +3800,11 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
    foot: { text, sub, ink, mood } is what the crocodile at the bottom says about today (the review: the mascot was
    decoration only); pressed, it goes home like the one in the footer. */
 const SIDE_PARTS = { cal: ".cal-wrap", weekly: '[data-card="weekly expenses"]', flow: '[data-card="money flow"]', goals: '[data-card="goals"]', debts: ".debt-sec",
-                     an: '[data-card="PnL analysis"]', perf: '[data-card="performance"]', names: '[data-card="coins"], [data-card="stocks"], [data-card="pairs"]', kinds: '[data-card="breakdown"]' };
-const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"] };
+                     an: '[data-card="PnL analysis"]', perf: '[data-card="performance"]', names: '[data-card="coins"], [data-card="stocks"], [data-card="pairs"]', kinds: '[data-card="breakdown"]',
+                     todo: '[data-card="to-do"]', week: '[data-card="week"]', activity: '[data-card="activity"]', body: '[data-card="body"]', diet: '[data-card="diet"]',
+                     gym: '[data-card="gym"]', board: '[data-card="vision board"]' };
+const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"],
+                   health: ["todo", "week", "activity", "body", "diet", "gym", "board"] };
 // the sidebar's props are written out afresh on every render of its panel: they are compared by what they hold, so the
 // sidebar redraws only when a row, the button on top or the crocodile's words really change
 const sameFlat = (a, b) => {
@@ -3928,9 +4041,9 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
     save([...debts, { id: uid(), name: who, amount, paid: 0, dir }]);
     setName(""); setAmt(""); setAdding(false);
   };
-  const pay = (id, sign) => {
+  const pay = (id, sign, e) => {
     const by = toIDR(payAmt);
-    if (!by) return;
+    if (!by) { nudgeNear(e); return; }
     save(debts.map((d) => (d.id === id ? { ...d, paid: Math.min(d.amount, Math.max(0, d.paid + sign * by)) } : d)));
     setPayAmt("");
   };
@@ -3988,7 +4101,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                     </span>
                   </div>
                   <div style={S.goalBarRow}>
-                    <GoalBar pct={pct} done={done} delay={120 + i * 60} />
+                    <GoalBar pct={pct} done={done} kind={k.dir} delay={120 + i * 60} />
                     <span style={{ ...S.goalPct, color: done ? "#8fd7a4" : "#c7cdd2" }}>
                       <CountNum value={Math.floor(pct)} duration={600} render={(n) => `${Math.round(n)}%`} />
                     </span>
@@ -3998,8 +4111,8 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                         <AmountField value={open ? payAmt : ""} setValue={setPayAmt} accent="green" cur={cur} width={150}
                                      ghost={open && ghostOf(payAmt)} allowDecimal={isMYR} onSubmit={() => pay(d.id, 1)} />
-                        <button className="goal-io in" title={k.pay} onClick={() => pay(d.id, 1)}><span className="msym">download</span></button>
-                        <button className="goal-io out" title={k.unpay} onClick={() => pay(d.id, -1)}><span className="msym">upload</span></button>
+                        <button className="goal-io in" title={k.pay} onClick={(e) => pay(d.id, 1, e)}><span className="msym">download</span></button>
+                        <button className="goal-io out" title={k.unpay} onClick={(e) => pay(d.id, -1, e)}><span className="msym">upload</span></button>
                         <span style={S.goalNote}>{done ? "Settled" : `${fmt(d.amount - d.paid)} left`}</span>
                       </div>
                     </div>
@@ -4716,7 +4829,8 @@ const GoalRing = ({ pct, color, delay, children }) => {
     </span>
   );
 };
-const GoalBar = ({ pct, done, delay }) => {
+// kind: "owe" or "owed" (a debt's bar is the colour of its side; it was blue, the colour of transport and today's ring)
+const GoalBar = ({ pct, done, delay, kind }) => {
   const [on, setOn] = useState(false);
   useEffect(() => {
     let r2;
@@ -4727,7 +4841,7 @@ const GoalBar = ({ pct, done, delay }) => {
     <div className="goal-track">
       {/* the fill is the track's whole width, slid in from the left (a moved surface, never a new width): its gradient
           starts where the track shows it, so it reads exactly as a fill that is only pct wide */}
-      <div className={`goal-fill${done ? " done" : ""}`}
+      <div className={`goal-fill${kind ? ` ${kind}` : ""}${done ? " done" : ""}`}
            style={{ transform: `translateX(${on ? Math.max(0, Math.min(100, pct)) - 100 : -100}%)`, "--gs": `${100 - Math.max(0, Math.min(100, pct))}%`,
                     transitionDelay: on ? `${delay || 0}ms` : "0ms" }} />
     </div>
@@ -5802,7 +5916,9 @@ const CurRoll = ({ idx, usd }) => {      // usd: what the dollar is called on th
    for the box to move, not to vanish and come back). Only transforms move: the box is two rounded pieces, each as
    wide as the whole switch, one clipping the other. The outer one slides to the choice's left edge; the inner one
    slides back inside it until its right end is on the choice's right edge. What shows is where the two overlap. */
-const SlideSeg = ({ options, value, onPick, style, cls = "" }) => {     // cls must never change: "go" is put on the element by hand, and a rewritten class name would take it off
+// washes: that many colour layers inside the sliding box (.seg-w), cross-faded by the caller's style (the journal's Win /
+// Breakeven / Loss); tab: the buttons' tabIndex
+const SlideSeg = ({ options, value, onPick, style, cls = "", washes = 0, tab }) => {     // cls must never change: "go" is put on the element by hand, and a rewritten class name would take it off
   const wrap = useRef(null), box = useRef(null), fill = useRef(null);
   useLayoutEffect(() => {
     const el = wrap.current, on = el.querySelector("button.on");
@@ -5814,8 +5930,8 @@ const SlideSeg = ({ options, value, onPick, style, cls = "" }) => {     // cls m
   }, [value]);
   return (
     <span className={`wr-seg slide ${cls}`} style={style} ref={wrap}>
-      <span className="seg-box" ref={box}><span className="seg-fill" ref={fill} /></span>
-      {options.map(([v, label, title]) => <button key={v} className={v === value ? "on" : ""} title={title} onClick={() => onPick(v)}>{label}</button>)}
+      <span className="seg-box" ref={box}><span className="seg-fill" ref={fill}>{washes > 0 && Array.from({ length: washes }, (_, i) => <i key={i} className="seg-w" />)}</span></span>
+      {options.map(([v, label, title]) => <button key={v} className={v === value ? "on" : ""} title={title} tabIndex={tab} onClick={() => onPick(v)}>{label}</button>)}
     </span>
   );
 };
@@ -7820,7 +7936,9 @@ const Reveal = ({ children }) => {
    of Reveal parts that open themselves, so it isn't put there afresh when the card is seen. */
 // each card's own colour, muted: its title is a tag in it and a soft glow of it sits behind the title. The glow is a
 // band of a fixed height at the top (never sized from the card), so folding a card draws nothing again
-const CARD_TINT = { "weekly expenses": "#86bfe8", "money flow": "#7fd8b4", goals: "#e3c477", "PnL analysis": "#86bfe8", performance: "#7fd8b4", coins: "#e3c477", stocks: "#e3c477", pairs: "#e3c477", breakdown: "#8fa3b8" };
+const CARD_TINT = { "weekly expenses": "#86bfe8", "money flow": "#7fd8b4", goals: "#e3c477", "PnL analysis": "#86bfe8", performance: "#7fd8b4", coins: "#e3c477", stocks: "#e3c477", pairs: "#e3c477", breakdown: "#8fa3b8",
+                    "to-do": "#7fc4f0", week: "#b7a4e6", activity: "#6fdcae", body: "#8fa3b8", diet: "#e3c477", gym: "#e2808c", "vision board": "#9db7c9" };
+const FOLD_SEEN = 0.12, FOLD_STEPS = [0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12, 0.14, 0.16, 0.18];
 const FoldCard = ({ title, sub, runKey, name, style, loose, parts, flask, children }) => {      // flask: the card's test-data flask (developer mode)
   const ref = useRef(null);
   const [seen, setSeen] = useState(false);
@@ -7830,9 +7948,13 @@ const FoldCard = ({ title, sub, runKey, name, style, loose, parts, flask, childr
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // it pops in when 18% of it shows, or once it reaches FOLD_SEEN of the window's height into view, whichever comes
+    // first: a tall card (Money flow) waited for 18% of itself, and left a hole of up to 250px in the page meanwhile
     const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => { if (e.isIntersecting) { setSeen(true); io.disconnect(); } });
-    }, { threshold: 0.18 });
+      entries.forEach((e) => {
+        if (e.isIntersecting && e.intersectionRect.height >= Math.min(e.boundingClientRect.height * 0.18, innerHeight * FOLD_SEEN)) { setSeen(true); io.disconnect(); }
+      });
+    }, { threshold: FOLD_STEPS });
     io.observe(el);
     return () => io.disconnect();
   }, []);
@@ -7963,7 +8085,7 @@ const shotUnpack = async (images) => {
   }
 };
 // the pictures no trade points to any more are removed. Only ever called with trades that were just read in full
-const SHOT_SIDES = ["idx-", "fx-"];        // how a picture's id begins on the stocks and the forex side; crypto's begin with nothing
+const SHOT_SIDES = ["idx-", "fx-", "hl-"];        // how a picture's id begins on the stocks and the forex side and on Health's vision board; crypto's begin with nothing
 const shotSweep = async (trades, pre = "") => {
   if (USER.aside) return;                // "Reset account": its trades are aside, and their pictures would look like nobody's
   const keep = new Set();
@@ -8045,6 +8167,9 @@ const ShotView = ({ id, onClose }) => {
    the button); the one inside a logged trade saves itself, at once on a switch and on leaving a box otherwise.
    A logged trade's sheet also holds its pictures (see "pictures on a trade"). */
 const JR_RES = { win: ["Win", "emoji_events"], be: ["Breakeven", "drag_handle"], loss: ["Loss", "close"] };
+// the sliding switch's choices (22 October 2026: its box slides to the result pressed and takes its colour on the way,
+// as the debts' switch does; it was three boxes that cross-faded)
+const JR_RES_OPTS = Object.entries(JR_RES).map(([id, [label, icon]]) => [id, <><span className="msym">{icon}</span>{label}</>]);
 // a break-even trade is one at exactly $0, or one he marked break-even with the few dollars it closed at (be)
 const resOf = (t) => (t.be || !t.pnl ? "be" : t.pnl > 0 ? "win" : "loss");
 // (forex: the box on top holds MetaTrader's Profit, which is the trade's result less its swap and its commission)
@@ -8163,13 +8288,8 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
          onDragOver={(e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
          onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attach(e.dataTransfer.files); } }}>
       <div className="jr-top">
-        <div className="jr-res">
-          {Object.entries(JR_RES).map(([id, [label, icon]]) => (
-            <button key={id} tabIndex={-1} className={`jr-res-b${d.res === id ? " on" : ""}`} onClick={() => setRes(id)}>
-              <span className="msym">{icon}</span>{label}
-            </button>
-          ))}
-        </div>
+        <SlideSeg cls="jr-res" washes={3} tab={-1} value={d.res} onPick={setRes} options={JR_RES_OPTS}
+                  style={{ "--w0": d.res === "win" ? 1 : 0, "--w1": d.res === "be" ? 1 : 0, "--w2": d.res === "loss" ? 1 : 0 }} />
         <label className="jr-pnl" title={d.res === "be" ? "A break-even trade is neither won nor lost. Leave it at $0, or type what it closed at (with a minus if it cost a little)"
                                          : fx ? "The trade's Profit as MetaTrader shows it, in USD. Its swap and its commission go in their own boxes and are added to it" : "Realised PnL of the trade, in USDT"}>
           <span>{d.res === "win" ? `+${U}` : d.res === "loss" ? `−${U}` : U}</span>
@@ -8232,9 +8352,12 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
           <JrRow icon="hourglass_top" tint="#8fb4e0" label="Duration">
             <input {...text("dur", 16)} onKeyDown={onKey} placeholder="e.g. 5h 40m" aria-label="Duration" />
           </JrRow>
-          {fx && (
-            <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
-              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 2.5" aria-label="R factor" />
+          {/* forex and stocks keep the R under the duration, which evens the two columns: on stocks the right one runs
+              on with the prices and the two values worked out from them (22 October 2026: an empty block stood under
+              Duration beside Buy value and Sell value) */}
+          {(fx || idx) && (
+            <JrRow icon="balance" tint="#e0b97c" label={idx ? "RR" : "R / Factor"}>
+              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder={idx ? "e.g. 3.2" : "e.g. 2.5"} aria-label="R factor" />
             </JrRow>
           )}
         </div>
@@ -8272,9 +8395,11 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
             <PairBox pad={11} ghost=" x" {...num("lev")} placeholder="e.g. 20" aria-label="Leverage" />
           </JrRow>
           )}
-          <JrRow icon="balance" tint="#e0b97c" label={idx ? "RR" : "R / Factor"}>
-            <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder={idx ? "e.g. 3.2" : "e.g. 8"} aria-label="R factor" />
-          </JrRow>
+          {!idx && (
+            <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
+              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 8" aria-label="R factor" />
+            </JrRow>
+          )}
           {idx && (
             <>
               <JrRow icon="login" tint="#8fb4e0" label="Avg entry"><input {...rp("entry")} placeholder="Average buy price" aria-label="Average entry price" /></JrRow>
@@ -8857,10 +8982,11 @@ const TradeTestCfg = ({ cfg, M, year, month, span, onRun, onClose }) => {
    and a file of another side than the one on screen is no longer refused: it goes to the side it belongs to. */
 const backupSide = (d) => {
   if (!isObj(d)) return null;
+  if (d.app === "flow-health") return isObj(d.health) ? "health" : null;
   if (isObj(d.trades)) return d.app === undefined ? "crypto" : Object.keys(MARKETS).find((k) => MARKETS[k].app === d.app) || null;
   return isObj(d.spending) || isObj(d.incomes) ? "finance" : null;
 };
-const SIDE_SAID = { finance: "finance", crypto: "crypto", idx: "stocks", fx: "forex" };
+const SIDE_SAID = { finance: "finance", crypto: "crypto", idx: "stocks", fx: "forex", health: "Health" };
 const sideSaid = (side) => `That was a ${SIDE_SAID[side]} backup: restored on the ${SIDE_SAID[side]} side`;
 // A trading backup for a side that is not on screen: cleaned as that side cleans it and written under that side's own
 // key, which it reads when it is next opened. Gives back how to undo it; null for a backup with nothing in it, false
@@ -14082,7 +14208,7 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
           {M.base === "USDT" ? (
             <>
               <div className="set-row">
-                <span className="set-k"><b>Shown in</b><small>Trades are kept in {M.unit}</small></span>
+                <span className="set-k"><b>Currency shown</b><small>Trades are always kept in {M.unit}</small></span>
                 <SlideSeg value={cur} onPick={(c) => { setCur(c); savePrefs({ cur: c }); refreshFx(); }} options={CUR_LIST.map((c) => [c, c === "USDT" ? M.unit : c])} />
               </div>
               {["IDR", "MYR"].map((c) => (
@@ -14125,28 +14251,1968 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
 
       <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
-          {saveError && <span className="bk-msg" role="status" style={{ color: "#ff8d97" }} title="The trades could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
           <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves your trades to the exports folder" : "Downloads a backup of every trade"} /></button>
           <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings trades back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
-          {backupMsg && <span className="bk-msg" role="status">{backupMsg}</span>}
-          {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the trades you had before this import">Undo</button>}
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {dev && <>
             <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
             <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
             <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated trades only" /></button>
-            {testMsg && <span className="bk-msg" role="status" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
+          {/* what comes and goes stands after the buttons, so a note or "Saving…" never moves one under the pointer */}
+          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
+          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="The trades could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
+          <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+          <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the trades you had before this import">Undo</button>} />
+          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
         <button className="foot-logo" onClick={onHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
       </div>
     </>
   );
 }
+
+/* ================= Health (22 October 2026: "another app called health … tracks my fitness and everything, basically
+   for my day to day life": a to-do list for every day that repeats for as many days as he says, his weekly campus
+   timetable, steps and calories, BMI, a diet goal ("i am 90kg 168cm and i want … 75kg in 3 months which is in … (month)"),
+   gym sessions, and a vision board; after Garmin's day, Apple's rings, Notion, Milanote). It stands third on the
+   selections panel, as 3D activity rings, and is a side of its own like the trading tracker: `HealthApp`, its data under
+   one key of the account (HL_KEY) and its pictures in the trades' picture store under ids that begin "hl-". ============ */
+
+/* ---------- health: the maths (tools/health-test.mjs reads everything from here to "the maths end") ---------- */
+const HL_KCAL_KG = 7700;        // kcal in a kilo of body weight lost or gained: the planning figure every calculator uses
+const HL_SAFE_PCT = 1;          // % of body weight a week: faster than this, a loss is called too fast (0.5 for a gain)
+const HL_FLOOR = { m: 1500, f: 1200 };        // the least a day's eating should come to: below it, walking makes up the rest
+const HL_GYM_MET = 5;           // a weight session, about this hard (MET): kcal = MET × kg × hours
+// BMI bands for Asian bodies (WHO Asia-Pacific): healthy ends at 23, not 25. [upper bound, name, colour]
+const HL_BMI = [[18.5, "Underweight", "#8fa3b8"], [23, "Healthy", "#3ddc97"], [25, "Overweight", "#e3cd77"], [30, "Obese I", "#ff9a76"], [Infinity, "Obese II", "#ff5d6c"]];
+// how active a week is, beyond the steps logged: the factor the resting burn is multiplied by
+const HL_ACT = [[1.2, "Little", "Mostly sitting"], [1.375, "Light", "Exercise 1–3 days a week"], [1.55, "Moderate", "3–5 days a week"],
+                [1.725, "Active", "6–7 days a week"], [1.9, "Very active", "Hard training every day"]];
+const hlKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const hlDate = (k) => new Date(`${k}T12:00:00`);
+const hlDays = (a, b) => Math.round((hlDate(b) - hlDate(a)) / 864e5);
+const hlAddDays = (k, n) => { const d = hlDate(k); d.setDate(d.getDate() + n); return hlKey(d); };
+// n months on, on the same day of the month (the 31st falls back to the month's last day)
+const hlAddMonths = (k, n) => {
+  const d = hlDate(k), day = d.getDate();
+  d.setDate(1); d.setMonth(d.getMonth() + n);
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  return hlKey(d);
+};
+const hlDow = (k) => (hlDate(k).getDay() + 6) % 7;        // Monday 0 … Sunday 6
+const hlBmi = (kg, cm) => (kg > 0 && cm > 0 ? kg / (cm / 100) ** 2 : 0);
+const hlBand = (bmi) => HL_BMI.find((b) => bmi < b[0]) || HL_BMI[HL_BMI.length - 1];
+const hlHealthy = (cm) => [18.5 * (cm / 100) ** 2, 22.9 * (cm / 100) ** 2];       // the healthy weights for a height, kg
+// the body's burn at rest a day (Mifflin-St Jeor)
+const hlBmr = (kg, cm, age, sex) => 10 * kg + 6.25 * cm - 5 * age + (sex === "f" ? -161 : 5);
+const hlStepKcal = (kg) => (0.57 * kg * 2.20462) / 2000;      // a step at a walk: 0.57 kcal a pound a mile, 2,000 steps a mile
+const hlStepKm = (cm) => (cm * 0.415) / 100000;               // a stride is about 41.5% of one's height
+const hlGymKcal = (kg, min) => (HL_GYM_MET * kg * min) / 60;
+const hl1rm = (kg, reps) => (kg > 0 && reps > 0 ? (reps === 1 ? kg : kg * (1 + reps / 30)) : 0);       // Epley
+const hlVolume = (s) => (s.ex || []).reduce((a, e) => a + (e.sets || []).reduce((b, x) => b + (x.kg || 0) * (x.reps || 0), 0), 0);
+/* The way from where he stands to his goal. p: { kg, cm, age, sex, act, steps (his daily goal) }, g: { target, by }, today,
+   way: "eat" (eat less), "move" (walk more) or "both" (half each). The kilos to go, spread over the days left, at
+   HL_KCAL_KG a kilo, is what each day has to come short (or over, for a gain). What the eating doesn't cut is walked off:
+   the steps to add to his goal. Eating never goes under the floor: below it, the rest is walked too. `safeBy` is the day
+   the goal would be reached at HL_SAFE_PCT of his weight a week, each week on the weight of that week */
+const hlPlan = (p, g, today, way = "eat") => {
+  const days = Math.max(1, hlDays(today, g.by)), diff = p.kg - g.target, lose = diff > 0, abs = Math.abs(diff);
+  const bmr = hlBmr(p.kg, p.cm, p.age, p.sex), tdee = bmr * p.act;
+  const perWeek = abs / (days / 7), pct = (perWeek / p.kg) * 100, daily = (abs * HL_KCAL_KG) / days;
+  const floor = HL_FLOOR[p.sex === "f" ? "f" : "m"];
+  let eat = tdee + daily, extra = 0;
+  if (lose) {
+    const cut = way === "move" ? 0 : way === "both" ? daily / 2 : daily;
+    eat = tdee - cut; extra = daily - cut;
+    if (eat < floor) { extra += floor - eat; eat = floor; }
+  }
+  const extraSteps = extra > 0 ? Math.ceil(extra / hlStepKcal(p.kg) / 100) * 100 : 0;
+  const safe = lose ? HL_SAFE_PCT : HL_SAFE_PCT / 2;
+  const weeks = abs < 0.05 ? 0 : Math.log(g.target / p.kg) / Math.log(lose ? 1 - safe / 100 : 1 + safe / 100);
+  return { days, diff, lose, abs, bmr, tdee, perWeek, pct, daily, floor, eat, extra, extraSteps, steps: (p.steps || 0) + extraSteps,
+           fast: pct > safe, safe, safeBy: hlAddDays(today, Math.ceil(weeks * 7)), done: abs < 0.05 };
+};
+// where the plan says he should stand on day k: a straight line from where he started to the target on its day
+const hlPlanAt = (g, k) => {
+  const all = Math.max(1, hlDays(g.from, g.by)), at = Math.min(all, Math.max(0, hlDays(g.from, k)));
+  return g.start + ((g.target - g.start) * at) / all;
+};
+/* A to-do: { id, text, from (day), rep: "once" | "daily" | "weekdays" | "days", dows (Monday 0, for "days"), len (how many
+   days it runs from `from`; 0 = no end), done: { day: 1 }, skip: { day: 1 } (taken off that one day) }. hlOn: is it on day k */
+const hlOn = (t, k) => {
+  if (k < t.from || (t.skip && t.skip[k])) return false;
+  if (t.rep === "once") return k === t.from;
+  if (t.len && hlDays(t.from, k) >= t.len) return false;
+  const w = hlDow(k);
+  return t.rep === "daily" || (t.rep === "weekdays" && w < 5) || (t.rep === "days" && (t.dows || []).includes(w));
+};
+// which time of its run day k is, of how many (0: no end), and how many in a row were done up to it
+const hlRun = (t, k) => {
+  if (t.rep === "once") return { at: 1, of: 1, streak: t.done && t.done[k] ? 1 : 0 };
+  const span = t.len || Math.max(hlDays(t.from, k) + 1, 1);
+  let at = 0, of = 0, streak = 0;
+  for (let i = 0; i < span && i < 3660; i++) {
+    const d = hlAddDays(t.from, i);
+    if (!hlOn({ ...t, skip: null }, d)) continue;
+    of++;
+    if (d <= k) { at++; if (d < k || (t.done && t.done[d])) streak = t.done && t.done[d] ? streak + 1 : 0; }
+  }
+  return { at, of: t.len ? of : 0, streak };
+};
+/* ---------- health: the maths end ---------- */
+
+const HL_KEY = "flow-health";
+const HL_PIC = "hl-";               // a board picture's id begins so (SHOT_SIDES): no trading side's sweep takes it
+const HL_SEE = { steps: 8000, move: 500 };       // a day's goals until he sets his own: steps, and kcal burned moving
+// the rings' colours, outer to inner (Apple's order, in this app's colours): steps, kcal moved, to-dos
+const HL_TINT = [["#2fd08a", "#9cf0c8"], ["#ff8a4c", "#ffcf7a"], ["#4fb3ff", "#a8e1ff"]];
+// a class's colour on the timetable: soft tones that read on the dark
+const HL_CLS = ["#7fb6e0", "#8fd7a4", "#e3c477", "#e2808c", "#b7a4e6", "#7fd8d0", "#f0a77a"];
+const HL_SPLITS = ["Push", "Pull", "Legs", "Upper", "Lower", "Full body", "Cardio"];
+// what the exercise box offers while it is typed in (any other name can be typed)
+const HL_LIFTS = ["Bench press", "Incline bench press", "Overhead press", "Lateral raise", "Triceps pushdown", "Chest fly", "Dips",
+  "Pull-up", "Lat pulldown", "Barbell row", "Seated row", "Face pull", "Biceps curl", "Hammer curl", "Deadlift", "Romanian deadlift",
+  "Squat", "Front squat", "Leg press", "Leg curl", "Leg extension", "Hip thrust", "Calf raise", "Lunge", "Plank", "Treadmill", "Cycling"];
+const hlBlank = () => ({ version: 1, profile: { cm: 0, kg: 0, age: 21, sex: "m", act: 1.375, steps: HL_SEE.steps, move: HL_SEE.move },
+  goal: null, weights: {}, steps: {}, typed: {}, food: {}, todos: [], classes: [], gym: [], board: [], tests: { steps: {}, weights: {}, profile: 0 }, phone: null });
+const hlNum = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+const hlDayOk = (k) => typeof k === "string" && /^\d{4}-\d{2}-\d{2}$/.test(k);
+const hlTimeOk = (t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+const hlText = (s, n) => (typeof s === "string" ? s.slice(0, n) : "");
+const hlMap = (o, lo, hi) => {
+  const out = {};
+  if (o && typeof o === "object" && !Array.isArray(o)) for (const k in o) { const n = hlNum(o[k], lo, hi); if (hlDayOk(k) && n !== null) out[k] = n; }
+  return out;
+};
+const hlDays01 = (o) => { const out = {}; if (o && typeof o === "object") for (const k in o) if (hlDayOk(k) && o[k]) out[k] = 1; return out; };
+// what is read from the store or a backup, made safe: anything that does not fit is dropped, never guessed
+const cleanHealth = (d) => {
+  const b = hlBlank();
+  if (!d || typeof d !== "object") return b;
+  const p = d.profile || {};
+  b.profile = { cm: hlNum(p.cm, 100, 250) || 0, kg: hlNum(p.kg, 25, 400) || 0, age: hlNum(p.age, 10, 100) || 21, sex: p.sex === "f" ? "f" : "m",
+                act: HL_ACT.some((a) => a[0] === p.act) ? p.act : 1.375, steps: hlNum(p.steps, 1000, 60000) || HL_SEE.steps, move: hlNum(p.move, 50, 3000) || HL_SEE.move };
+  const g = d.goal;
+  if (g && hlNum(g.target, 25, 400) && hlDayOk(g.by) && hlDayOk(g.from) && hlNum(g.start, 25, 400) && g.by > g.from)
+    b.goal = { target: +g.target, by: g.by, from: g.from, start: +g.start, way: ["eat", "both", "move"].includes(g.way) ? g.way : "both", ...(g.test ? { test: true } : {}) };
+  const ts = d.tests || {};
+  b.tests = { steps: hlDays01(ts.steps), weights: hlDays01(ts.weights), profile: ts.profile ? 1 : 0 };
+  b.weights = hlMap(d.weights, 25, 400);
+  b.steps = hlMap(d.steps, 0, 200000);
+  b.typed = hlDays01(d.typed);
+  b.food = hlMap(d.food, 0, 20000);
+  const test = (x) => (x.test ? { test: true } : {});
+  b.todos = (Array.isArray(d.todos) ? d.todos : []).filter((t) => t && t.id && hlText(t.text, 200).trim() && hlDayOk(t.from)).map((t) => ({
+    id: String(t.id), text: hlText(t.text, 200), from: t.from, rep: ["once", "daily", "weekdays", "days"].includes(t.rep) ? t.rep : "once",
+    dows: (Array.isArray(t.dows) ? t.dows : []).filter((w) => Number.isInteger(w) && w >= 0 && w < 7), len: hlNum(t.len, 0, 3650) || 0,
+    done: hlDays01(t.done), skip: hlDays01(t.skip), ...test(t) }));
+  b.classes = (Array.isArray(d.classes) ? d.classes : []).filter((c) => c && c.id && hlText(c.name, 60).trim() && Number.isInteger(c.dow) && c.dow >= 0 && c.dow < 7
+      && hlTimeOk(c.from) && hlTimeOk(c.to) && c.to > c.from).map((c) => ({
+    id: String(c.id), name: hlText(c.name, 60), room: hlText(c.room, 40), dow: c.dow, from: c.from, to: c.to,
+    tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0, ...test(c) }));
+  b.gym = (Array.isArray(d.gym) ? d.gym : []).filter((s) => s && s.id && hlDayOk(s.day)).map((s) => ({
+    id: String(s.id), day: s.day, name: hlText(s.name, 40) || "Workout", min: hlNum(s.min, 0, 600) || 0, note: hlText(s.note, 400),
+    ex: (Array.isArray(s.ex) ? s.ex : []).filter((e) => e && hlText(e.name, 60).trim()).slice(0, 30).map((e) => ({
+      name: hlText(e.name, 60), sets: (Array.isArray(e.sets) ? e.sets : []).slice(0, 30).map((x) => ({ kg: hlNum(x && x.kg, 0, 1000) || 0, reps: hlNum(x && x.reps, 0, 1000) || 0 })) })),
+    ...(s.src === "apple" ? { src: "apple", kcal: hlNum(s.kcal, 0, 10000) || 0 } : {}), ...test(s) }));
+  const ph = d.phone;     // the iPhone's file last taken in: when it was saved, how many days it held, its last day
+  if (ph && hlNum(ph.at, 1, 1e14)) b.phone = { at: +ph.at, days: hlNum(ph.days, 0, 400) || 0, to: hlDayOk(ph.to) ? ph.to : "" };
+  b.board = (Array.isArray(d.board) ? d.board : []).filter((c) => c && c.id && (c.kind === "note" || (c.kind === "pic" && shotIdOk(c.img)))).slice(0, 200).map((c) => ({
+    id: String(c.id), kind: c.kind, x: hlNum(c.x, 0, 4000) || 0, y: hlNum(c.y, 0, 4000) || 0, w: hlNum(c.w, 120, 640) || 220, z: hlNum(c.z, 0, 1e9) || 0,
+    text: hlText(c.text, 2000), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
+    ...(c.kind === "pic" ? { img: c.img } : {}), ...test(c) }));
+  return b;
+};
+// a backup holds what he entered himself: generated test entries stay behind (the test steps and weights, and a profile
+// the test data filled in, are marked in `tests`)
+const hlOwn = (h) => {
+  const t = h.tests || {};
+  const strip = (map, k) => Object.fromEntries(Object.entries(map).filter(([d]) => !(t[k] && t[k][d])));
+  const { tests, ...rest } = h;
+  return { ...rest, profile: t.profile ? hlBlank().profile : h.profile, goal: h.goal && !h.goal.test ? h.goal : null,
+           steps: strip(h.steps, "steps"), weights: strip(h.weights, "weights"), todos: h.todos.filter((x) => !x.test),
+           classes: h.classes.filter((x) => !x.test), gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test) };
+};
+const HL_EMPTY = (h) => !Object.keys(h.steps).length && !Object.keys(h.weights).length && !h.todos.length && !h.classes.length && !h.gym.length && !h.board.length && !h.goal && !h.profile.kg;
+
+/* ---------- Apple Health: the export of the Health app on his iPhone (Health → his picture → Export All Health Data), a
+   zip with one big XML file in it. It is read as a stream, a piece at a time, and never all at once: a few years of data
+   are hundreds of MB. What is taken from it: the steps of each day and the weights. An iPhone and a watch each count
+   the same steps, so a day's steps are the most that one source counted that day, not the sum of all of them. ---------- */
+const hlZipXml = async (file) => {
+  // the zip's table of contents is at its end: find it, then the entry of export.xml in it
+  const tail = new DataView(await file.slice(Math.max(0, file.size - 70000)).arrayBuffer());
+  let eocd = -1;
+  for (let i = tail.byteLength - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) return null;
+  let cdOff = tail.getUint32(eocd + 16, true), cdSize = tail.getUint32(eocd + 12, true);
+  if (cdOff === 0xffffffff) {                // a zip over 4 GB: the ZIP64 record before it says where
+    const loc = eocd - 20;
+    if (loc >= 0 && tail.getUint32(loc, true) === 0x07064b50) {
+      const z64 = Number(tail.getBigUint64(loc + 8, true));
+      const rec = new DataView(await file.slice(z64, z64 + 56).arrayBuffer());
+      cdSize = Number(rec.getBigUint64(40, true)); cdOff = Number(rec.getBigUint64(48, true));
+    }
+  }
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  for (let p = 0; p + 46 <= cd.byteLength && cd.getUint32(p, true) === 0x02014b50;) {
+    const method = cd.getUint16(p + 10, true), nameLen = cd.getUint16(p + 28, true), extraLen = cd.getUint16(p + 30, true), noteLen = cd.getUint16(p + 32, true);
+    let size = cd.getUint32(p + 20, true), off = cd.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(cd.buffer, cd.byteOffset + p + 46, nameLen));
+    if (size === 0xffffffff || off === 0xffffffff) {          // the real figures are in the ZIP64 extra field
+      for (let q = p + 46 + nameLen, end = q + extraLen; q + 4 <= end;) {
+        const id = cd.getUint16(q, true), len = cd.getUint16(q + 2, true);
+        if (id === 1) {
+          let r = q + 4;
+          if (cd.getUint32(p + 24, true) === 0xffffffff) r += 8;            // (the size unpacked comes first)
+          if (size === 0xffffffff) { size = Number(cd.getBigUint64(r, true)); r += 8; }
+          if (off === 0xffffffff) off = Number(cd.getBigUint64(r, true));
+        }
+        q += 4 + len;
+      }
+    }
+    if (/(^|\/)export\.xml$/.test(name)) {
+      const lh = new DataView(await file.slice(off, off + 30).arrayBuffer());
+      const start = off + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
+      const raw = file.slice(start, start + size).stream();
+      return method === 0 ? raw : method === 8 && typeof DecompressionStream !== "undefined" ? raw.pipeThrough(new DecompressionStream("deflate-raw")) : null;
+    }
+    p += 46 + nameLen + extraLen + noteLen;
+  }
+  return null;
+};
+// tell(share read 0…1). Gives back { steps: { day: n }, weights: { day: kg }, days, from, to } or null when it is no export
+const hlAppleRead = async (file, tell) => {
+  const isZip = /\.zip$/i.test(file.name) || file.type === "application/zip";
+  const stream = isZip ? await hlZipXml(file) : file.stream();
+  if (!stream) return null;
+  const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+  const bySrc = {}, weights = {}, attr = (s, a) => { const m = new RegExp(`\\s${a}="([^"]*)"`).exec(s); return m ? m[1] : ""; };
+  let carry = "", read = 0, seen = false, lastTell = 0;
+  const total = isZip ? file.size * 9 : file.size;         // (unpacked it is about nine times the zip, for the progress only)
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    read += value.length;
+    const text = carry + value;
+    const cut = text.lastIndexOf("<");
+    carry = cut >= 0 ? text.slice(cut) : "";
+    const body = cut >= 0 ? text.slice(0, cut) : text;
+    if (!seen && body.includes("<HealthData")) seen = true;
+    for (const m of body.matchAll(/<Record type="HKQuantityTypeIdentifier(StepCount|BodyMass)"[^>]*>/g)) {
+      const s = m[0], day = attr(s, "startDate").slice(0, 10), v = parseFloat(attr(s, "value"));
+      if (!hlDayOk(day) || !(v >= 0)) continue;
+      if (m[1] === "StepCount") { const src = attr(s, "sourceName") || "?"; ((bySrc[day] ||= {})[src] = (bySrc[day][src] || 0) + v); }
+      else { const kg = attr(s, "unit") === "lb" ? v * 0.453592 : v; if (kg >= 25 && kg <= 400) weights[day] = Math.round(kg * 10) / 10; }
+    }
+    if (tell && performance.now() - lastTell > 120) { lastTell = performance.now(); tell(Math.min(0.99, read / total)); }
+  }
+  if (!seen) return null;
+  const steps = {};
+  for (const day in bySrc) steps[day] = Math.round(Math.max(...Object.values(bySrc[day])));
+  const days = Object.keys(steps).sort();
+  return { steps, weights, days: days.length, from: days[0], to: days[days.length - 1] };
+};
+/* ---------- Health from the iPhone, every day by itself (23 October 2026: "is it possible to automatically import from
+   my iphone"). Apple keeps Health data on the iPhone and the watch only, so a Shortcut there saves the last 7 days of
+   steps and the latest weight as flow-health.txt in iCloud Drive every day (how: HL_PHONE_STEPS), and the Mac app reads
+   that file (window.flowHealth, electron/main.cjs): a file on the disk, no request. One line a day, "2026-10-23;6240",
+   and "weight;2026-10-23;90,2;kg". Read leniently: the phone writes numbers its own way (6.240 or 6,240 for steps,
+   90,2 for a weight), and a line it can't read is passed over ---------- */
+// a number as a phone may write it. whole: a count, where a lone . or , between groups of three can only be a thousands mark
+const hlNumText = (s, whole) => {
+  const m = /-?\d[\d.,]*/.exec(String(s).replace(/[\s\u00a0\u202f']/g, ""));
+  if (!m) return NaN;
+  let t = m[0].replace(/[.,]$/, "");
+  const dot = t.lastIndexOf("."), com = t.lastIndexOf(",");
+  if (dot >= 0 && com >= 0) t = dot > com ? t.replace(/,/g, "") : t.replace(/\./g, "").replace(",", ".");
+  else if (/^-?\d{1,3}([.,]\d{3})+$/.test(t) && (whole || /[.,].*[.,]/.test(t))) t = t.replace(/[.,]/g, "");
+  else t = t.replace(",", ".");
+  return Number(t);
+};
+// the day of a line: 2026-10-23 as it stands, or a moment with its zone (2026-10-22T17:00:00Z) on this Mac's calendar
+const hlPhoneDay = (s) => {
+  const m = /(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?)?/.exec(String(s));
+  if (!m) return null;
+  if (m[6]) {
+    const zone = m[6] === "Z" ? "Z" : `${m[6].slice(0, 3)}:${m[6].slice(-2)}`, d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00${zone}`);
+    return Number.isNaN(+d) ? null : hlKey(d);
+  }
+  const k = `${m[1]}-${m[2]}-${m[3]}`, d = hlDate(k);
+  return !Number.isNaN(+d) && hlKey(d) === k ? k : null;
+};
+// { steps: { day: n }, weights: { day: kg }, days, from, to }, or null when there is nothing in it. Lines of one day add up
+// (the shortcut groups them by day; without that a day comes in pieces)
+const hlPhoneRead = (text) => {
+  if (typeof text !== "string") return null;
+  const steps = {}, weights = {};
+  for (const raw of text.slice(0, 400000).split(/\r?\n/)) {
+    const parts = raw.split(";").map((x) => x.trim());
+    if (/^weight$/i.test(parts[0])) {
+      const day = hlPhoneDay(parts[1] || ""), v = hlNumText(parts[2] || "", false), unit = (parts[3] || "kg").toLowerCase();
+      const kg = /lb|pound/.test(unit) ? v * 0.453592 : /st/.test(unit) ? v * 6.35029 : v;
+      if (day && kg >= 25 && kg <= 400) weights[day] = Math.round(kg * 10) / 10;
+      continue;
+    }
+    if (parts.length < 2) continue;
+    const day = hlPhoneDay(parts[0]), n = hlNumText(parts[1], true);
+    if (day && n >= 0 && n <= 200000) steps[day] = Math.min(200000, (steps[day] || 0) + Math.round(n));
+  }
+  const days = Object.keys(steps).sort();
+  if (!days.length && !Object.keys(weights).length) return null;
+  return { steps, weights, days: days.length, from: days[0] || "", to: days[days.length - 1] || "" };
+};
+
+/* ---------- health: what the page shows, worked out from the data ---------- */
+const hlFmt = (n) => Math.round(n || 0).toLocaleString("en-US");
+const hlKg = (n) => (Math.round((n || 0) * 10) / 10).toFixed(1).replace(/\.0$/, "");
+const hlNice = (k) => { const d = hlDate(k); return `${DOW_FULL[hlDow(k)]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
+const hlLong = (k) => { const d = hlDate(k); return `${d.getDate()} ${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`; };
+const hlMin = (t) => +t.slice(0, 2) * 60 + +t.slice(3);         // "13:30" → 810
+const hlHm = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const hlDur = (min) => (min >= 60 ? `${Math.floor(min / 60)}h${min % 60 ? ` ${min % 60}m` : ""}` : `${min} min`);
+// the latest weight logged on or before day k (what was typed in Body when nothing is logged yet)
+const hlWeightOn = (h, k) => {
+  let best = null;
+  for (const d in h.weights) if (d <= k && (!best || d > best)) best = d;
+  return best ? h.weights[best] : h.profile.kg || 0;
+};
+// one day: its steps, what moving burned (the steps, and each gym session at HL_GYM_MET), its to-dos
+const hlDayOf = (h, k) => {
+  const kg = hlWeightOn(h, k) || 70, steps = h.steps[k] || 0;
+  const gym = h.gym.filter((s) => s.day === k);
+  const gymKcal = gym.reduce((a, s) => a + (s.src === "apple" ? s.kcal || 0 : hlGymKcal(kg, s.min)), 0);
+  const todos = h.todos.filter((t) => hlOn(t, k));
+  return { kg, steps, gym, gymKcal, stepKcal: steps * hlStepKcal(kg), move: steps * hlStepKcal(kg) + gymKcal, todos,
+           done: todos.filter((t) => t.done[k]).length, km: steps * hlStepKm(h.profile.cm || 170) };
+};
+const hlRingVals = (h, d) => [d.steps / h.profile.steps, d.move / h.profile.move, d.todos.length ? d.done / d.todos.length : 0];
+// what a to-do's repeat says on its row
+const hlRepWord = (t) => (t.rep === "once" ? "Once" : t.rep === "daily" ? "Every day" : t.rep === "weekdays" ? "Weekdays"
+  : [...t.dows].sort().map((w) => DOW_FULL[w]).join(" · ") || "No days");
+// a box as wide as its parent, measured: the charts are drawn at the size they are given, so their text never scales
+const useWide = (ref, fallback = 640) => {
+  const [w, setW] = useState(fallback);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setW(el.clientWidth || fallback);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setW(el.clientWidth || fallback));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return w;
+};
+// a number box: what is typed shows while it is typed; a number in range is handed over on Enter or on leaving the box
+const HlNum = ({ value, onPick, dp = 0, ph, cls = "", unit, min = 0, max = 1e9, label }) => {
+  const [text, setText] = useState(null);
+  const done = () => {
+    if (text === null) return;
+    const n = text === "" ? null : Number(text);
+    setText(null);
+    if (n === null || (Number.isFinite(n) && n >= min && n <= max)) onPick(n);
+  };
+  return (
+    <span className={`hl-num${unit ? " u" : ""} ${cls}`}>
+      <input className="pc-in" inputMode={dp ? "decimal" : "numeric"} aria-label={label} placeholder={ph}
+             value={text ?? (value || value === 0 ? String(value) : "")}
+             onChange={(e) => setText(numIn(e.target.value, dp))} onBlur={done}
+             onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+      {unit && <i>{unit}</i>}
+    </span>
+  );
+};
+
+/* ---------- health: the rings (Apple's, in this app's colours): steps outside, kcal moved, to-dos inside ---------- */
+const HL_RING_R = [80, 59, 38], HL_RING_W = 17;
+const HlRings = ({ vals, size = 190 }) => (
+  <svg className="hl-rings" viewBox="0 0 190 190" width={size} height={size} aria-hidden="true">
+    <defs>
+      {HL_TINT.map(([a, b], i) => (
+        <linearGradient key={i} id={`hlRg${i}`} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor={b} /><stop offset="1" stopColor={a} /></linearGradient>
+      ))}
+    </defs>
+    {HL_RING_R.map((r, i) => {
+      const C = 2 * Math.PI * r, f = Math.max(0, Math.min(1, vals[i] || 0)) * C;
+      return (
+        <g key={i}>
+          <circle cx="95" cy="95" r={r} fill="none" stroke={HL_TINT[i][0]} strokeOpacity="0.17" strokeWidth={HL_RING_W} />
+          <circle className="score-arc hl-arc" style={{ animationDelay: `${120 + i * 110}ms`, opacity: f > 0.5 ? 1 : 0 }} cx="95" cy="95" r={r} fill="none"
+                  stroke={`url(#hlRg${i})`} strokeWidth={HL_RING_W} strokeLinecap="round" strokeDasharray={`${f} ${C}`} />
+        </g>
+      );
+    })}
+  </svg>
+);
+// the small rings of a day in the month's grid: the same three, solid colours
+const HlMini = ({ vals }) => (
+  <svg viewBox="0 0 40 40" aria-hidden="true">
+    {[17, 12, 7].map((r, i) => {
+      const C = 2 * Math.PI * r, f = Math.max(0, Math.min(1, vals[i] || 0)) * C;
+      return (
+        <g key={i}>
+          <circle cx="20" cy="20" r={r} fill="none" stroke={HL_TINT[i][0]} strokeOpacity="0.2" strokeWidth="4" />
+          {f > 0.3 && <circle cx="20" cy="20" r={r} fill="none" stroke={HL_TINT[i][0]} strokeWidth="4" strokeLinecap="round" strokeDasharray={`${f} ${C}`} transform="rotate(-90 20 20)" />}
+        </g>
+      );
+    })}
+  </svg>
+);
+
+/* ---------- health: the to-do list of the day on screen. A to-do repeats once, every day, on weekdays or on days he
+   picks, for as many days as he says or with no end; each day's tick is its own. Taken off one day, it stays on the
+   others. The box keeps what is typed to itself (memo, the page's ref), so typing redraws nothing behind it ---------- */
+const HL_REPS = [["once", "Once"], ["daily", "Every day"], ["weekdays", "Weekdays"], ["days", "Days"]];
+const HlTodos = memo(({ todos, day, today, api }) => {
+  const [text, setText] = useState("");
+  const [rep, setRep] = useState("once");
+  const [dows, setDows] = useState([]);
+  const [len, setLen] = useState("");
+  const [ask, setAsk] = useState(null);        // the repeating to-do whose × was pressed: only this day, or every day?
+  const box = useRef(null);
+  const list = todos.filter((t) => hlOn(t, day));
+  const done = list.filter((t) => t.done[day]).length;
+  const add = () => {
+    const t = text.trim();
+    if (!t) { nudge(box.current); return; }
+    if (rep === "days" && !dows.length) return;
+    api.current.add({ text: t, rep, dows: rep === "days" ? dows : [], len: rep === "once" ? 0 : Math.min(3650, Number(len) || 0) });
+    setText("");
+  };
+  return (
+    <div className="hl-todos">
+      <div className="hl-prog">
+        <span className="hl-prog-t"><b>{done}</b> of {list.length} done{day !== today ? ` · ${hlNice(day)}` : ""}</span>
+        <span className="hl-prog-bar"><i style={{ transform: `scaleX(${list.length ? done / list.length : 0})` }} /></span>
+      </div>
+      <div key={day} className="hl-list">
+        {!list.length && <div className="hl-empty">Nothing for this day yet. Add one below: it can repeat every day, on weekdays, or on the days you pick.</div>}
+        {list.map((t, i) => {
+          const on = !!t.done[day], run = hlRun(t, day);
+          return (
+            <div key={t.id} className={`hl-todo${on ? " done" : ""}`} style={{ animationDelay: `${i * 35}ms` }}>
+              <button className="hl-check" onClick={() => api.current.toggle(t.id)} aria-label={on ? "Mark not done" : "Mark done"}>
+                <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
+              </button>
+              <span className="hl-todo-t"><span>{t.text}</span></span>
+              {ask === t.id ? (
+                <span className="hl-ask">
+                  <button className="bk-btn" onClick={() => { setAsk(null); api.current.skip(t.id); }}>Only {day === today ? "today" : hlNice(day)}</button>
+                  <button className="bk-btn danger" onClick={() => { setAsk(null); api.current.del(t.id); }}>Every day</button>
+                  <button className="x-btn hl-x" onClick={() => setAsk(null)} aria-label="Keep it">✕</button>
+                </span>
+              ) : (
+                <>
+                  <span className="hl-tags">
+                    <span className="hl-tag">{hlRepWord(t)}{t.rep !== "once" && run.of ? ` · ${run.at} of ${run.of}` : ""}</span>
+                    {run.streak >= 2 && <span className="hl-streak" title={`${run.streak} in a row`}><span className="msym">local_fire_department</span>{run.streak}</span>}
+                  </span>
+                  <button className="x-btn hl-x" title="Remove" onClick={() => (t.rep === "once" ? api.current.del(t.id) : setAsk(t.id))}>✕</button>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="hl-add">
+        <input ref={box} className="jr-in hl-add-t" placeholder={`Add a to-do for ${day === today ? "today" : hlNice(day)}…`} value={text} maxLength={200}
+               onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <SlideSeg cls="hl-rep" value={rep} onPick={setRep} options={HL_REPS} />
+        {rep === "days" && (
+          <span className="jr-pick hl-dows">
+            {DOW_FULL.map((n, w) => (
+              <button key={n} className={`jr-chip${dows.includes(w) ? " on" : ""}`} onClick={() => setDows((d) => (d.includes(w) ? d.filter((x) => x !== w) : [...d, w]))}>{n}</button>
+            ))}
+          </span>
+        )}
+        {rep !== "once" && (
+          <label className="hl-len">for
+            <input className="jr-in" inputMode="numeric" placeholder="∞" value={len} onChange={(e) => setLen(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                   onKeyDown={(e) => { if (e.key === "Enter") add(); }} aria-label="How many days it runs" />
+            days</label>
+        )}
+        <button className="hl-plus" onClick={add} aria-label="Add the to-do" disabled={rep === "days" && !dows.length}><span className="msym">add</span></button>
+      </div>
+    </div>
+  );
+});
+
+/* ---------- health: the week at campus. A timetable of the classes (and anything else that comes back every week),
+   Monday to Sunday, the hours down the side. A press on an empty hour adds something there; on a class, edits it ---------- */
+const HL_HOUR = 46;            // px an hour
+const hlNewCls = (dow, from) => ({ name: "", room: "", dow, from, to: hlHm(Math.min(23 * 60 + 59, hlMin(from) + 100)), tint: 0 });
+const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
+  const [form, setForm] = useState(null);     // { id?, name, room, dow, from, to, tint } while one is being added or edited
+  // a timetable read off a picture (HL_OCR_OK): { busy } while it is read, { err }, or { found } to be checked
+  const [scan, setScan] = useState(null);
+  const fileIn = useRef(null), over = useRef(false), sayT = useRef(0);
+  const scanFile = async (f) => {
+    if (!f) return;
+    if (!/^image\//.test(f.type || "") && !/\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || "")) { setScan({ err: "That isn't a picture" }); return; }
+    setForm(null); setScan({ busy: true });
+    let res = null;
+    try { res = await window.flowHealth.ocr(new Uint8Array(await f.arrayBuffer()), (f.name || "").split(".").pop() || (f.type || "").split("/")[1] || "png"); } catch (e) { res = null; }
+    if (!res || !Array.isArray(res.lines)) { setScan({ err: "The picture couldn't be read" }); return; }
+    const have = new Set(classes.map((c) => `${c.dow}|${c.from}|${c.name.trim().toLowerCase()}`));
+    const found = hlReadTimetable(res.lines, res.W, res.H).filter((c) => !have.has(`${c.dow}|${c.from}|${c.name.toLowerCase()}`)).map((c, i) => ({ ...c, key: i, on: true }));
+    if (!found.length) { setScan({ err: !res.lines.length ? "No words found in that picture" : hlReadTimetable(res.lines, res.W, res.H).length ? "Those classes are on the week already" : "No classes found in it: is it a timetable?" }); return; }
+    setScan({ found });
+  };
+  useEffect(() => { if (!scan || !scan.err) return; clearTimeout(sayT.current); sayT.current = setTimeout(() => setScan(null), 4200); return () => clearTimeout(sayT.current); }, [scan]);
+  // a picture pasted while the pointer is on the week (as on the vision board)
+  useEffect(() => {
+    if (!HL_OCR_OK) return;
+    const paste = (e) => {
+      if (!over.current) return;
+      const t = e.target, tag = (t && t.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const f = [...(e.clipboardData ? e.clipboardData.files : [])].find((q) => /^image\//.test(q.type));
+      if (f) { e.preventDefault(); scanFile(f); }
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, [classes]);
+  const from = Math.min(8, ...classes.map((c) => Math.floor(hlMin(c.from) / 60)));
+  const to = Math.max(18, ...classes.map((c) => Math.ceil(hlMin(c.to) / 60)));
+  const hours = Array.from({ length: to - from }, (_, i) => from + i);
+  const set = (p) => setForm((f) => ({ ...f, ...p }));
+  const ok = form && form.name.trim() && hlTimeOk(form.from) && hlTimeOk(form.to) && form.to > form.from;
+  const save = () => { if (!ok) return; api.current.saveCls(form); setForm(null); };
+  return (
+    <div className="hl-week" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
+         onDragOver={HL_OCR_OK ? (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); } : undefined}
+         onDrop={HL_OCR_OK ? (e) => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) { e.preventDefault(); scanFile(f); } } : undefined}>
+      {HL_OCR_OK && (
+        <div className="hl-scan-bar">
+          <button className="bk-btn hl-scan-btn" disabled={!!(scan && scan.busy)} onClick={() => fileIn.current?.click()}
+                  title="Read your timetable off a screenshot or a photo: the classes it finds are shown to check before they go in. You can also drop or paste a picture on the week.">
+            <span className="msym" aria-hidden="true">{scan && scan.busy ? "autorenew" : "document_scanner"}</span>{scan && scan.busy ? "Reading the picture…" : "From a picture"}
+          </button>
+          <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />
+          {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
+        </div>
+      )}
+      {scan && scan.found && (
+        <HlScanSheet found={scan.found} onCancel={() => setScan(null)}
+                     onAdd={(list) => { api.current.saveClsMany(list); setScan(null); }} />
+      )}
+      {form && (
+        <div className="hl-form" key={form.id || "new"}>
+          <input className="jr-in" placeholder="What (Calculus II, futsal…)" value={form.name} maxLength={60} autoFocus onChange={(e) => set({ name: e.target.value })}
+                 onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setForm(null); }} />
+          <input className="jr-in" placeholder="Where (room)" value={form.room} maxLength={40} onChange={(e) => set({ room: e.target.value })}
+                 onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
+          <span className="jr-pick">{DOW_FULL.map((n, w) => <button key={n} className={`jr-chip${form.dow === w ? " on" : ""}`} onClick={() => set({ dow: w })}>{n}</button>)}</span>
+          <span className="hl-times">
+            <input className="jr-in" type="time" value={form.from} onChange={(e) => set({ from: e.target.value })} aria-label="Starts" />
+            <i>to</i>
+            <input className="jr-in" type="time" value={form.to} onChange={(e) => set({ to: e.target.value })} aria-label="Ends" />
+          </span>
+          <span className="hl-dots">{HL_CLS.map((c, i) => <button key={c} className={form.tint === i ? "on" : ""} style={{ "--c": c }} onClick={() => set({ tint: i })} aria-label={`Colour ${i + 1}`} />)}</span>
+          <span className="hl-form-go">
+            {form.id && <button className="bk-btn danger" onClick={() => { api.current.delCls(form.id); setForm(null); }}>Delete</button>}
+            <button className="bk-btn" onClick={() => setForm(null)}>Cancel</button>
+            <button className="hl-save" disabled={!ok} onClick={save}>{form.id ? "Save" : "Add to the week"}</button>
+          </span>
+        </div>
+      )}
+      <div className="hl-tt" style={{ "--hh": `${HL_HOUR}px` }}>
+        <div className="hl-tt-head"><i />{DOW_FULL.map((n, w) => <b key={n} className={w === todayDow ? "now" : ""}>{n}</b>)}</div>
+        <div className="hl-tt-body" style={{ height: hours.length * HL_HOUR }}>
+          <div className="hl-tt-hours">{hours.map((hr) => <span key={hr} style={{ top: (hr - from) * HL_HOUR }}>{pad(hr)}:00</span>)}</div>
+          {DOW_FULL.map((n, w) => (
+            <div key={n} className={`hl-tt-day${w === todayDow ? " now" : ""}`}
+                 onClick={(e) => {
+                   if (e.target !== e.currentTarget) return;
+                   const r = e.currentTarget.getBoundingClientRect(), hr = from + Math.floor((e.clientY - r.top) / HL_HOUR);
+                   setForm(hlNewCls(w, `${pad(Math.min(22, hr))}:00`));
+                 }}>
+              {hours.map((hr) => <i key={hr} style={{ top: (hr - from) * HL_HOUR }} />)}
+              {classes.filter((c) => c.dow === w).map((c, i) => {
+                const top = ((hlMin(c.from) - from * 60) / 60) * HL_HOUR, ht = Math.max(22, ((hlMin(c.to) - hlMin(c.from)) / 60) * HL_HOUR - 3);
+                return (
+                  <button key={c.id} className="hl-cls" style={{ top, height: ht, "--c": HL_CLS[c.tint], animationDelay: `${w * 30 + i * 40}ms` }}
+                          onClick={() => setForm({ ...c })} title={`${c.name} · ${c.from}–${c.to}${c.room ? ` · ${c.room}` : ""}`}>
+                    <b>{c.name}</b>
+                    {ht > 34 && <span>{c.from}–{c.to}</span>}
+                    {ht > 52 && c.room && <span>{c.room}</span>}
+                  </button>
+                );
+              })}
+              {w === todayDow && nowMin >= from * 60 && nowMin < to * 60 && <span className="hl-now" style={{ top: ((nowMin - from * 60) / 60) * HL_HOUR }} />}
+            </div>
+          ))}
+        </div>
+      </div>
+      {!form && <div className="hl-hint">Press an empty hour to put something there, or a class to change it.</div>}
+    </div>
+  );
+});
+
+/* ---------- health: reading a timetable off a picture (23 October 2026, his words: "is it possible for you to make an ai
+   that i can just input an image and it will automatically assign it on the timetable", then "okay, i want you to make
+   that"). The Mac's own text recognition reads the picture (window.flowHealth.ocr: Vision, on the Mac, offline) and hands
+   over every line of text with where it stands, 0 to 1 of the width and the height from the top left. What follows works
+   the classes out of that, for the shapes a week of classes comes in:
+   - a grid with the days across the top and the hours down the side, a block per class under its day;
+   - the same turned round: the days down the side, the hours across the top;
+   - a table, a row per class with its day and time in the row (a student portal's list: Hari, Jam, Mata Kuliah, Ruang,
+     Dosen), the day sometimes only on the first of its rows or in one cell beside several;
+   - a list under day headings ("Monday", then "08:00–09:40 Calculus II, Room 301").
+   A class's time is read from its own words when it has them (08:00–09:40, 8.00 - 9.40, 1:30 pm); in a grid without them,
+   from where its block stands against the hours. Its name is the first words that are not a time, a day, a room, a
+   teacher (Dr., S.Kom …) or a heading; its room the words that read like one. Day names in English, Indonesian and
+   Malay. It is a guess on purpose: everything found is shown to be checked before it goes in (HlScan) ---------- */
+const HL_DAYW = { monday: 0, mon: 0, senin: 0, isnin: 0, tuesday: 1, tue: 1, tues: 1, selasa: 1, wednesday: 2, wed: 2, rabu: 2,
+  thursday: 3, thu: 3, thur: 3, thurs: 3, kamis: 3, khamis: 3, friday: 4, fri: 4, jumat: 4, "jum'at": 4, jumaat: 4,
+  saturday: 5, sat: 5, sabtu: 5, sunday: 6, sun: 6, minggu: 6, ahad: 6 };
+// the day a piece of text names (-1: none); a short form (mon, sat …) only counts in a text of one or two words
+const hlOcrDay = (t) => {
+  const w = String(t).toLowerCase().replace(/[’`´]/g, "'").match(/[a-z']+/g) || [];
+  for (const x of w) { const d = HL_DAYW[x]; if (d !== undefined && (x.length > 4 || w.length <= 2)) return d; }
+  return -1;
+};
+// the times in a text, in minutes of the day, in the order written. 8.00 and 8:00 alike; am / pm; a time with no
+// am / pm from 1 to 6 o'clock is taken as the afternoon (a class at 2:00 is not at night). A date (21.10.2026) is not a time
+const HL_TIME_RE = /(^|[^\d:./])(\d{1,2})\s*[:.h]\s*(\d{2})(?![\d]|[.:/]\d)\s*(a\.?\s?m\.?|p\.?\s?m\.?)?/gi;
+const hlOcrTimes = (t) => {
+  const s = String(t).replace(/[–—−~]/g, "-"), out = [];
+  let m;
+  HL_TIME_RE.lastIndex = 0;
+  while ((m = HL_TIME_RE.exec(s))) {
+    let hh = +m[2];
+    const mm = +m[3], ap = (m[4] || "").toLowerCase().replace(/[.\s]/g, "");
+    if (hh > 23 || mm > 59) continue;
+    if (ap === "pm" && hh < 12) hh += 12; else if (ap === "am" && hh === 12) hh = 0; else if (!ap && hh >= 1 && hh <= 6) hh += 12;
+    out.push({ min: hh * 60 + mm, at: m.index + m[1].length });
+  }
+  const re2 = /(^|[^\d:.])(\d{1,2})\s*(am|pm)\b/gi;
+  while ((m = re2.exec(s))) {
+    let hh = +m[2];
+    if (hh < 1 || hh > 12) continue;
+    if (m[3].toLowerCase() === "pm" && hh < 12) hh += 12; else if (m[3].toLowerCase() === "am" && hh === 12) hh = 0;
+    out.push({ min: hh * 60, at: m.index + m[1].length });
+  }
+  return out.sort((a, b) => a.at - b.at);
+};
+const hlOcrRange = (ts) => {
+  if (!ts.length) return null;
+  const a = ts[0].min, b = ts.length > 1 && ts[1].min > a ? ts[1].min : null;
+  return { from: a, to: b };
+};
+const HL_HEADW = /^(no\.?|nomor|number|#|time|times|jam|waktu|pukul|hari|day|days|course|courses|subject|subjects|mata\s?kuliah|matkul|mk|class|kelas|room|ruang|ruangan|venue|location|lokasi|lecturer|lecturers|dosen|pengajar|teacher|sks|credits?|code|kode|kode\s?mk|section|seksi|group|schedule|jadwal|timetable|jadwal kuliah|week|start|end|mulai|selesai)$/i;
+// a room: a room word first ("Room 301", "Lab B2", "Ruang 2"; "Physics Lab" is a name), R.101, a building and a room
+// (GK1-301), or a bare number of three or four figures
+const HL_ROOMW = /^(room|rm|ruang(an)?|lab|laboratori(um|es)?|laboratory|gedung|gd|building|bldg|hall|aula|auditorium|online|zoom|teams|g-?meet|studio|kampus|campus)\b|^r\.?\s?\d|^[a-z]{1,4}\d{0,2}[\s.-]\d{2,4}[a-z]?$|^\d{3,4}[a-z]?$/i;
+const HL_TEACHW = /\b(dr|prof|ir|drs|dra|s\.\s?kom|m\.\s?kom|skom|mkom|s\.\s?t|m\.\s?t|m\.\s?sc|msc|ph\.\s?d|phd|s\.\s?pd|m\.\s?pd|s\.\s?si|m\.\s?si|m\.\s?eng|m\.\s?ba|mba|lecturer|dosen|teacher|bpk|bapak|ibu)\b/i;
+const HL_CODEW = /^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?$/i;
+// one line of the picture: its place, and what it reads as (a time, a day, a heading, a teacher, a room, a code, words)
+const hlOcrLine = (o) => {
+  const t = String(o.t || "").replace(/\s+/g, " ").trim(), times = hlOcrTimes(t), day = hlOcrDay(t);
+  const rest = t.replace(HL_TIME_RE, " ").replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined ? " " : w))
+    .replace(/^[\s\-–,·|:/()]+|[\s\-–,·|:/()]+$/g, "").replace(/\s{2,}/g, " ");
+  const letters = (rest.match(/[a-z]/gi) || []).length;
+  const kind = rest && HL_ROOMW.test(rest) ? "room" : letters < 2 ? (times.length ? "time" : day >= 0 ? "day" : "junk")
+    : HL_HEADW.test(rest) ? "head" : HL_TEACHW.test(rest) ? "teach" : HL_CODEW.test(rest) ? "code" : "text";
+  return { t, rest, times, day, kind, x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0, cx: (+o.x || 0) + (+o.w || 0) / 2, cy: (+o.y || 0) + (+o.h || 0) / 2 };
+};
+// a name from words: a course code in front of it ("IF2110 - Algoritma") is left out, and so is "(3 SKS)" after it; a
+// Roman numeral the reading took a stroke of for a mark ("Kalkulus I!") is put right
+const hlOcrName = (s0) => {
+  const s = String(s0).replace(/(^|\s)([Il|!1]{2,3})(?=\s|$)/g, (m, sp, r) => (/[I|l]/.test(r[0]) && r.length > 1 ? sp + "I".repeat(r.length) : m));
+  let n = String(s).replace(/^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?\s*[-–:·|]?\s+/i, "").replace(/\(?\b\d\s?(sks|credits?)\b\)?/gi, "").replace(/\s{2,}/g, " ").trim();
+  if ((n.match(/[a-z]/gi) || []).length < 2) n = String(s).trim();
+  return n.slice(0, 60);
+};
+// a class from the lines that belong to it: the name, the room, and the time when its words say it. In a grid's block
+// (wrap) a name may run on to the next line; in a table's row the cells are columns, and the name is the longest words
+const hlOcrClass = (ls, wrap = true) => {
+  let name = "", room = "", code = "";
+  const parts = [];
+  ls.forEach((l) => {
+    if (l.times.length && (l.rest.match(/[a-z]/gi) || []).length >= 2) {        // "08:00–09:40 Calculus II · Room 301" in one line: its pieces
+      l.rest.split(/\s[·|•–-]\s|,\s|\s{2,}/).forEach((q) => parts.push(hlOcrLine({ t: q, x: l.x, y: l.y, w: l.w, h: l.h })));
+    } else parts.push(l);
+  });
+  // a name wrapped onto a second line (a narrow grid cell) is joined back, when the line right before it was the name too
+  parts.forEach((l, i) => {
+    if (l.kind === "text") {
+      if (!name) name = l.rest;
+      else if (!wrap) { if ((l.rest.match(/[a-z]/gi) || []).length > (name.match(/[a-z]/gi) || []).length) name = l.rest; }
+      else if (!room && /\d/.test(l.rest) && l.rest.split(" ").length <= 3) room = l.rest;        // a room word misread ("Hoom 4")
+      else if (!room && parts[i - 1].kind === "text" && name.length + l.rest.length < 48) name = `${name} ${l.rest}`;
+    }
+    else if (l.kind === "room" && !room) room = l.rest;
+    else if (l.kind === "code") { if (name && !room) room = l.rest; else if (!code) code = l.rest; }
+  });
+  if (!name) name = code;
+  return { name: hlOcrName(name), room: room.slice(0, 40), range: hlOcrRange(ls.flatMap((l) => l.times)) };
+};
+const hlOcrRows = (lines) => {
+  const rows = [];
+  [...lines].sort((a, b) => a.cy - b.cy).forEach((l) => {
+    const r = rows.find((q) => Math.abs(q.cy - l.cy) < 0.55 * Math.max(q.h, l.h));
+    if (r) { r.ls.push(l); r.cy = (r.cy * (r.ls.length - 1) + l.cy) / r.ls.length; r.h = Math.max(r.h, l.h); } else rows.push({ cy: l.cy, h: l.h, ls: [l] });
+  });
+  rows.forEach((r) => r.ls.sort((a, b) => a.x - b.x));
+  return rows.sort((a, b) => a.cy - b.cy);
+};
+// a straight line through (position, minutes) pairs: the hours of a grid's side, read as positions
+const hlOcrFit1 = (pts) => {
+  if (pts.length < 2) return null;
+  const n = pts.length, sx = pts.reduce((a, p) => a + p[0], 0), sy = pts.reduce((a, p) => a + p[1], 0);
+  const sxx = pts.reduce((a, p) => a + p[0] * p[0], 0), sxy = pts.reduce((a, p) => a + p[0] * p[1], 0), d = n * sxx - sx * sx;
+  if (Math.abs(d) < 1e-12) return null;
+  const m = (n * sxy - sx * sy) / d, b = (sy - m * sx) / n;
+  return m > 0 ? (v) => m * v + b : null;
+};
+// (once more without the labels more than a quarter of an hour off it: a misread "08:00" for "09:00")
+const hlOcrFit = (pts) => {
+  const f = hlOcrFit1(pts);
+  if (!f || pts.length < 4) return f;
+  const keep = pts.filter((p) => Math.abs(f(p[0]) - p[1]) <= 15);
+  return keep.length >= 2 && keep.length < pts.length ? hlOcrFit1(keep) || f : f;
+};
+const hlR5 = (v) => Math.max(0, Math.min(23 * 60 + 55, Math.round(v / 5) * 5));
+// a grid (across: days across the top, the hours down the side; else turned round). A block of a class is the lines
+// under one day that stand together; its time is its own words', else where it stands against the hours
+const hlOcrGrid = (lines, heads, across) => {
+  const P = across ? (l) => l.cx : (l) => l.cy, Q = across ? (l) => l.cy : (l) => l.cx;
+  const Q0 = across ? (l) => l.y : (l) => l.x, Q1 = across ? (l) => l.y + l.h : (l) => l.x + l.w, QS = across ? (l) => l.h : (l) => l.w;
+  // a day heading the reading missed (Tuesday read as "Aepsont") is put back between the two it lies between, in step
+  const read = [...heads].sort((a, b) => P(a) - P(b)), cols = [];
+  read.forEach((h, i) => {
+    const n = read[i + 1];
+    cols.push(h);
+    if (n && n.day - h.day > 1) for (let d = h.day + 1; d < n.day; d++) cols.push({ ...h, day: d, cx: h.cx + ((n.cx - h.cx) * (d - h.day)) / (n.day - h.day), cy: h.cy + ((n.cy - h.cy) * (d - h.day)) / (n.day - h.day) });
+  });
+  const edge = (i, side) => (side < 0 ? (i > 0 ? (P(cols[i - 1]) + P(cols[i])) / 2 : P(cols[i]) - (cols.length > 1 ? (P(cols[1]) - P(cols[0])) / 2 : 0.1))
+    : i < cols.length - 1 ? (P(cols[i]) + P(cols[i + 1])) / 2 : P(cols[i]) + (cols.length > 1 ? (P(cols[i]) - P(cols[i - 1])) / 2 : 0.1));
+  const lo = edge(0, -1), hi = edge(cols.length - 1, 1), start = Math.max(...heads.map(Q1));
+  const axis = lines.filter((l) => l.kind === "time" && l.times.length === 1 && Q(l) > start - 0.01 && P(l) < lo);
+  const fit = hlOcrFit(axis.map((l) => [Q(l), l.times[0].min]));
+  const body = lines.filter((l) => !heads.includes(l) && !axis.includes(l) && Q(l) > start && P(l) >= lo && P(l) <= hi && l.kind !== "head" && l.kind !== "junk");
+  const sizes = body.map(QS).sort((a, b) => a - b), med = sizes[Math.floor(sizes.length / 2)] || 0.02, out = [];
+  cols.forEach((c, i) => {
+    const a = edge(i, -1), b = edge(i, 1);
+    const own = body.filter((l) => P(l) >= a && P(l) < b).sort((p, q) => Q0(p) - Q0(q));
+    const blocks = [];
+    own.forEach((l) => {
+      const blk = blocks[blocks.length - 1];
+      const gap = blk ? Q0(l) - Math.max(...blk.map(Q1)) : Infinity;
+      const twice = blk && l.times.length >= 2 && blk.some((q) => q.times.length >= 1);
+      if (!blk || gap > 0.85 * med || twice) blocks.push([l]); else blk.push(l);
+    });
+    blocks.forEach((blk) => {
+      const k = hlOcrClass(blk);
+      if (!k.name) return;
+      // no time in its words: it starts where its words begin against the hours, to the quarter hour at or before (the
+      // words sit a little inside the block); its end can't be read off words, so it gets the usual length, to be checked
+      let from = k.range ? k.range.from : null, to = k.range ? k.range.to : null;
+      if (from === null && fit) from = Math.max(0, Math.floor((fit(Math.min(...blk.map(Q0))) - 2) / 15) * 15);
+      if (from === null) return;
+      if (to === null || to - from < 20) to = Math.min(23 * 60 + 59, from + 100);
+      out.push({ dow: c.day, from, to, name: k.name, room: k.room });
+    });
+  });
+  return out;
+};
+// a table or a list: a class is a row with a time; its day the row's own, else the day label it belongs to (the one above
+// it under day headings, the nearest when the label stands beside its rows, as one cell beside several does)
+const hlOcrList = (lines) => {
+  const rows = hlOcrRows(lines).filter((r) => r.ls.filter((l) => l.kind === "head").length < 2);
+  const labels = [], out = [];
+  rows.forEach((r) => { if (r.ls.every((l) => l.kind === "day" || l.kind === "junk") && r.ls.some((l) => l.kind === "day")) labels.push({ cy: r.cy, day: r.ls.find((l) => l.kind === "day").day }); });
+  const cls = [];
+  rows.forEach((r, i) => {
+    const ls = r.ls.filter((l) => l.kind !== "day" || l.times.length);
+    const times = r.ls.flatMap((l) => l.times);
+    if (!times.length) return;
+    let k = hlOcrClass(ls.filter((l) => l.kind !== "teach"), false);
+    // the name a row down, when the row holds only the time (and the next row no time of its own)
+    if (!k.name && rows[i + 1] && !rows[i + 1].ls.some((l) => l.times.length)) k = { ...hlOcrClass(rows[i + 1].ls.filter((l) => l.kind !== "teach" && l.kind !== "day"), false), range: k.range };
+    if (!k.name || !k.range) return;
+    const own = r.ls.map((l) => l.day).find((d) => d >= 0);
+    cls.push({ cy: r.cy, day: own === undefined ? -1 : own, k });
+  });
+  // every day label, wherever it stands (one cell beside several rows may share a row with one of them); headings only
+  // when each label stands alone and no class comes before the first: then a class goes under the label above it
+  const dayAt = lines.filter((l) => l.kind === "day" && l.day >= 0).map((l) => ({ cy: l.cy, day: l.day })).sort((a, b) => a.cy - b.cy);
+  const ownDays = cls.some((c) => c.day >= 0), above = dayAt.length && cls.some((c) => c.day < 0 && c.cy < dayAt[0].cy);
+  const near = ownDays || above || dayAt.length > labels.length;
+  let last = -1;
+  cls.forEach((c) => {
+    let d = c.day;
+    if (d < 0 && dayAt.length) {
+      if (near) d = dayAt.reduce((b, q) => (Math.abs(q.cy - c.cy) < Math.abs(b.cy - c.cy) ? q : b)).day;
+      else { const up = labels.filter((q) => q.cy < c.cy); d = up.length ? up[up.length - 1].day : -1; }
+    }
+    if (d < 0) d = last;
+    if (d < 0) return;
+    last = d;
+    out.push({ dow: d, from: c.k.range.from, to: c.k.range.to !== null ? c.k.range.to : Math.min(23 * 60 + 59, c.k.range.from + 100), name: c.k.name, room: c.k.room });
+  });
+  return out;
+};
+// a picture taken at a slant, put straight (what is left once the shell has read it turned): the angle that lines the most
+// words up into rows, tried from −15° to 15° in quarter degrees, where each line's middle lies (the corners the reading
+// gives are no help: a short word's box often has no slope, or too much); every line's middle turned back by it about
+// the picture's middle. As ocrSkew in electron/main.cjs
+const hlOcrSkew = (pts, hgt) => {
+  if (pts.length < 4) return 0;
+  const bin = Math.max(3, hgt * 0.6);
+  let best = 0, top = -1, flat = 0, row = 0;
+  for (let d = -15; d <= 15.001; d += 0.25) {
+    const a = (d * Math.PI) / 180, sn = Math.sin(a), cs = Math.cos(a);
+    let score = 0, most = 0;
+    for (const ph of [0, 0.5]) {
+      const n = new Map();
+      for (const [x, y] of pts) { const k = Math.round((y * cs - x * sn) / bin + ph); n.set(k, (n.get(k) || 0) + 1); }
+      let s = 0, m = 0;
+      for (const v of n.values()) { s += v * v; m = Math.max(m, v); }
+      if (s > score) { score = s; most = m; }
+    }
+    if (Math.abs(d) < 0.01) flat = score;
+    if (score > top || (score === top && Math.abs(d) < Math.abs(best))) { top = score; best = d; row = most; }
+  }
+  // only a slant that lines clearly more up than none, with three words or more in one row (a few lines can pair up by
+  // chance at some angle)
+  return top >= flat * 1.25 && top - flat >= 6 && row >= 3 ? best : 0;
+};
+// (first the slope of the long lines, when they agree: the reading's corners are right for those, and a list, one line
+// a row, lines up the same at any angle)
+const hlOcrSkewLong = (lines) => {
+  const long = lines.filter((o) => Array.isArray(o.q) && o.q.length === 8 && o.q[2] - o.q[0] > 150);
+  const sl = long.map((o) => (Math.atan2(o.q[3] - o.q[1], o.q[2] - o.q[0]) * 180) / Math.PI).filter((v) => Math.abs(v) > 0.5).sort((a, b) => a - b);
+  return sl.length >= 2 && sl.length >= long.length * 0.5 && sl[sl.length - 1] - sl[0] < 2 ? sl[Math.floor(sl.length / 2)] : 0;
+};
+const hlOcrStraight = (raw, W, H) => {
+  const ok = raw.filter((o) => o.w > 0 && o.h > 0);
+  if (!(W > 0 && H > 0) || ok.length < 4) return raw;
+  const hs = ok.map((o) => o.h * H).sort((a, b) => a - b);
+  const d = hlOcrSkewLong(ok) || hlOcrSkew(ok.map((o) => [(o.x + o.w / 2) * W, (o.y + o.h / 2) * H]), hs[Math.floor(hs.length / 2)]);
+  if (Math.abs(d) < 0.3) return raw;
+  const a = (d * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a), mx = W / 2, my = H / 2;
+  return raw.map((o) => {
+    if (!ok.includes(o)) return o;
+    const dx = (o.x + o.w / 2) * W - mx, dy = (o.y + o.h / 2) * H - my;
+    const cx = mx + dx * cs + dy * sn, cy = my - dx * sn + dy * cs;
+    return { ...o, x: cx / W - o.w / 2, y: cy / H - o.h / 2 };
+  });
+};
+const hlReadTimetable = (raw, W, H) => {
+  const lines = hlOcrStraight((Array.isArray(raw) ? raw : []).filter((o) => o && typeof o.t === "string" && o.t.trim()), W, H).map(hlOcrLine);
+  const days = lines.filter((l) => l.kind === "day" && l.day >= 0);
+  // days across the top: three or more on one row; down the side: three or more under each other, with the hours across
+  const across = hlOcrRows(days).map((r) => r.ls).find((ls) => new Set(ls.map((l) => l.day)).size >= 3);
+  let found;
+  if (across) found = hlOcrGrid(lines, across, true);
+  else {
+    const timeRow = hlOcrRows(lines.filter((l) => l.kind === "time" && l.times.length === 1)).find((r) => r.ls.length >= 3);
+    const down = timeRow ? days.filter((l) => l.cx < Math.min(...timeRow.ls.map((q) => q.x))) : [];
+    found = down.length >= 3 && new Set(down.map((l) => l.day)).size >= 3 ? hlOcrGrid(lines, down, false) : hlOcrList(lines);
+  }
+  const seen = new Set();
+  return found.filter((c) => c.name && c.to > c.from && c.dow >= 0 && c.dow <= 6)
+    .map((c) => ({ dow: c.dow, from: hlHm(hlR5(c.from)), to: hlHm(Math.min(23 * 60 + 59, hlR5(c.to))), name: c.name, room: c.room || "" }))
+    .filter((c) => { const k = `${c.dow}|${c.from}|${c.name.toLowerCase()}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => a.dow - b.dow || (a.from < b.from ? -1 : 1));
+};
+/* ---------- health: reading a timetable end ---------- */
+// the Mac app reads pictures (a plain browser has no such thing, and offers none of it)
+const HL_OCR_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.ocr);
+/* What was read off the picture, to be checked before it goes in: a row a class, each with its day, times, name and
+   room to change, and a tick to leave it out. Classes that are on the week already are passed over. "Add to the week"
+   puts the ticked ones in, one colour per name */
+const HlScanSheet = ({ found, onAdd, onCancel }) => {
+  const [rows, setRows] = useState(found);
+  const set = (i, p) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const ok = (r) => r.on && r.name.trim() && hlTimeOk(r.from) && hlTimeOk(r.to) && r.to > r.from;
+  const n = rows.filter(ok).length;
+  return (
+    <div className="hl-sheet hl-scan">
+      <div className="hl-scan-head">
+        <span className="msym" aria-hidden="true">document_scanner</span>
+        <b>{found.length === 1 ? "1 class found" : `${found.length} classes found`} in the picture</b>
+        <small>Check them before they go in: the words and times were read off the picture.</small>
+      </div>
+      <div className="hl-scan-rows">
+        {rows.map((r, i) => (
+          <div key={r.key} className={`hl-scan-row${r.on ? "" : " off"}`} style={{ "--i": Math.min(i, 12) }}>
+            <button className={`hl-scan-tick${r.on ? " on" : ""}`} onClick={() => set(i, { on: !r.on })} aria-label={r.on ? "Leave this one out" : "Put this one in"}>
+              <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
+            </button>
+            <select className="jr-in hl-scan-day" value={r.dow} onChange={(e) => set(i, { dow: +e.target.value })} aria-label="Day">
+              {DOW_FULL.map((d, w) => <option key={d} value={w}>{d}</option>)}
+            </select>
+            <input className="jr-in hl-scan-t" type="time" value={r.from} onChange={(e) => set(i, { from: e.target.value })} aria-label="Starts" />
+            <input className="jr-in hl-scan-t" type="time" value={r.to} onChange={(e) => set(i, { to: e.target.value })} aria-label="Ends" />
+            <input className="jr-in hl-scan-n" value={r.name} maxLength={60} placeholder="What" onChange={(e) => set(i, { name: e.target.value })} aria-label="What" />
+            <input className="jr-in hl-scan-r" value={r.room} maxLength={40} placeholder="Where" onChange={(e) => set(i, { room: e.target.value })} aria-label="Where" />
+          </div>
+        ))}
+      </div>
+      <span className="hl-form-go">
+        <button className="bk-btn" onClick={onCancel}>Cancel</button>
+        <button className="hl-save" disabled={!n} onClick={() => onAdd(rows.filter(ok))}>{n === 1 ? "Add 1 to the week" : `Add ${n} to the week`}</button>
+      </span>
+    </div>
+  );
+};
+
+// the Mac app hands the iPhone's file over (a plain browser has no such thing, and shows none of it)
+const HL_PHONE_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.phone);
+const HL_PHONE_MS = 5 * 60000;          // while Health is open, the file is looked at again this often (and when the window comes back)
+// how to make the shortcut and its automation, as the Activity card shows it (the same as was written to him)
+const HL_PHONE_STEPS = [
+  ["Make the shortcut", <>In the Shortcuts app on your iPhone, tap <b>+</b> and name it <b>Flow steps</b>.</>],
+  ["Steps of the last 7 days", <>Add <b>Find Health Samples</b>: Type is <b>Steps</b>. Tap Add Filter: <b>Start Date</b> is <b>in the last 7 days</b>. Group By: <b>Day</b>.</>],
+  ["One line a day", <>Add <b>Repeat with Each</b>. Inside it add <b>Text</b> and fill it with: <b>Repeat Item</b> (tap it, choose <b>Start Date</b>, Date Format <b>Custom</b>: <code>yyyy-MM-dd</code>), then <code>;</code>, then <b>Repeat Item</b> again, choosing <b>Value</b>.</>],
+  ["Put the lines together", <>After End Repeat add <b>Combine Text</b>: Repeat Results, with <b>New Lines</b>.</>],
+  ["Your latest weight", <>Add <b>Find Health Samples</b>: Type is <b>Weight</b>, Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit <b>1</b>.</>],
+  ["The file", <>Add <b>Text</b> with three lines: <code>flow-health</code> · <b>Combined Text</b> · <code>weight;</code> Start Date <code>;</code> Value <code>;</code> Unit (each from the weight's Health Samples, the date as <code>yyyy-MM-dd</code> again).</>],
+  ["Save it in iCloud Drive", <>Add <b>Save File</b>: turn off Ask Where to Save, folder <b>Shortcuts</b>, Subpath <code>flow-health.txt</code>, turn on <b>Overwrite If File Exists</b>. Run it once and allow Health.</>],
+  ["Every day by itself", <>In <b>Automation</b>, tap <b>+</b>, <b>Time of Day</b>, e.g. 22:00 Daily, <b>Run Immediately</b>, then choose Flow steps. Pick a time you usually have the phone in hand: a locked iPhone keeps Health locked too.</>],
+  ["On this Mac", <>iCloud Drive on (System Settings, your name, iCloud). Flow reads the file when Health opens, and every few minutes while it is open.</>],
+];
+// when the phone saved its file: "today, 22:00", "Thu 22 Oct, 22:00"
+const hlWhen = (at) => {
+  const d = new Date(at), k = hlKey(d), t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return k === hlKey(new Date()) ? `today, ${t}` : `${hlNice(k)}, ${t}`;
+};
+
+/* ---------- health: activity. The day's steps (typed, or taken from an Apple Health export), the last two weeks as
+   bars against the goal, and the month as rings, Apple's activity history ---------- */
+const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
+  const [how, setHow] = useState(false);         // the steps that set up the iPhone's shortcut, unfolded
+  const [busy, setBusy] = useState(null);        // the share of the export read so far, while it is being read
+  const [said, setSaid] = useState("");
+  const file = useRef(null);
+  const goal = h.profile.steps, dd = hlDayOf(h, day);
+  const bars = Array.from({ length: 14 }, (_, i) => hlAddDays(day, i - 13));
+  const top = Math.max(goal * 1.25, ...bars.map((k) => h.steps[k] || 0));
+  const week = Array.from({ length: 7 }, (_, i) => hlAddDays(day, i - 6)).filter((k) => k <= today);
+  const wSteps = week.map((k) => h.steps[k] || 0), met = wSteps.filter((n) => n >= goal).length;
+  const best = week.reduce((b, k) => ((h.steps[k] || 0) > (h.steps[b] || 0) ? k : b), week[0] || day);
+  let streak = 0;
+  for (let k = day <= today ? day : today; (h.steps[k] || 0) >= goal && streak < 3660; k = hlAddDays(k, -1)) streak++;
+  // the month of the day on screen, Monday first
+  const d0 = hlDate(day), first = hlKey(new Date(d0.getFullYear(), d0.getMonth(), 1)), dim = new Date(d0.getFullYear(), d0.getMonth() + 1, 0).getDate();
+  const lead = hlDow(first);
+  const read = async (f) => {
+    if (!f) return;
+    setSaid(""); setBusy(0);
+    let got = null;
+    try { got = await hlAppleRead(f, setBusy); } catch (e) { got = null; }
+    setBusy(null);
+    if (!got) { setSaid("That isn't an Apple Health export (export.zip, or the export.xml inside it)"); return; }
+    const n = api.current.apple(got);
+    setSaid(got.days || Object.keys(got.weights).length
+      ? `Read ${hlFmt(got.days)} days of steps${got.days ? ` (${hlNice(got.from)} ${hlDate(got.from).getFullYear()} to ${hlNice(got.to)} ${hlDate(got.to).getFullYear()})` : ""} and ${hlFmt(Object.keys(got.weights).length)} weights.${n.kept ? ` ${hlFmt(n.kept)} days you typed yourself were kept.` : ""}`
+      : "The export has no steps or weights in it");
+  };
+  return (
+    <div className="hl-act">
+      <div className="hl-act-top">
+        <div className="hl-steps-in">
+          <span className="hl-cap">Steps{day !== today ? ` · ${hlNice(day)}` : " today"}</span>
+          <HlNum cls="big" value={h.steps[day] || ""} ph="0" max={200000} label="Steps" onPick={(n) => api.current.setSteps(day, n || 0)} />
+          <span className="hl-quick">
+            {[500, 1000, 2000].map((n) => <button key={n} className="jr-chip" onClick={() => api.current.setSteps(day, (h.steps[day] || 0) + n)}>+{n >= 1000 ? `${n / 1000}k` : n}</button>)}
+          </span>
+        </div>
+        <div className="hl-stats">
+          <span><b>{dd.km.toFixed(1)}</b> km</span>
+          <span><b>{hlFmt(dd.stepKcal)}</b> kcal from steps</span>
+          <span><b>{hlFmt(wSteps.length ? wSteps.reduce((a, b) => a + b, 0) / wSteps.length : 0)}</b> a day this week</span>
+          <span><b>{met}</b> of {week.length} days on goal</span>
+          {streak > 1 && <span className="hl-good"><span className="msym">local_fire_department</span><b>{streak}</b> days in a row</span>}
+        </div>
+      </div>
+      <div className="hl-bars" key={day}>
+        <span className="hl-goal-line" style={{ bottom: `${(goal / top) * 100}%` }}><i>{hlFmt(goal)}</i></span>
+        {bars.map((k, i) => {
+          const n = h.steps[k] || 0;
+          return (
+            <button key={k} className={`hl-bar${k === day ? " sel" : ""}${n >= goal ? " met" : ""}${k > today ? " later" : ""}`} onClick={() => api.current.pick(k)}
+                    title={`${hlNice(k)}: ${hlFmt(n)} steps`}>
+              <span className="hl-bar-col"><i style={{ height: `${(n / top) * 100}%`, animationDelay: `${i * 22}ms` }} />{n > 0 && <em>{n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n}</em>}</span>
+              <span className="hl-bar-d">{DOW[hlDow(k)]}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="hl-month">
+        <div className="hl-month-head"><b>{MONTHS_FULL[d0.getMonth()]}</b><span>The three rings of each day: steps, moving, to-dos</span></div>
+        <div className="hl-month-grid">
+          {DOW.map((n, i) => <span key={i} className="hl-mdow">{n}</span>)}
+          {Array.from({ length: lead }, (_, i) => <span key={`e${i}`} />)}
+          {Array.from({ length: dim }, (_, i) => {
+            const k = hlAddDays(first, i), later = k > today;
+            return (
+              <button key={k} className={`hl-mday${k === day ? " sel" : ""}${k === today ? " today" : ""}${later ? " later" : ""}`} onClick={() => api.current.pick(k)} title={hlNice(k)}>
+                {later ? <svg viewBox="0 0 40 40" /> : <HlMini vals={hlRingVals(h, hlDayOf(h, k))} />}
+                <i>{i + 1}</i>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="hl-apple">
+        {HL_PHONE_OK && (
+          <>
+            <div className="hl-phone">
+              <span className={`hl-phone-dot${h.phone ? " on" : ""}`} />
+              <span className="hl-phone-t">{h.phone ? <>From your iPhone: <b>{h.phone.days} day{h.phone.days === 1 ? "" : "s"}</b>, saved {hlWhen(h.phone.at)}</> : <>Steps from your iPhone, <b>every day by itself</b></>}</span>
+              <button className="bk-btn" onClick={() => api.current.phoneNow()}><span className="msym">sync</span>Check now</button>
+              <button className="bk-btn" onClick={() => setHow((v) => !v)}>{how ? "Hide the steps" : h.phone ? "The steps" : "How to set it up"}</button>
+              <Linger on={phoneSaid || null} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+            </div>
+            {how && (
+              <ol className="hl-how">
+                {HL_PHONE_STEPS.map(([name, say]) => <li key={name}><b>{name}.</b> {say}</li>)}
+              </ol>
+            )}
+          </>
+        )}
+        <button className="bk-btn" onClick={() => file.current?.click()} disabled={busy !== null}>
+          <span className="msym">ios_share</span>{busy !== null ? `Reading… ${Math.round(busy * 100)}%` : "Import from Apple Health"}
+        </button>
+        <InfoTip title="Steps from your iPhone">
+          <span>On the iPhone: Health, your picture at the top, Export All Health Data. Send the export.zip to the Mac (AirDrop) and choose it here.</span>
+          <span>The steps of every day and your weights are read from it, on this Mac only. A day whose steps you typed yourself keeps them.</span>
+          <span>An iPhone and a watch count the same steps, so a day's steps are the most one of them counted.</span>
+        </InfoTip>
+        {busy !== null && <span className="hl-read"><i style={{ transform: `scaleX(${busy})` }} /></span>}
+        <input ref={file} type="file" accept=".zip,.xml,application/zip,text/xml" style={{ display: "none" }} onChange={(e) => { read(e.target.files?.[0]); e.target.value = ""; }} />
+        <Linger on={said || null} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+      </div>
+    </div>
+  );
+});
+
+/* ---------- health: the body. Height, weight, age, sex and how active he is; the BMI on the Asian scale; what the body
+   burns at rest and in a day as he lives ---------- */
+const HL_GAUGE = [15, 35];     // the BMI gauge runs from 15 to 35
+const HlBody = memo(({ profile, kg, api }) => {
+  const bmi = hlBmi(kg, profile.cm), band = hlBand(bmi), [lo, hi] = hlHealthy(profile.cm || 0);
+  const at = (v) => `${(Math.max(0, Math.min(1, (v - HL_GAUGE[0]) / (HL_GAUGE[1] - HL_GAUGE[0]))) * 100).toFixed(2)}%`;
+  const bmr = kg && profile.cm ? hlBmr(kg, profile.cm, profile.age, profile.sex) : 0;
+  return (
+    <div className="hl-body">
+      <div className="hl-fields">
+        <label><span>Height</span><HlNum value={profile.cm || ""} ph="168" unit="cm" min={100} max={250} label="Height" onPick={(n) => api.current.profile({ cm: n || 0 })} /></label>
+        <label><span>Weight</span><HlNum value={kg ? hlKg(kg) : ""} dp={1} ph="90" unit="kg" min={25} max={400} label="Weight" onPick={(n) => n && api.current.weigh(n)} /></label>
+        <label><span>Age</span><HlNum value={profile.age} ph="21" min={10} max={100} label="Age" onPick={(n) => n && api.current.profile({ age: n })} /></label>
+        <label><span>Sex</span><SlideSeg cls="hl-sex" value={profile.sex} onPick={(v) => api.current.profile({ sex: v })} options={[["m", "Male"], ["f", "Female"]]} /></label>
+      </div>
+      <div className="hl-actv">
+        <span className="hl-cap">How active, besides the steps</span>
+        <span className="jr-pick">
+          {HL_ACT.map(([f, name, say]) => <button key={f} className={`jr-chip${profile.act === f ? " on" : ""}`} title={say} onClick={() => api.current.profile({ act: f })}>{name}</button>)}
+        </span>
+      </div>
+      {bmi > 0 ? (
+        <div className="hl-bmi">
+          <div className="hl-bmi-n">
+            <span className="hl-cap">BMI</span>
+            <b style={{ color: band[2] }}>{bmi.toFixed(1)}</b>
+            <span style={{ color: band[2] }}>{band[1]}</span>
+          </div>
+          <div className="hl-gauge">
+            <div className="hl-gauge-bar">
+              {HL_BMI.map(([up, name, c], i) => {
+                const a = i ? HL_BMI[i - 1][0] : HL_GAUGE[0], b = Math.min(up, HL_GAUGE[1]);
+                return <i key={name} title={name} style={{ left: at(a), width: `calc(${at(b)} - ${at(a)})`, background: c }} />;
+              })}
+              <span className="hl-gauge-pin" style={{ left: at(bmi), "--c": band[2] }} />
+            </div>
+            <div className="hl-gauge-t">{[18.5, 23, 25, 30].map((v) => <span key={v} style={{ left: at(v) }}>{v}</span>)}</div>
+            <div className="hl-note">
+              Healthy for {profile.cm} cm: <b>{hlKg(lo)}–{hlKg(hi)} kg</b> (BMI 18.5–22.9, the ranges for Asian bodies).
+              {kg > hi ? <> That is <b>{hlKg(kg - hi)} kg</b> above it.</> : kg < lo ? <> That is <b>{hlKg(lo - kg)} kg</b> under it.</> : <> You are in it.</>}
+            </div>
+          </div>
+        </div>
+      ) : <div className="hl-empty">Type your height and weight to see your BMI and what your body burns.</div>}
+      {bmr > 0 && (
+        <div className="hl-tiles">
+          <div className="hl-tile"><span className="hl-cap">At rest</span><b>{hlFmt(bmr)}</b><small>kcal a day (BMR)</small></div>
+          <div className="hl-tile"><span className="hl-cap">A day, as you live</span><b>{hlFmt(bmr * profile.act)}</b><small>kcal (TDEE)</small></div>
+          <div className="hl-tile"><span className="hl-cap">Your step goal</span><b>{hlFmt(profile.steps * hlStepKcal(kg))}</b><small>kcal for {hlFmt(profile.steps)} steps</small></div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+/* ---------- health: the diet goal. "I am 90 kg and want 75 kg in 3 months": the date that is, what each day has to come
+   short, how much to eat and how many steps to walk, whether that is faster than is safe, and the weight logged
+   against the straight line of the plan ---------- */
+const HL_WAYS = [["eat", "Eat less"], ["both", "Both"], ["move", "Move more"]];
+const HlWeightChart = ({ h, goal, today, kg }) => {
+  const ref = useRef(null), W = useWide(ref), H = 190, L = 44, R = 14, T = 14, B = 26;
+  const from = goal ? goal.from : hlAddDays(today, -60), to = goal ? goal.by : today;
+  const pts = Object.keys(h.weights).filter((k) => k >= from && k <= to).sort().map((k) => [k, h.weights[k]]);
+  const vals = [...pts.map((p) => p[1]), ...(goal ? [goal.start, goal.target] : []), ...(kg ? [kg] : [])];
+  if (!vals.length) return <div ref={ref} className="hl-empty">Log your weight now and then, and it shows here against the plan.</div>;
+  const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + 1), span = Math.max(1, hlDays(from, to));
+  const x = (k) => L + ((W - L - R) * Math.max(0, Math.min(span, hlDays(from, k)))) / span, y = (v) => T + ((H - T - B) * (hi - v)) / (hi - lo || 1);
+  const step = Math.max(1, Math.ceil((hi - lo) / 4)), ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) ticks.push(v);
+  const line = pts.map(([k, v], i) => `${i ? "L" : "M"}${x(k).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return (
+    <div ref={ref} className="hl-wchart">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke="rgba(255,255,255,0.06)" />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" className="hl-ax">{v}</text>
+          </g>
+        ))}
+        <line x1={L} x2={W - R} y1={H - B} y2={H - B} stroke="rgba(255,255,255,0.5)" />
+        {goal && <line className="hl-plan" x1={x(goal.from)} y1={y(goal.start)} x2={x(goal.by)} y2={y(goal.target)} stroke="#e6c877" strokeWidth="2" strokeDasharray="10 7" />}
+        {goal && <line x1={L} x2={W - R} y1={y(goal.target)} y2={y(goal.target)} stroke="#e6c877" strokeOpacity="0.35" strokeDasharray="2 5" />}
+        {today >= from && today <= to && <line x1={x(today)} x2={x(today)} y1={T} y2={H - B} stroke="rgba(255,255,255,0.14)" />}
+        {line && <path className="line-sweep" pathLength="1" d={line} fill="none" stroke={C_GREEN} strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />}
+        {pts.map(([k, v]) => <circle key={k} className="hl-wdot" cx={x(k)} cy={y(v)} r="3.2" fill="#1d2023" stroke={C_GREEN} strokeWidth="2"><title>{`${hlNice(k)}: ${hlKg(v)} kg`}</title></circle>)}
+        <text x={L} y={H - 8} className="hl-ax">{hlNice(from)}</text>
+        <text x={W - R} y={H - 8} textAnchor="end" className="hl-ax">{hlNice(to)}</text>
+        {goal && <text x={W - R} y={y(goal.target) - 6} textAnchor="end" className="hl-ax gold">{hlKg(goal.target)} kg</text>}
+      </svg>
+    </div>
+  );
+};
+const HlDiet = memo(({ h, kg, day, today, api }) => {
+  const [target, setTarget] = useState("");
+  const [months, setMonths] = useState("3");
+  const [weigh, setWeigh] = useState("");
+  const g = h.goal, p = h.profile, ready = p.cm > 0 && kg > 0;
+  const by = hlAddMonths(today, Math.max(1, Math.min(36, Number(months) || 0)));
+  const tv = Number(target);
+  const plan = g && ready ? hlPlan({ ...p, kg }, g, today, g.way) : null;
+  const ate = h.food[day] || 0;
+  const setGoal = () => { if (!(tv >= 25 && tv <= 400) || !ready) return; api.current.goal({ target: tv, by, from: today, start: kg, way: "both" }); setTarget(""); };
+  if (!g) {
+    return (
+      <div className="hl-diet">
+        {!ready && <div className="hl-empty">Type your height and weight under Body first: the plan is worked out from them.</div>}
+        <div className="hl-goal-form">
+          <span>I am <b>{kg ? hlKg(kg) : "…"} kg</b> and want to reach</span>
+          <HlNumLive value={target} onChange={setTarget} ph={kg ? hlKg(Math.round(kg * 0.85)) : "75"} unit="kg" dp={1} label="Target weight" onEnter={setGoal} />
+          <span>in</span>
+          <HlNumLive value={months} onChange={setMonths} ph="3" unit="months" label="Months" onEnter={setGoal} />
+          <span className="hl-goal-by">which is <b>{hlLong(by)}</b></span>
+          <button className="hl-save" disabled={!ready || !(tv >= 25 && tv <= 400)} onClick={setGoal}>Set goal</button>
+        </div>
+      </div>
+    );
+  }
+  const left = Math.max(0, hlDays(today, g.by)), lost = g.start - kg, all = g.start - g.target;
+  const prog = all ? Math.max(0, Math.min(1, lost / all)) : 1;
+  return (
+    <div className="hl-diet">
+      <div className="hl-goal-head">
+        <div>
+          <span className="hl-cap">Goal</span>
+          <b className="hl-goal-big">{hlKg(g.target)} kg <small>by {hlLong(g.by)}</small></b>
+          <span className="hl-goal-sub">{left ? `${left} days left` : "The day has come"} · {plan && !plan.done ? `${hlKg(plan.abs)} kg to ${plan.lose ? "lose" : "gain"}` : "reached"} · started at {hlKg(g.start)} kg on {hlNice(g.from)}</span>
+        </div>
+        <div className="hl-goal-prog" title={`${Math.round(prog * 100)}% of the way`}>
+          <span className="hl-prog-bar"><i style={{ transform: `scaleX(${prog})` }} /></span>
+          <small>{Math.round(prog * 100)}% of the way</small>
+        </div>
+      </div>
+      {plan && !plan.done && left > 0 && (
+        <>
+          {plan.lose && <SlideSeg cls="hl-way" value={g.way} onPick={(v) => api.current.goal({ ...g, way: v })} options={HL_WAYS} />}
+          <div className="hl-tiles">
+            <div className="hl-tile"><span className="hl-cap">Each day</span><b>{plan.lose ? "−" : "+"}{hlFmt(plan.daily)}</b><small>kcal {plan.lose ? "short of" : "over"} what you burn</small></div>
+            <div className="hl-tile"><span className="hl-cap">Eat about</span><b>{hlFmt(plan.eat)}</b><small>kcal a day (you burn {hlFmt(plan.tdee)})</small></div>
+            <div className="hl-tile"><span className="hl-cap">Walk</span><b>{hlFmt(plan.steps)}</b><small>steps a day{plan.extraSteps ? ` (${hlFmt(p.steps)} + ${hlFmt(plan.extraSteps)})` : ""}</small></div>
+            <div className="hl-tile"><span className="hl-cap">That is</span><b>{plan.perWeek.toFixed(2)}</b><small>kg a week, {plan.pct.toFixed(1)}% of you</small></div>
+          </div>
+          {plan.lose && plan.eat <= plan.floor + 0.5 && <div className="hl-note">Eating under {hlFmt(plan.floor)} kcal a day is not advised, so what that leaves is walked.</div>}
+          {plan.fast ? (
+            <div className="hl-warn">
+              <span className="msym">warning</span>
+              <span>That is faster than {plan.safe}% of your weight a week, the most that is called safe. At that pace you would reach {hlKg(g.target)} kg around <b>{hlLong(plan.safeBy)}</b>.</span>
+              <button className="bk-btn" onClick={() => api.current.goal({ ...g, by: plan.safeBy })}>Use that date</button>
+            </div>
+          ) : <div className="hl-note good">A pace of {plan.pct.toFixed(1)}% a week is within the {plan.safe}% that is called safe.</div>}
+        </>
+      )}
+      <HlWeightChart h={h} goal={g} today={today} kg={kg} />
+      <div className="hl-diet-foot">
+        <span className="hl-log">
+          <span>Weight {day === today ? "today" : `on ${hlNice(day)}`}</span>
+          <HlNumLive value={weigh} onChange={setWeigh} ph={h.weights[day] ? hlKg(h.weights[day]) : hlKg(kg)} unit="kg" dp={1} label="Weight"
+                     onEnter={() => { const v = Number(weigh); if (v >= 25 && v <= 400) { api.current.weighOn(day, v); setWeigh(""); } }} />
+        </span>
+        <span className="hl-log">
+          <span>Eaten {day === today ? "today" : "that day"}</span>
+          <HlNum value={ate || ""} ph="0" unit="kcal" max={20000} label="Eaten" onPick={(n) => api.current.food(day, n || 0)} />
+          {plan && <small className={ate > plan.eat ? "bad" : ""}>{ate ? (ate > plan.eat ? `${hlFmt(ate - plan.eat)} over` : `${hlFmt(plan.eat - ate)} left`) : `of ${hlFmt(plan.eat)}`}</small>}
+        </span>
+        <span className="hl-diet-go">
+          {plan && plan.extraSteps > 0 && p.steps !== plan.steps && <button className="bk-btn" onClick={() => api.current.profile({ steps: Math.min(60000, plan.steps) })}>Make {hlFmt(plan.steps)} my step goal</button>}
+          <button className="bk-btn" onClick={() => { setTarget(String(g.target)); api.current.goal(null); }}>Change goal</button>
+        </span>
+      </div>
+    </div>
+  );
+});
+// a number box whose text belongs to its parent (the goal form reads it as it is typed); Enter hands it over
+const HlNumLive = ({ value, onChange, ph, unit, dp = 0, label, onEnter }) => (
+  <span className={`hl-num${unit ? " u" : ""}`}>
+    <input className="pc-in" inputMode={dp ? "decimal" : "numeric"} aria-label={label} placeholder={ph} value={value}
+           onChange={(e) => onChange(numIn(e.target.value, dp))} onKeyDown={(e) => { if (e.key === "Enter" && onEnter) onEnter(); }} />
+    {unit && <i>{unit}</i>}
+  </span>
+);
+
+/* ---------- health: the gym. A session is a name (a split, or his own), how long it took, and its exercises, each a
+   few sets of kilos × reps. Listed with what was lifted in all and about what it burned; the best of each lift ---------- */
+const hlBlankSet = () => ({ kg: "", reps: "" });
+const hlDraftOf = (s) => (s ? { id: s.id, day: s.day, name: s.name, min: String(s.min || ""), note: s.note || "",
+  ex: s.ex.length ? s.ex.map((e) => ({ name: e.name, sets: e.sets.map((x) => ({ kg: x.kg ? String(x.kg) : "", reps: x.reps ? String(x.reps) : "" })) })) : [{ name: "", sets: [hlBlankSet()] }] }
+  : { name: "Push", min: "60", note: "", ex: [{ name: "", sets: [hlBlankSet(), hlBlankSet(), hlBlankSet()] }] });
+const HlGym = memo(({ gym, day, today, kg, api }) => {
+  const [d, setD] = useState(null);         // the session being written, or null
+  const [open, setOpen] = useState(null);   // the logged session opened
+  const sorted = [...gym].sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
+  const wk0 = hlAddDays(today, -hlDow(today)), thisWeek = gym.filter((s) => s.day >= wk0 && s.day <= today);
+  const prs = {};
+  for (const s of gym) for (const e of s.ex) for (const x of e.sets) {
+    const r = hl1rm(x.kg, x.reps), key = e.name.trim().toLowerCase();
+    if (r > 0 && (!prs[key] || r > prs[key].r)) prs[key] = { name: e.name, r, kg: x.kg, reps: x.reps, day: s.day };
+  }
+  const top = Object.values(prs).sort((a, b) => b.r - a.r).slice(0, 6);
+  const setEx = (i, p) => setD((v) => ({ ...v, ex: v.ex.map((e, j) => (j === i ? { ...e, ...p } : e)) }));
+  const setSet = (i, k, p) => setD((v) => ({ ...v, ex: v.ex.map((e, j) => (j === i ? { ...e, sets: e.sets.map((x, m) => (m === k ? { ...x, ...p } : x)) } : e)) }));
+  const save = () => {
+    const ex = d.ex.filter((e) => e.name.trim()).map((e) => ({ name: e.name.trim(), sets: e.sets.filter((x) => Number(x.kg) || Number(x.reps)).map((x) => ({ kg: Number(x.kg) || 0, reps: Number(x.reps) || 0 })) }));
+    api.current.saveGym({ id: d.id, day: d.day || day, name: d.name.trim() || "Workout", min: Math.min(600, Number(d.min) || 0), note: d.note.trim(), ex });
+    setD(null);
+  };
+  return (
+    <div className="hl-gym">
+      <div className="hl-gym-head">
+        <span className="hl-stats">
+          <span><b>{thisWeek.length}</b> session{thisWeek.length === 1 ? "" : "s"} this week</span>
+          <span><b>{hlDur(thisWeek.reduce((a, s) => a + s.min, 0))}</b></span>
+          <span><b>{hlFmt(thisWeek.reduce((a, s) => a + hlVolume(s), 0))}</b> kg lifted</span>
+        </span>
+        {!d && <button className="hl-save" onClick={() => setD(hlDraftOf(null))}><span className="msym">add</span>Log a session{day !== today ? ` on ${hlNice(day)}` : ""}</button>}
+      </div>
+      {d && (
+        <div className="hl-sheet">
+          <div className="hl-sheet-row">
+            <span className="jr-pick">{HL_SPLITS.map((n) => <button key={n} className={`jr-chip${d.name === n ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: n }))}>{n}</button>)}</span>
+            <input className="jr-in hl-sname" value={HL_SPLITS.includes(d.name) ? "" : d.name} placeholder="Or a name of its own" maxLength={40} onChange={(e) => setD((v) => ({ ...v, name: e.target.value }))} />
+            <span className="hl-num u"><input className="pc-in" inputMode="numeric" value={d.min} placeholder="60" aria-label="Minutes" onChange={(e) => setD((v) => ({ ...v, min: e.target.value.replace(/\D/g, "").slice(0, 3) }))} /><i>min</i></span>
+          </div>
+          {d.ex.map((e, i) => (
+            <div key={i} className="hl-ex">
+              <div className="hl-ex-head">
+                <input className="jr-in" list="hl-lifts" value={e.name} placeholder="Exercise (bench press, squat…)" maxLength={60} onChange={(ev) => setEx(i, { name: ev.target.value })} />
+                {d.ex.length > 1 && <button className="x-btn hl-x" aria-label="Remove the exercise" onClick={() => setD((v) => ({ ...v, ex: v.ex.filter((_, j) => j !== i) }))}>✕</button>}
+              </div>
+              <div className="hl-sets">
+                {e.sets.map((x, k) => (
+                  <span key={k} className="hl-set">
+                    <i>{k + 1}</i>
+                    <input className="pc-in" inputMode="decimal" value={x.kg} placeholder="kg" aria-label="Kilos" onChange={(ev) => setSet(i, k, { kg: numIn(ev.target.value, 2) })} />
+                    <em>×</em>
+                    <input className="pc-in" inputMode="numeric" value={x.reps} placeholder="reps" aria-label="Reps" onChange={(ev) => setSet(i, k, { reps: ev.target.value.replace(/\D/g, "").slice(0, 3) })} />
+                  </span>
+                ))}
+                <button className="jr-chip" onClick={() => setEx(i, { sets: [...e.sets, { ...(e.sets[e.sets.length - 1] || hlBlankSet()) }] })}>+ Set</button>
+                <span className="hl-hint">A set left empty is left out.</span>
+              </div>
+            </div>
+          ))}
+          <datalist id="hl-lifts">{HL_LIFTS.map((n) => <option key={n} value={n} />)}</datalist>
+          <button className="jr-chip hl-more" onClick={() => setD((v) => ({ ...v, ex: [...v.ex, { name: "", sets: [hlBlankSet(), hlBlankSet(), hlBlankSet()] }] }))}>+ Exercise</button>
+          <textarea className="jr-in hl-gnote" value={d.note} placeholder="How it went" maxLength={400} onChange={(e) => setD((v) => ({ ...v, note: e.target.value }))} />
+          <span className="hl-form-go">
+            {d.id && <button className="bk-btn danger" onClick={() => { api.current.delGym(d.id); setD(null); }}>Delete</button>}
+            <button className="bk-btn" onClick={() => setD(null)}>Cancel</button>
+            <button className="hl-save" onClick={save}>{d.id ? "Save" : `Add to ${d.day && d.day !== today ? hlNice(d.day) : day === today ? "today" : hlNice(day)}`}</button>
+          </span>
+        </div>
+      )}
+      <div className="hl-gym-cols">
+        <div className="hl-sessions">
+          {!sorted.length && <div className="hl-empty">No sessions yet. Log one with its exercises and sets, and the best of each lift is kept for you.</div>}
+          {sorted.slice(0, 12).map((s, i) => {
+            const vol = hlVolume(s), on = open === s.id;
+            return (
+              <div key={s.id} className={`hl-sess${s.day === day ? " sel" : ""}${on ? " open" : ""}`} style={{ animationDelay: `${i * 30}ms` }}>
+                <button className="hl-sess-row" onClick={() => setOpen(on ? null : s.id)}>
+                  <span className="hl-sess-d">{s.day === today ? "Today" : hlNice(s.day)}</span>
+                  <span className="hl-tag">{s.name}</span>
+                  <span className="hl-sess-f">{s.min ? hlDur(s.min) : ""}{s.ex.length ? ` · ${s.ex.length} exercise${s.ex.length === 1 ? "" : "s"}` : ""}{vol ? ` · ${hlFmt(vol)} kg` : ""}</span>
+                  <span className="hl-sess-k">≈ {hlFmt(s.src === "apple" ? s.kcal : hlGymKcal(kg || 70, s.min))} kcal</span>
+                </button>
+                {on && (
+                  <div className="hl-sess-in">
+                    {s.ex.map((e, j) => <span key={j}><b>{e.name}</b>{e.sets.map((x) => `${x.kg ? `${x.kg} kg × ` : ""}${x.reps}`).join(", ")}</span>)}
+                    {s.note && <span className="hl-sess-note">{s.note}</span>}
+                    {s.src !== "apple" && <button className="bk-btn" onClick={() => { setD(hlDraftOf(s)); setOpen(null); }}><span className="msym">edit</span>Edit</button>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {top.length > 0 && (
+          <div className="hl-prs">
+            <span className="hl-cap">Best lifts</span>
+            {top.map((r) => (
+              <span key={r.name} className="hl-pr" title={`Best set: ${r.kg} kg × ${r.reps} on ${hlNice(r.day)}`}>
+                <b>{r.name}</b><i>{r.kg} × {r.reps}</i><em>{hlKg(r.r)} kg</em>
+              </span>
+            ))}
+            <small>The last figure is a one-rep max worked out from the best set (Epley).</small>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+/* ---------- health: the vision board (after Milanote): notes and pictures laid out freely on a board. Dragged by
+   transform while held, and only put where they land when let go (nothing is redrawn while they move); the one moved
+   last lies on top. Pictures are added from a file, dropped on the board, or pasted while the pointer is on it ---------- */
+const HL_BOARD_H = 620;
+const HlBoard = memo(({ board, api }) => {
+  const wrap = useRef(null), drag = useRef(null), over = useRef(false), file = useRef(null);
+  const [view, setView] = useState(null);
+  const spot = (n) => ({ x: 24 + (n % 4) * 250, y: 24 + (Math.floor(n / 4) % 3) * 190 });
+  const addPics = async (files, at) => {
+    let n = board.length;
+    for (const f of files) {
+      if (!f || !/^image\//.test(f.type)) continue;
+      const id = await shotAdd(f, HL_PIC);
+      if (id) api.current.addCard({ kind: "pic", img: id, w: 240, text: "", tint: 0, ...(at ? { x: Math.max(0, at.x - 120), y: Math.max(0, at.y - 60) } : spot(n)) });
+      n++;
+    }
+  };
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (!over.current) return;
+      const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
+      if (files.length) { e.preventDefault(); addPics(files); }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  });
+  const down = (e, c, mode) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const el = e.currentTarget.closest(".hl-bi");
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    drag.current = { id: c.id, el, mode, x0: e.clientX, y0: e.clientY, x: c.x, y: c.y, w: c.w, moved: false };
+    el.classList.add("lift");
+  };
+  const move = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.x0, dy = e.clientY - d.y0;
+    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    if (d.mode === "move") d.el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+    else d.el.style.width = `${Math.max(140, Math.min(640, d.w + dx))}px`;
+  };
+  const up = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    d.el.classList.remove("lift");
+    const dx = e.clientX - d.x0, dy = e.clientY - d.y0, bw = wrap.current ? wrap.current.clientWidth : 1000;
+    if (!d.moved) { d.el.style.transform = ""; return; }
+    if (d.mode === "move") {
+      const x = Math.round(Math.max(0, Math.min(bw - 80, d.x + dx))), y = Math.round(Math.max(0, Math.min(HL_BOARD_H - 48, d.y + dy)));
+      d.el.style.left = `${x}px`; d.el.style.top = `${y}px`; d.el.style.transform = "";
+      api.current.moveCard(d.id, { x, y });
+    } else api.current.moveCard(d.id, { w: Math.round(Math.max(140, Math.min(640, d.w + dx))) });
+  };
+  return (
+    <div className="hl-board-wrap">
+      <div className="hl-board-bar">
+        <button className="hl-save" onClick={() => api.current.addCard({ kind: "note", text: "", w: 220, tint: board.length % HL_CLS.length, ...spot(board.length) })}><span className="msym">sticky_note_2</span>Note</button>
+        <button className="bk-btn" onClick={() => file.current?.click()}><span className="msym">add_photo_alternate</span>Picture</button>
+        <span className="hl-hint">Drag them anywhere. Drop pictures on the board, or paste one while the pointer is on it.</span>
+        <input ref={file} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={(e) => { addPics([...(e.target.files || [])]); e.target.value = ""; }} />
+      </div>
+      <div ref={wrap} className="hl-board" data-nowarm="" style={{ height: HL_BOARD_H }}
+           onMouseEnter={() => { over.current = true; }} onMouseLeave={() => { over.current = false; }}
+           onDragOver={(e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
+           onDrop={(e) => {
+             const files = [...(e.dataTransfer.files || [])];
+             if (!files.length) return;
+             e.preventDefault();
+             const r = wrap.current.getBoundingClientRect();
+             addPics(files, { x: e.clientX - r.left, y: e.clientY - r.top });
+           }}>
+        {!board.length && <div className="hl-board-empty"><span className="msym">dashboard</span>Pin what you are working towards: a picture of the body you want, a race, a note to yourself.</div>}
+        {board.map((c, i) => (
+          <div key={c.id} className={`hl-bi ${c.kind}`} style={{ left: c.x, top: c.y, width: c.w, zIndex: c.z || 0, "--c": HL_CLS[c.tint], animationDelay: `${i * 30}ms` }}>
+            <span className="hl-bi-grip" onPointerDown={(e) => down(e, c, "move")} onPointerMove={move} onPointerUp={up} onPointerCancel={up} />
+            {c.kind === "note" ? (
+              <div className="hl-bi-text" contentEditable="plaintext-only" suppressContentEditableWarning spellCheck={false} data-ph="Write something"
+                   onBlur={(e) => { const t = e.currentTarget.innerText.slice(0, 2000); if (t !== c.text) api.current.textCard(c.id, t); }}>{c.text}</div>
+            ) : (
+              <div className="hl-bi-pic" onPointerDown={(e) => down(e, c, "move")} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+                   onDoubleClick={() => setView(c.img)}><Shot id={c.img} big /></div>
+            )}
+            <span className="hl-bi-tools">
+              {c.kind === "note" && HL_CLS.map((col, t) => <button key={col} className={c.tint === t ? "on" : ""} style={{ "--c": col }} onClick={() => api.current.moveCard(c.id, { tint: t }, true)} aria-label={`Colour ${t + 1}`} />)}
+              {c.kind === "pic" && <button className="hl-bi-open" onClick={() => setView(c.img)} aria-label="Open the picture"><span className="msym">open_in_full</span></button>}
+              <button className="hl-bi-del" onClick={() => api.current.delCard(c.id)} aria-label="Remove"><span className="msym">delete</span></button>
+            </span>
+            <span className="hl-bi-size" onPointerDown={(e) => down(e, c, "size")} onPointerMove={move} onPointerUp={up} onPointerCancel={up} />
+          </div>
+        ))}
+      </div>
+      {view && <ShotView id={view} onClose={() => setView(null)} />}
+    </div>
+  );
+});
+
+/* ---------- health: test data (the flask in the footer). Every generated thing is marked: to-dos, classes, sessions,
+   notes and a goal carry test: true, and the days of test steps and weights are listed in `tests`, so "Clear test data"
+   takes away exactly what it added and nothing he entered. Only empty days are filled ---------- */
+const HL_TEST_TODOS = [["Drink 2 litres of water", "daily", [], -20, 0, 0.75], ["Stretch for 10 minutes", "daily", [], -6, 30, 0.6],
+  ["Read 20 pages", "weekdays", [], -14, 0, 0.55], ["Laundry", "days", [5], -21, 0, 0.9], ["Gym", "days", [0, 2, 4], -28, 84, 0.8],
+  ["Submit the lab report", "once", [], 0, 0, 0], ["Call home", "once", [], 1, 0, 0]];
+const HL_TEST_CLASSES = [["Calculus II", "B2.01", [0, 2], "08:00", "09:40", 0], ["Physics I", "Lab 3", [1, 3], "10:00", "11:40", 1],
+  ["Statistics", "C1.12", [0], "13:00", "14:40", 2], ["Programming lab", "Computer lab", [2], "13:00", "15:30", 4],
+  ["Academic English", "A3.05", [4], "09:00", "10:40", 3], ["Futsal", "Sports hall", [3], "16:00", "17:30", 5]];
+const HL_TEST_SPLITS = [["Push", [["Bench press", 60, 8], ["Overhead press", 35, 8], ["Triceps pushdown", 25, 12]]],
+  ["Pull", [["Lat pulldown", 50, 10], ["Barbell row", 50, 8], ["Biceps curl", 12.5, 12]]],
+  ["Legs", [["Squat", 70, 6], ["Romanian deadlift", 60, 8], ["Leg press", 120, 10]]]];
+const HL_TEST_NOTES = [["75 kg by January", 24, 26, 0], ["Run 5 km in under 30 minutes", 280, 40, 1], ["Sleep before 23:30 on weekdays", 536, 22, 2],
+  ["Bench 80 kg × 5", 120, 230, 3], ["Walk to campus, not the ojek", 420, 250, 5]];
+const hlTestData = (h, today, seed = Date.now()) => {
+  let s = (seed % 2147483646) + 1;
+  const rnd = () => (s = (s * 48271) % 2147483647) / 2147483647;
+  const x = { ...h, steps: { ...h.steps }, weights: { ...h.weights }, tests: { steps: { ...h.tests.steps }, weights: { ...h.tests.weights }, profile: h.tests.profile } };
+  if (!x.profile.kg || !x.profile.cm) { x.profile = { ...x.profile, cm: 168, kg: 90, age: 21, sex: "m" }; x.tests.profile = 1; }
+  // steps: the last 60 days (today about half done), campus days busier than the weekend
+  for (let i = 0; i <= 60; i++) {
+    const k = hlAddDays(today, -i);
+    if (x.steps[k] || x.typed[k]) continue;
+    const w = hlDow(k), base = w < 5 ? 6200 + rnd() * 5200 : 2600 + rnd() * 9000;
+    x.steps[k] = Math.round((i ? base : base * 0.55) / 10) * 10;
+    x.tests.steps[k] = 1;
+  }
+  // weights: every three days or so, coming down slowly from a kilo and a half above where he stands
+  const kg0 = x.profile.kg, own = Object.keys(h.weights).some((k) => k >= hlAddDays(today, -60) && !h.tests.weights[k]);
+  if (!own) for (let i = 60; i >= 0; i -= 2 + Math.floor(rnd() * 3)) {
+    const k = hlAddDays(today, -i);
+    x.weights[k] = Math.round((kg0 + (i / 60) * 1.6 + (rnd() - 0.5) * 0.6) * 10) / 10;
+    x.tests.weights[k] = 1;
+  }
+  if (!x.goal) {
+    const from = hlAddDays(today, -60);
+    x.goal = { target: Math.round(kg0 * 0.84), by: hlAddMonths(from, 6), from, start: Math.round((kg0 + 1.6) * 10) / 10, way: "both", test: true };
+  }
+  const mark = { test: true };
+  x.todos = [...h.todos, ...HL_TEST_TODOS.map(([text, rep, dows, back, len, often]) => {
+    const t = { id: uid(), text, rep, dows, len, from: hlAddDays(today, back), done: {}, skip: {}, ...mark };
+    for (let i = back; i < 0; i++) { const k = hlAddDays(today, i); if (hlOn(t, k) && rnd() < often) t.done[k] = 1; }
+    return t;
+  })];
+  x.classes = [...h.classes, ...HL_TEST_CLASSES.flatMap(([name, room, days, from, to, tint]) => days.map((dow) => ({ id: uid(), name, room, dow, from, to, tint, ...mark })))];
+  // four weeks of push, pull and legs on Monday, Wednesday and Friday, a little heavier each week
+  const gym = [];
+  let n = 0;
+  for (let i = 28; i >= 0; i--) {
+    const k = hlAddDays(today, -i), w = hlDow(k);
+    if (![0, 2, 4].includes(w) || rnd() < 0.12) continue;
+    const [name, lifts] = HL_TEST_SPLITS[n++ % 3], wk = (28 - i) / 7;
+    gym.push({ id: uid(), day: k, name, min: 50 + Math.round(rnd() * 5) * 5, note: "",
+               ex: lifts.map(([lift, kg, reps]) => ({ name: lift, sets: [0, 1, 2].map((j) => ({ kg: Math.round((kg + wk * kg * 0.035) / 2.5) * 2.5, reps: Math.max(4, reps - (j === 2 ? Math.floor(rnd() * 3) : 0)) })) })), ...mark });
+  }
+  x.gym = [...h.gym, ...gym];
+  x.board = [...h.board, ...HL_TEST_NOTES.map(([text, bx, by, tint], i) => ({ id: uid(), kind: "note", text, x: bx, y: by, w: 220, tint, z: i, ...mark }))];
+  return x;
+};
+const hlClearTest = (h) => {
+  const t = h.tests, drop = (map, marks) => Object.fromEntries(Object.entries(map).filter(([k]) => !marks[k]));
+  return { ...h, steps: drop(h.steps, t.steps), weights: drop(h.weights, t.weights), profile: t.profile ? hlBlank().profile : h.profile,
+           goal: h.goal && h.goal.test ? null : h.goal, todos: h.todos.filter((x) => !x.test), classes: h.classes.filter((x) => !x.test),
+           gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test), tests: hlBlank().tests };
+};
+const hlHasTest = (h) => !!(Object.keys(h.tests.steps).length || Object.keys(h.tests.weights).length || (h.goal && h.goal.test)
+  || h.todos.some((x) => x.test) || h.classes.some((x) => x.test) || h.gym.some((x) => x.test) || h.board.some((x) => x.test));
+// the board's pictures that no card points to any more go, the next time Health opens (never at once: an import can be undone)
+const hlSweep = async (board) => {
+  if (USER.aside) return;
+  const keep = new Set(board.filter((c) => c.img).map((c) => c.img));
+  const keys = await shotDo("readonly", (st) => st.getAllKeys());
+  const gone = Array.isArray(keys) ? keys.filter((id) => String(id).startsWith(HL_PIC) && !keep.has(id)) : [];
+  if (!gone.length) return;
+  const db = await shotOpen();
+  try { const st = db.transaction("img", "readwrite").objectStore("img"); gone.forEach((id) => st.delete(id)); } catch (e) { /* next time */ }
+};
+// a Health backup taken in while another side is on screen: written under Health's key, read when Health next opens.
+// Gives back how to undo it; null for a backup with nothing in it, false when what Health has saved can't be read
+const importHealth = async (data) => {
+  const next = cleanHealth(data.health);
+  if (HL_EMPTY(next)) return null;
+  let was = null;
+  try { was = await store.get(HL_KEY); } catch (e) { /* nothing saved yet */ }
+  if (was && was.value) { try { const old = JSON.parse(was.value); if (!old || typeof old !== "object") return false; } catch (e) { return false; } }
+  if (data.images && typeof data.images === "object" && !Array.isArray(data.images)) await shotUnpack(Object.fromEntries(Object.entries(data.images).filter(([id]) => id.startsWith(HL_PIC))));
+  await store.set(HL_KEY, JSON.stringify(next));
+  return () => store.set(HL_KEY, was && was.value ? was.value : JSON.stringify(hlBlank()));
+};
+
+/* ---------- health: the page ---------- */
+const HL_DOW_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const HL_ACT_BTNS = [{ id: "addtodo", icon: "add_task", text: "Add to-do", key: "⌘N", tip: "Add a to-do to the day on screen (⌘N)" },
+                     { id: "steps", icon: "directions_walk", text: "Log steps", tip: "Type the steps of the day on screen" }];
+function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
+  const today = hlKey(new Date());
+  const [h, setH] = useState(hlBlank);
+  const [loaded, setLoaded] = useState(false);
+  const [day, setDay] = useState(today);
+  const [entering, setEntering] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [nowMin, setNowMin] = useState(() => { const t = new Date(); return t.getHours() * 60 + t.getMinutes(); });
+  const hRef = useRef(h), saveChain = useRef(Promise.resolve()), unreadable = useRef(false);
+  useEffect(() => { const t = setTimeout(() => setEntering(false), 1200); return () => clearTimeout(t); }, []);
+  useEffect(() => {
+    const t = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 30000);
+    return () => clearInterval(t);
+  }, []);
+  const persist = () => {
+    if (unreadable.current) return;
+    saveChain.current = saveChain.current.then(async () => {
+      setSaving(true);
+      try { await store.set(HL_KEY, JSON.stringify(hRef.current)); setSaveError(false); } catch (e) { setSaveError(true); }
+      setSaving(false);
+    });
+  };
+  const commit = (next) => { if (next === hRef.current) return; hRef.current = next; setH(next); persist(); };
+  const up = (fn) => commit(fn(hRef.current));
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await store.get(HL_KEY);
+        if (res && res.value) {
+          let saved = null;
+          try { saved = JSON.parse(res.value); } catch (e) {}
+          if (!saved || typeof saved !== "object") {
+            unreadable.current = true;        // kept aside, and never saved over
+            try { await store.set(`${HL_KEY}-unreadable-${Date.now()}`, res.value); } catch (e) {}
+            throw new Error("saved health data unreadable");
+          }
+          const c = cleanHealth(saved);
+          hRef.current = c; setH(c);
+          hlSweep(c.board);
+        }
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+  useWarmScreen(entering ? null : "health-day");
+  // the iPhone's file (hlPhoneRead): a file already taken in (saved at the same moment) is passed over; days whose steps
+  // he typed himself keep them, as with the Apple Health import
+  const [phoneSaid, setPhoneSaid] = useState("");
+  const phoneTimer = useRef(0);
+  const sayPhone = (m) => { clearTimeout(phoneTimer.current); setPhoneSaid(m); phoneTimer.current = setTimeout(() => setPhoneSaid(""), 4200); };
+  const phoneCheck = useRef(null);
+  phoneCheck.current = async (asked) => {
+    if (!HL_PHONE_OK) return;
+    let f = null;
+    try { f = await window.flowHealth.phone(); } catch (e) { f = null; }
+    if (!f || typeof f.text !== "string" || !(f.at > 0)) { if (asked) sayPhone("No file from the iPhone yet: run the shortcut once"); return; }
+    if (hRef.current.phone && hRef.current.phone.at === f.at) { if (asked) sayPhone("Up to date"); return; }
+    const got = hlPhoneRead(f.text);
+    if (!got) { if (asked) sayPhone("Nothing could be read from the iPhone's file: is the date set to yyyy-MM-dd?"); return; }
+    const now = hlKey(new Date());
+    up((x) => {
+      const steps = { ...x.steps }, weights = { ...x.weights }, ts = { ...x.tests.steps }, tw = { ...x.tests.weights };
+      for (const k in got.steps) {
+        if (k > now || x.typed[k]) continue;
+        if (got.steps[k] > 0) steps[k] = got.steps[k]; else delete steps[k];
+        delete ts[k];
+      }
+      for (const k in got.weights) { if (k <= now) { weights[k] = got.weights[k]; delete tw[k]; } }
+      return { ...x, steps, weights, tests: { ...x.tests, steps: ts, weights: tw }, phone: { at: f.at, days: got.days, to: got.to } };
+    });
+    if (asked) sayPhone(`Updated: ${got.days} day${got.days === 1 ? "" : "s"} from your iPhone`);
+  };
+  useEffect(() => {
+    if (!loaded || !HL_PHONE_OK) return;
+    phoneCheck.current(false);
+    const again = () => { if (document.visibilityState === "visible") phoneCheck.current(false); };
+    const t = setInterval(again, HL_PHONE_MS);
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("focus", again);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", again); window.removeEventListener("focus", again); clearTimeout(phoneTimer.current); };
+  }, [loaded]);
+
+  /* ---------- everything a card can change, as one ref: the cards are memo'd and redraw only when what they show changes ---------- */
+  const api = useRef(null);
+  api.current = {
+    pick: (k) => setDay(k),
+    phoneNow: () => phoneCheck.current(true),
+    add: (f) => up((x) => ({ ...x, todos: [...x.todos, { id: uid(), from: day, done: {}, skip: {}, ...f }] })),
+    toggle: (id) => up((x) => ({ ...x, todos: x.todos.map((t) => {
+      if (t.id !== id) return t;
+      const done = { ...t.done };
+      if (done[day]) delete done[day]; else done[day] = 1;
+      return { ...t, done };
+    }) })),
+    skip: (id) => up((x) => ({ ...x, todos: x.todos.map((t) => (t.id === id ? { ...t, skip: { ...t.skip, [day]: 1 } } : t)) })),
+    del: (id) => up((x) => ({ ...x, todos: x.todos.filter((t) => t.id !== id) })),
+    saveCls: (f) => up((x) => {
+      const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), dow: f.dow, from: f.from, to: f.to, tint: f.tint };
+      return { ...x, classes: f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...(o.test ? { test: true } : {}) } : o)) : [...x.classes, c] };
+    }),
+    delCls: (id) => up((x) => ({ ...x, classes: x.classes.filter((c) => c.id !== id) })),
+    // classes read off a picture: one save, and one colour per name (the next colours after those in use)
+    saveClsMany: (list) => up((x) => {
+      const tint = {};
+      let next = x.classes.length;
+      const add = list.map((f) => {
+        const k = f.name.trim().toLowerCase();
+        if (tint[k] === undefined) tint[k] = next++ % HL_CLS.length;
+        return { id: uid(), name: f.name.trim(), room: (f.room || "").trim(), dow: f.dow, from: f.from, to: f.to, tint: tint[k] };
+      });
+      return { ...x, classes: [...x.classes, ...add] };
+    }),
+    // a day's steps typed: they are his from then on (an Apple Health import leaves them alone)
+    setSteps: (k, n) => up((x) => {
+      if (k > today) return x;
+      const steps = { ...x.steps }, typed = { ...x.typed }, ts = { ...x.tests.steps };
+      if (n > 0) { steps[k] = Math.min(200000, Math.round(n)); typed[k] = 1; } else { delete steps[k]; delete typed[k]; }
+      delete ts[k];
+      return { ...x, steps, typed, tests: { ...x.tests, steps: ts } };
+    }),
+    apple: (got) => {
+      let kept = 0;
+      up((x) => {
+        const steps = { ...x.steps }, weights = { ...x.weights }, ts = { ...x.tests.steps }, tw = { ...x.tests.weights };
+        for (const k in got.steps) { if (x.typed[k]) { kept++; continue; } steps[k] = got.steps[k]; delete ts[k]; }
+        for (const k in got.weights) { weights[k] = got.weights[k]; delete tw[k]; }
+        return { ...x, steps, weights, tests: { ...x.tests, steps: ts, weights: tw } };
+      });
+      return { kept };
+    },
+    profile: (p) => up((x) => ({ ...x, profile: { ...x.profile, ...p }, tests: { ...x.tests, profile: 0 } })),
+    weigh: (v) => api.current.weighOn(today, v),
+    weighOn: (k, v) => up((x) => {
+      if (k > today) return x;
+      const tw = { ...x.tests.weights };
+      delete tw[k];
+      return { ...x, weights: { ...x.weights, [k]: Math.round(v * 10) / 10 }, profile: k === today ? { ...x.profile, kg: Math.round(v * 10) / 10 } : x.profile, tests: { ...x.tests, weights: tw } };
+    }),
+    food: (k, n) => up((x) => { const food = { ...x.food }; if (n > 0) food[k] = Math.round(n); else delete food[k]; return { ...x, food }; }),
+    goal: (g) => up((x) => ({ ...x, goal: g })),
+    saveGym: (s) => up((x) => ({ ...x, gym: s.id ? x.gym.map((o) => (o.id === s.id ? { ...o, ...s } : o)) : [...x.gym, { ...s, id: uid() }] })),
+    delGym: (id) => up((x) => ({ ...x, gym: x.gym.filter((s) => s.id !== id) })),
+    // the board: a card moved goes on top of the others (z), without its place in the list changing (nothing is put there afresh)
+    addCard: (c) => up((x) => ({ ...x, board: [...x.board, { id: uid(), z: Math.max(0, ...x.board.map((o) => o.z || 0)) + 1, ...c }].slice(-200) })),
+    moveCard: (id, p, stay) => up((x) => {
+      const z = Math.max(0, ...x.board.map((o) => o.z || 0)) + 1;
+      return { ...x, board: x.board.map((o) => (o.id === id ? { ...o, ...p, ...(stay ? {} : { z }) } : o)) };
+    }),
+    textCard: (id, t) => up((x) => ({ ...x, board: x.board.map((o) => (o.id === id ? { ...o, text: t } : o)) })),
+    delCard: (id) => up((x) => ({ ...x, board: x.board.filter((o) => o.id !== id) })),
+  };
+
+  // ← and → step through the days, while nothing is being typed and nothing is open; ⌘N goes to a new to-do, as it
+  // opens the quick log on the other sides
+  useEffect(() => {
+    if (settingsOpen) return;
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); sideApi.current.go("addtodo"); return; }
+      if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target, tag = (t.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
+      setDay((d) => hlAddDays(d, e.key === "ArrowLeft" ? -1 : 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
+
+  /* ---------- what the page shows ---------- */
+  const p = h.profile, kg = hlWeightOn(h, today), dd = hlDayOf(h, day), vals = hlRingVals(h, dd), band = hlBand(hlBmi(kg, p.cm));
+  const todayDow = hlDow(today);
+  const clsOn = h.classes.filter((c) => c.dow === hlDow(day)).sort((a, b) => (a.from < b.from ? -1 : 1));
+  const nextCls = day === today ? clsOn.find((c) => hlMin(c.to) > nowMin) : clsOn[0];
+  const plan = h.goal && p.cm && kg ? hlPlan({ ...p, kg }, h.goal, today, h.goal.way) : null;
+  let ringStreak = 0;
+  for (let k = day <= today ? day : today; ringStreak < 400; k = hlAddDays(k, -1)) {
+    const v = hlRingVals(h, hlDayOf(h, k));
+    if (v[0] >= 1 && v[1] >= 1) ringStreak++; else break;
+  }
+  const td = day === today ? dd : hlDayOf(h, today);
+  const sideFoot = { text: `${hlFmt(td.steps)} steps today`, sub: `${Math.round((td.steps / p.steps) * 100)}% of ${hlFmt(p.steps)} · ${td.done} of ${td.todos.length} to-do${td.todos.length === 1 ? "" : "s"}`,
+                     ink: td.steps >= p.steps ? "#8fd7a4" : "#e8eaec", mood: td.steps >= p.steps ? "good" : null };
+  const sideApi = useRef(null);
+  sideApi.current = {
+    go: (id) => {
+      if (id === "home") { onHome(); return; }
+      if (id === "users") { onUsers(); return; }
+      if (id === "reset") { onReset(); return; }
+      if (id === "restore") { onRestore(); return; }
+      if (id === "today") { setDay(today); window.scrollTo({ top: 0 }); return; }
+      const page = warm.page || document;
+      const part = id === "addtodo" ? "todo" : id === "steps" ? "activity" : id;
+      page.querySelector(SIDE_PARTS[part])?.scrollIntoView({ block: "start" });
+      if (id === "addtodo") setTimeout(() => page.querySelector(".hl-add-t")?.focus({ preventScroll: true }), 120);
+      if (id === "steps") setTimeout(() => page.querySelector(".hl-steps-in input")?.focus({ preventScroll: true }), 120);
+    },
+  };
+
+  /* ---------- backup ---------- */
+  const fileRef = useRef(null);
+  const [backupMsg, setBackupMsg] = useState("");
+  const [undoImport, setUndoImport] = useState(null);
+  const msgTimer = useRef(0);
+  const flashBackup = (m, t = 3000) => { clearTimeout(msgTimer.current); setBackupMsg(m); msgTimer.current = setTimeout(() => setBackupMsg(""), t); };
+  const exportData = async () => {
+    const own = hlOwn(hRef.current);
+    if (HL_EMPTY(own)) { flashBackup("Nothing of your own to export yet", 3600); return; }
+    const images = await shotPack({ board: own.board.filter((c) => c.img).map((c) => ({ imgs: [c.img] })) });
+    const blob = new Blob([JSON.stringify({ app: "flow-health", version: 1, exportedAt: new Date().toISOString(), health: own,
+      ...(Object.keys(images).length ? { images } : {}) }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob), a = document.createElement("a"), d = new Date();
+    a.href = url;
+    a.download = `${userFilePre()}health-export-${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    flashBackup(BACKUP_DONE, 2600);
+  };
+  const importData = async (file) => {
+    if (!file) return;
+    let data;
+    try { data = JSON.parse(await file.text()); } catch (e) { flashBackup("Could not read that file"); return; }
+    const side = backupSide(data);
+    if (!side) { flashBackup("That isn't a Flow backup file, nothing was changed", 4000); return; }
+    if (side !== "health") {
+      const got = await onOther(side, data);
+      if (!got.undo) { flashBackup(got.msg, 4000); return; }
+      const held = { other: got.undo };
+      setUndoImport(held);
+      flashBackup(got.msg, 10000);
+      setTimeout(() => setUndoImport((u) => (u === held ? null : u)), 10000);
+      return;
+    }
+    const next = cleanHealth(data.health);
+    if (HL_EMPTY(next)) { flashBackup("That backup is empty, nothing was changed", 4000); return; }
+    if (data.images && typeof data.images === "object" && !Array.isArray(data.images)) await shotUnpack(Object.fromEntries(Object.entries(data.images).filter(([id]) => id.startsWith(HL_PIC))));
+    const prev = hRef.current;
+    commit(next);
+    setUndoImport({ prev });
+    flashBackup("Backup restored", 10000);
+    setTimeout(() => setUndoImport((u) => (u && u.prev === prev ? null : u)), 10000);
+  };
+  const revertImport = async () => {
+    if (!undoImport) return;
+    const u = undoImport;
+    setUndoImport(null);
+    if (u.other) await u.other(); else commit(u.prev);
+    flashBackup("Import undone");
+  };
+  const [testMsg, setTestMsg] = useState("");
+  const flashTest = (m) => { setTestMsg(m); setTimeout(() => setTestMsg(""), 3200); };
+  const addTest = () => { commit(hlTestData(hRef.current, today)); flashTest("Test data added: two months of steps, weights, a timetable, to-dos, sessions"); };
+  const clearTest = () => { if (!hlHasTest(hRef.current)) { flashTest("No test data to clear"); return; } commit(hlClearTest(hRef.current)); flashTest("Test data cleared"); };
+
+  const dayWord = day === today ? "Today" : HL_DOW_LONG[hlDow(day)];
+  return (
+    <>
+      <div className={`hl-page month-view${entering ? " enter" : ""}`}>
+        <div data-mv="" style={S.topRow}>
+          <h1 key={dayWord} className="hl-title" style={S.title}>{dayWord.split("").map((ch, i) => <span key={i} className={ch === "t" ? "tt" : undefined}>{ch}</span>)}</h1>
+          <div style={S.navBox}>
+            <span className="month-nav">
+              <button className="nav-arrow" title="The day before (←)" onClick={() => setDay(hlAddDays(day, -1))}>‹</button>
+              <button className="month-btn" style={S.monthLabelBtn} title={day === today ? "Today" : "Back to today"} onClick={() => setDay(today)}>{hlNice(day)}</button>
+              <button className="nav-arrow" title="The day after (→)" onClick={() => setDay(hlAddDays(day, 1))}>›</button>
+            </span>
+            {day !== today && <button className="hl-today" onClick={() => setDay(today)}>Today</button>}
+          </div>
+        </div>
+
+        {/* the day at a glance: the three rings, the steps big, and four tiles */}
+        <div data-mv="" className="hero hl-hero" style={{ "--hc": HL_TINT[0][0] }}>
+          <div className="hl-hero-in">
+            <div className="hl-hero-rings" key={day}><HlRings vals={vals} /></div>
+            <div className="hl-hero-main">
+              <div className="hero-head">
+                <span className="hero-lead">
+                  <span className="hero-tag"><i />{day === today ? "Today" : hlNice(day)}</span>
+                  <InfoTip title="How the rings work">
+                    <span><i style={{ background: HL_TINT[0][0] }} />Steps: what you walked, against your goal ({hlFmt(p.steps)}, in Settings).</span>
+                    <span><i style={{ background: HL_TINT[1][0] }} />Move: the kcal you burned moving: your steps (about {hlStepKcal(kg || 70).toFixed(3)} kcal a step at your weight) and your gym sessions.</span>
+                    <span><i style={{ background: HL_TINT[2][0] }} />To-dos: how many of the day's to-dos are done.</span>
+                    <span className="info-foot">A ring closes when its goal is reached.</span>
+                  </InfoTip>
+                </span>
+                {ringStreak > 1 && <span className="hero-vs"><b style={{ color: HL_TINT[0][1] }}>{ringStreak} days</b> in a row with steps and move closed</span>}
+              </div>
+              <div className="hero-num"><CountNum value={dd.steps} duration={660} render={(n) => hlFmt(n)} /><small>steps</small></div>
+              <div className="hl-rr-list">
+                {[["Steps", dd.steps, p.steps, ""], ["Move", dd.move, p.move, " kcal"], ["To-dos", dd.done, dd.todos.length, ""]].map(([name, v, goal, unit], i) => (
+                  <span key={name} className="hl-rr" style={{ "--c": HL_TINT[i][0] }}>
+                    <i /><b>{name}</b><span>{hlFmt(v)}<em> / {hlFmt(goal)}{unit}</em></span><small>{goal ? Math.round((v / goal) * 100) : 0}%</small>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="hero-tiles">
+            <div className="hero-tile" style={{ "--tc": HL_TINT[0][0] }} title="Worked out from your steps and your height">
+              <span className="ht-cap">Distance</span>
+              <span className="ht-val">{dd.km.toFixed(1)}<small> km</small></span>
+              <span className="ht-sub">≈ {hlFmt(dd.stepKcal)} kcal from steps</span>
+            </div>
+            <div className="hero-tile" style={{ "--tc": kg ? band[2] : "#8e969e" }} title="Your latest weight, and its BMI on the Asian scale">
+              <span className="ht-cap">Weight</span>
+              <span className="ht-val">{kg ? hlKg(kg) : "–"}<small> kg</small></span>
+              <span className="ht-sub" style={kg && p.cm ? { color: band[2] } : undefined}>{kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)} · ${band[1]}` : "Type it under Body"}</span>
+            </div>
+            <div className="hero-tile" style={{ "--tc": nextCls ? HL_CLS[nextCls.tint] : "#8e969e" }} title="The next thing on your timetable">
+              <span className="ht-cap">{day === today ? "Next" : "First"}</span>
+              <span className="ht-val hl-ellip">{nextCls ? nextCls.name : clsOn.length ? "Done for the day" : "Free day"}</span>
+              <span className="ht-sub">{nextCls ? `${nextCls.from}–${nextCls.to}${nextCls.room ? ` · ${nextCls.room}` : ""}` : `${clsOn.length} on the timetable`}</span>
+            </div>
+            <div className="hero-tile" style={{ "--tc": "#e6c877" }} title="Your diet goal">
+              <span className="ht-cap">Goal</span>
+              <span className="ht-val">{plan ? (plan.done ? "Reached" : <>{hlKg(plan.abs)}<small> kg to go</small></>) : "–"}</span>
+              <span className="ht-sub">{h.goal ? `${hlKg(h.goal.target)} kg by ${hlNice(h.goal.by)}` : "Set one under Diet goal"}</span>
+            </div>
+          </div>
+        </div>
+
+        <FoldCard name="to-do" title="To-do" sub={dd.todos.length ? `${dd.done} of ${dd.todos.length} done` : ""}>
+          <HlTodos todos={h.todos} day={day} today={today} api={api} />
+        </FoldCard>
+        <FoldCard name="week" title="Week" sub={nextCls ? `${day === today ? "Next" : "First"}: ${nextCls.name} at ${nextCls.from}` : `${h.classes.length} a week`}>
+          <HlWeek classes={h.classes} todayDow={todayDow} nowMin={nowMin} api={api} />
+        </FoldCard>
+        <FoldCard name="activity" title="Activity" sub={`${hlFmt(dd.steps)} of ${hlFmt(p.steps)} steps`}>
+          <HlActivity h={h} day={day} today={today} api={api} phoneSaid={phoneSaid} />
+        </FoldCard>
+        <FoldCard name="body" title="Body" sub={kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)}` : ""}>
+          <HlBody profile={p} kg={kg} api={api} />
+        </FoldCard>
+        <FoldCard name="diet" title="Diet goal" sub={plan && !plan.done ? `${hlFmt(plan.eat)} kcal · ${hlFmt(plan.steps)} steps a day` : ""}>
+          <HlDiet h={h} kg={kg} day={day} today={today} api={api} />
+        </FoldCard>
+        <FoldCard name="gym" title="Gym" sub={dd.gym.length ? `${dd.gym.map((s) => s.name).join(", ")} ${day === today ? "today" : "that day"}` : ""}>
+          <HlGym gym={h.gym} day={day} today={today} kg={kg} api={api} />
+        </FoldCard>
+        <FoldCard name="vision board" title="Vision board" sub={h.board.length ? `${h.board.length} pinned` : ""}>
+          <HlBoard board={h.board} api={api} />
+        </FoldCard>
+      </div>
+
+      {settingsOpen && (
+        <SettingsPop onClose={() => setSettingsOpen(false)}>
+          <div className="set-row">
+            <span className="set-k"><b>Step goal</b><small>The outer ring closes at it</small></span>
+            <SetNum value={String(p.steps)} dp={0} unit="steps" onPick={(v) => { const n = Number(v); if (n >= 1000 && n <= 60000) api.current.profile({ steps: Math.round(n) }); }} />
+          </div>
+          <div className="set-row">
+            <span className="set-k"><b>Move goal</b><small>The kcal burned moving (steps and gym) that close the middle ring</small></span>
+            <SetNum value={String(p.move)} dp={0} unit="kcal" onPick={(v) => { const n = Number(v); if (n >= 50 && n <= 3000) api.current.profile({ move: Math.round(n) }); }} />
+          </div>
+        </SettingsPop>
+      )}
+
+      <SideNav api={sideApi} foot={sideFoot} spy={SIDE_SPY.health} spyKey={`health-${day}`} act={HL_ACT_BTNS}
+               rows={[
+                 { head: "Health" },
+                 { id: "today", icon: "today", text: "Today", tail: hlNice(today).slice(4), on: day === today },
+                 { head: day === today ? "Today" : hlNice(day) },
+                 { id: "todo", icon: "checklist", text: "To-do", sub: true },
+                 { id: "week", icon: "calendar_view_week", text: "Week", sub: true },
+                 { id: "activity", icon: "directions_walk", text: "Activity", sub: true },
+                 { id: "body", icon: "monitor_weight", text: "Body", sub: true },
+                 { id: "diet", icon: "restaurant", text: "Diet goal", sub: true },
+                 { id: "gym", icon: "fitness_center", text: "Gym", sub: true },
+                 { id: "board", icon: "dashboard", text: "Vision board", sub: true },
+                 { head: "Account" },
+                 { id: "users", pic: who ? who.pic : "", img: who ? who.img : undefined, bg: who ? who.bg : undefined, bgImg: who ? who.bgImg : undefined, text: who ? who.first : "", tail: "Switch", tip: "Change account" },
+                 ...(SHOW_TEST_TOOLS ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." },
+                   ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : [])] : []),
+               ]} />
+
+      <div style={S.footerRow}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves your health data to the exports folder" : "Downloads a backup of your health data"} /></button>
+          <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings your health data back from a backup file" /></button>
+          <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }} onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
+          <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
+          <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" say="Your step goal and move goal" /></button>
+          {SHOW_TEST_TOOLS && <>
+            <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
+            <button className="bk-btn ico test" onClick={addTest} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Two months of steps and weights, a timetable, to-dos, gym sessions" /></button>
+            <button className="bk-btn ico" onClick={clearTest} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated entries only" /></button>
+          </>}
+          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
+          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your health data could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
+          <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+          <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back what you had before this import">Undo</button>} />
+          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
+        </span>
+        <button className="foot-logo" onClick={onHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
+      </div>
+    </>
+  );
+}
+
+/* ---------- the selections panel's third: Apple's activity rings as a solid thing (22 October 2026, his choice of the
+   symbols offered). Three bands, each a face and RING3_DEPTH darker copies of it set back behind, so it has real
+   thickness, and the rings stepped towards the viewer from the outside in. Everything is painted once; it is moved
+   by transforms only. Pressed in focus, the three spin about their middle, each its own way, and turn to face
+   forward as the stage fades ---------- */
+const RING3_SPEC = [{ r: 136, z: 0 }, { r: 94, z: 16 }, { r: 52, z: 32 }];
+const RING3_W = 36, RING3_DEPTH = 6, RING3_STEP = 2.4, RING3_ARC = [0.8, 0.66, 0.9];
+const HEALTH_SPIN_MS = 1000;            // the rings spin this long before the stage starts to fade
+const hlShade = (hex, k) => { const n = parseInt(hex.slice(1), 16); return `rgb(${[n >> 16, (n >> 8) & 255, n & 255].map((v) => Math.round(v * k)).join(",")})`; };
+const HlRings3D = memo(() => (
+  <div className="rg-in">
+    {RING3_SPEC.map(({ r, z }, i) => {
+      const S2 = 2 * (r + RING3_W / 2 + 2), c = S2 / 2, C = 2 * Math.PI * r, [deep, light] = HL_TINT[i];
+      const layer = (key, back, body) => (
+        <svg key={key} className="rg-l" width={S2} height={S2} viewBox={`0 0 ${S2} ${S2}`} style={{ marginLeft: -c, marginTop: -c, transform: `translateZ(${(z - back).toFixed(1)}px)` }}>{body}</svg>
+      );
+      return (
+        <div key={i} className={`rg-ring r${i}`}>
+          {Array.from({ length: RING3_DEPTH }, (_, k) => layer(`e${k}`, (RING3_DEPTH - k) * RING3_STEP,
+            <circle cx={c} cy={c} r={r} fill="none" stroke={hlShade(deep, 0.16 + 0.045 * k)} strokeWidth={RING3_W} />))}
+          {layer("f", 0, (
+            <>
+              <defs><linearGradient id={`rg3g${i}`} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor={light} /><stop offset="1" stopColor={deep} /></linearGradient></defs>
+              <circle cx={c} cy={c} r={r} fill="none" stroke={hlShade(deep, 0.36)} strokeWidth={RING3_W} />
+              <circle cx={c} cy={c} r={r} fill="none" stroke={`url(#rg3g${i})`} strokeWidth={RING3_W} strokeLinecap="round"
+                      strokeDasharray={`${(RING3_ARC[i] * C).toFixed(1)} ${C.toFixed(1)}`} transform={`rotate(-90 ${c} ${c})`} />
+              <circle cx={c} cy={c} r={r + RING3_W / 2 - 1.2} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="1.4" />
+              <circle cx={c} cy={c} r={r - RING3_W / 2 + 1.2} fill="none" stroke="rgba(0,0,0,0.25)" strokeWidth="1.4" />
+            </>
+          ))}
+        </div>
+      );
+    })}
+  </div>
+));
 
 export default function PnlCalendar() {
   const light = useTheme();
@@ -14354,6 +16420,25 @@ export default function PnlCalendar() {
     else if (v >= 1_000) s = (Math.floor(v / 100) / 10).toString().replace(".", ",") + "Rb";
     else s = String(v);
     return (neg ? "-" : "") + s;
+  };
+  const fmtCoarse = (n) => {
+    const neg = n < 0;
+    let v = Math.abs(n);
+    if (isMYR) v = Math.floor(v / MYR_RATE);
+    v = Math.floor(v);
+    let str;
+    if (v >= 1_000_000) str = Math.floor(v / 1_000_000) + (isMYR ? "M" : "jt");
+    else if (v >= 1_000) str = Math.floor(v / 1_000) + (isMYR ? "k" : "Rb");
+    else str = String(v);
+    return (neg ? "-" : "") + str;
+  };
+  // a scale's line: like fmtCoarse, but a round step that is not a whole jt (or k, M in ringgit) keeps its one decimal
+  // (1,5jt), decided by the line's own value `at`, so the figure keeps one width while it counts towards it
+  const fmtTick = (n, at = n) => {
+    const v = Math.abs(n) / (isMYR ? MYR_RATE : 1), a = Math.abs(at) / (isMYR ? MYR_RATE : 1);
+    const [d, u] = v >= 1e6 ? [1e6, isMYR ? "M" : "jt"] : v >= 1e3 ? [1e3, isMYR ? "k" : "Rb"] : [1, ""];
+    const half = a >= d && a < d * 1000 && Math.abs(a / d - Math.round(a / d)) > 1e-6;
+    return (n < 0 ? "-" : "") + (half ? (Math.floor((v / d) * 10) / 10).toFixed(1).replace(".", ",") : String(Math.floor(v / d))) + u;
   };
   // while it counts: the resting units, each at one steady precision (see liveText), so nothing flickers
   const fmtLive = (n, busy, span) => {
@@ -14563,8 +16648,8 @@ export default function PnlCalendar() {
   };
   // a trading side's backup handed to another side's Import: under that side's own key (importSide)
   const takeSide = async (side, data) => {
-    const undo = await importSide(side, data);
-    return undo === null ? { msg: "That backup is empty, nothing was changed" } : undo === false ? { msg: `The ${SIDE_SAID[side]} side's saved trades can't be read, nothing was changed` } : { msg: sideSaid(side), undo };
+    const undo = side === "health" ? await importHealth(data) : await importSide(side, data);
+    return undo === null ? { msg: "That backup is empty, nothing was changed" } : undo === false ? { msg: `The ${SIDE_SAID[side]} side's saved ${side === "health" ? "data" : "trades"} can't be read, nothing was changed` } : { msg: sideSaid(side), undo };
   };
   // a finance backup, from this side's Import or handed over by a trading side's: { msg } when nothing was changed, else how to undo it
   const takeFinance = async (data) => {
@@ -14889,9 +16974,9 @@ export default function PnlCalendar() {
     if (year === now.getFullYear() && month === now.getMonth()) return keyOf(year, month, now.getDate());
     return keyOf(year, month, selected ?? new Date(year, month + 1, 0).getDate());
   };
-  const moveGoalFunds = (id, sign) => {
+  const moveGoalFunds = (id, sign, e) => {
     let amt = amtToIDR(fundAmt);
-    if (!amt) return;
+    if (!amt) { nudgeNear(e); return; }
     const next = goals.map((g) => {
       if (g.id !== id) return g;
       if (sign < 0) amt = Math.min(amt, goalSaved(g));
@@ -15463,7 +17548,7 @@ export default function PnlCalendar() {
   const finFxFrom = useRef("IDR");
   finFxFrom.current = currency;
   useEffect(() => {
-    if (!launched || view === "trade") return;
+    if (!launched || view === "trade" || view === "health") return;
     const onKey = (e) => {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       const k = e.key.toLowerCase();
@@ -16444,12 +18529,15 @@ export default function PnlCalendar() {
       const inGoals = rows.reduce((x, r) => x + r.amount, 0);
       const free = Math.max(0, left - inGoals);
       if (free > 0) rows.push({ key: "__free__", label: "Not in a goal", amount: free, color: "#8a9299", icon: "account_balance_wallet" });
-      const total = Math.max(left, inGoals);
+      // the total is always what the chart calls Left over. When more went into the goals than the month left over, the
+      // rest came out of savings from before (22 October 2026: it read "Left over 3,85jt" beside a chart saying 457Rb,
+      // the larger of the two); the %s are then of what went into the goals
+      const total = left, base = Math.max(left, inGoals), early = Math.max(0, inGoals - left);
       const pv = new Date(year, month - 1, 1), pvy = pv.getFullYear(), pvm = pv.getMonth();
       let prevSp = 0;
       for (let d = 1, n = new Date(pvy, pvm + 1, 0).getDate(); d <= n; d++) (spending[keyOf(pvy, pvm, d)] || []).forEach((it) => { prevSp += it.amount; });
       const prevLeft = (incomes[monthKeyOf(pvy, pvm)] || []).reduce((x, it) => x + it.amount, 0) - prevSp;
-      return { rows, total, inGoals, free, vsPct: prevLeft > 0 ? ((left - prevLeft) / prevLeft) * 100 : null };
+      return { rows, total, base, early, inGoals, free, vsPct: prevLeft > 0 ? ((left - prevLeft) / prevLeft) * 100 : null };
     }
     if (catView === "income") {
       monthIncomes.forEach((it) => {
@@ -17513,10 +19601,10 @@ export default function PnlCalendar() {
                   <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                     <AmountField value={open ? fundAmt : ""} setValue={setFundAmt} accent="green" cur={cur} width={150}
                                  ghost={needsGhost(fundAmt)} allowDecimal={isMYR} onSubmit={() => moveGoalFunds(g.id, 1)} />
-                    <button className="goal-io in" title="Add to goal" onClick={() => moveGoalFunds(g.id, 1)}>
+                    <button className="goal-io in" title="Add to goal" onClick={(e) => moveGoalFunds(g.id, 1, e)}>
                       <span className="msym">download</span>
                     </button>
-                    <button className="goal-io out" title="Withdraw from goal" onClick={() => moveGoalFunds(g.id, -1)}>
+                    <button className="goal-io out" title="Withdraw from goal" onClick={(e) => moveGoalFunds(g.id, -1, e)}>
                       <span className="msym">upload</span>
                     </button>
                     {!done && g.target > saved && <span style={S.goalNote}>{fmt(g.target - saved)} to go</span>}
@@ -17885,12 +19973,14 @@ export default function PnlCalendar() {
   const [choice, setChoice] = useState(null);
   const picking = choice === null;
   const inMarkets = choice === "markets";
-  const [pickFocus, setPickFocus] = useState("wallet");   // which of the two is in the middle of the selections panel: "wallet" or "coin"
+  const [pickFocus, setPickFocus] = useState("wallet");   // which of the three is in the middle of the selections panel: "wallet", "coin" or "rings" (Health)
   const [marketFocus, setMarketFocus] = useState("crypto");   // the same for the trading selection: "crypto" (the coin), "idx" (the globe) or "fx" (the forex coin, on the very right)
   const [tradeKind, setTradeKind] = useState("crypto");       // which trading panel was entered
   const coinFocused = (picking && pickFocus === "coin") || (inMarkets && marketFocus === "crypto");
   const globeFocused = inMarkets && marketFocus === "idx";
   const fxFocused = inMarkets && marketFocus === "fx";
+  const ringsFocused = picking && pickFocus === "rings";
+  const [hoverRings, setHoverRings] = useState(false);
   const [hoverFx, setHoverFx] = useState(false);
   const [hoverGlobe, setHoverGlobe] = useState(false);
   const [globeLive, setGlobeLive] = useState(false);      // the 3D globe is set up and has taken over from the flat logo
@@ -17953,6 +20043,10 @@ export default function PnlCalendar() {
   const fxTarget = useRef({ ...COIN_STILL }), fxCur = useRef({ ...COIN_STILL }), fxRaf = useRef(0), fxEase = useRef(0.06);
   const goldRig = { tilt: coinTiltRef, lustre: coinLustreRef, glare: coinGlareRef, shadow: coinShadowRef, target: coinTarget, cur: coinCur, raf: coinRaf, ease: coinEase };
   const fxRig = { tilt: fxTiltRef, lustre: fxLustreRef, glare: fxGlareRef, shadow: fxShadowRef, target: fxTarget, cur: fxCur, raf: fxRaf, ease: fxEase };
+  // the activity rings (Health) move the same way, with figures and a loop of their own
+  const ringTiltRef = useRef(null), ringLustreRef = useRef(null), ringGlareRef = useRef(null), ringShadowRef = useRef(null);
+  const ringTarget = useRef({ ...COIN_STILL }), ringCur = useRef({ ...COIN_STILL }), ringRaf = useRef(0), ringEase = useRef(0.06);
+  const ringRig = { tilt: ringTiltRef, lustre: ringLustreRef, glare: ringGlareRef, shadow: ringShadowRef, target: ringTarget, cur: ringCur, raf: ringRaf, ease: ringEase };
   const writeCoin = (g) => {
     const c = g.cur.current;
     if (g.tilt.current) g.tilt.current.style.transform = `translateZ(${c.lift.toFixed(2)}px) rotateX(${c.rx.toFixed(3)}deg) rotateY(${c.ry.toFixed(3)}deg)`;
@@ -17969,7 +20063,7 @@ export default function PnlCalendar() {
     g.raf.current = done ? 0 : requestAnimationFrame(() => stepCoin(g));
   };
   const kickCoin = (g = goldRig) => { if (!g.raf.current) g.raf.current = requestAnimationFrame(() => stepCoin(g)); };
-  useEffect(() => () => { cancelAnimationFrame(coinRaf.current); coinRaf.current = 0; cancelAnimationFrame(fxRaf.current); fxRaf.current = 0; }, []);
+  useEffect(() => () => { cancelAnimationFrame(coinRaf.current); coinRaf.current = 0; cancelAnimationFrame(fxRaf.current); fxRaf.current = 0; cancelAnimationFrame(ringRaf.current); ringRaf.current = 0; }, []);
   // the IDX globe: one loop works out how far it is turned and draws it. The turn is the pointer's pull (eased, like
   // the tilts), plus a slow sway to and fro while it floats idle, plus the full turn when it is pressed.
   const globeCanvasRef = useRef(null), globeGL = useRef(null), globeRaf = useRef(0);
@@ -18099,7 +20193,7 @@ export default function PnlCalendar() {
   const warmStage = openPanel !== "done" || launched || launchExit ? null
     : choice === null ? (pickFocus === "coin" ? "pick-coin" : null) : choice === "wallet" ? (phase === 2 ? "card" : "wallets")
     : choice === "markets" ? "markets" : null;
-  const warmPanel = !launched || greetOn || yearIntro || tradeIn || view === "trade" ? null
+  const warmPanel = !launched || greetOn || yearIntro || tradeIn || view === "trade" || view === "health" ? null
     : `${view}${chartOpen ? "+chart" : recap ? "+recap" : catView ? "+cat" : scoreView ? "+score" : ""}`;
   useWarmScreen(warmStage || warmPanel, warmStage ? 0 : undefined);
   // nothing is drawn behind his back while the opening, the login, a way into an app or its greeting is playing (warmRest)
@@ -18154,12 +20248,27 @@ export default function PnlCalendar() {
     kickCoin(fxRig);
   };
   const onFxLeave = () => { setHoverFx(false); fxEase.current = 0.06; fxTarget.current = { ...COIN_STILL }; kickCoin(fxRig); };
+  // the rings in the middle of the selections panel lean after the pointer as the coin does on the trading panel
+  const onRingMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+    ringEase.current = 0.1;
+    ringTarget.current = { ry: px * 46, rx: -py * 36, gx: px * COIN_D * 0.7, gy: py * COIN_D * 0.7, lift: 36, sx: -px * 40, sy: 12 - py * 26 };
+    setHoverRings(true);
+    kickCoin(ringRig);
+  };
+  const onRingLeave = () => { setHoverRings(false); ringEase.current = 0.06; ringTarget.current = { ...COIN_STILL }; kickCoin(ringRig); };
   // selections panel: bring the wallet or the coin into the middle (a press on the tucked one, or the scroll wheel)
-  const focusPick = (which) => { setPickFocus(which); onCardLeave(); onCoinLeave(); };
+  const focusPick = (which) => { setPickFocus(which); onCardLeave(); onCoinLeave(); onRingLeave(); };
+  // the scroll wheel goes one along the selections panel and stops at its ends: wallet, rings, coin
+  const stepPick = (dir) => {
+    setPickFocus((f) => PICK_ROW[Math.max(0, Math.min(PICK_ROW.length - 1, PICK_ROW.indexOf(f) + dir))]);
+    onCardLeave(); onCoinLeave(); onRingLeave();
+  };
   const chooseWallet = () => { setChoice("wallet"); onCardLeave(); onCoinLeave(); };
   // back to the selections panel, with the thing just left in the middle: the wallet (from the wallets panel) or
   // the coin (from the trading selection)
-  const backToChoice = (focus = "wallet") => { setChoice(null); setPickFocus(focus); setActiveWallet(homeWallet); onCardLeave(); onCoinLeave(); onGlobeLeave(); onFxLeave(); };
+  const backToChoice = (focus = "wallet") => { setChoice(null); setPickFocus(focus); setActiveWallet(homeWallet); onCardLeave(); onCoinLeave(); onGlobeLeave(); onFxLeave(); onRingLeave(); };
   // trading selection: the coin stays in the middle as "crypto", and the IDX globe comes in beside it
   const onGlobeMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -18217,7 +20326,7 @@ export default function PnlCalendar() {
       e.preventDefault();
       if (walletLock.current) return;
       walletLock.current = true;
-      if (choice === null) focusPick(e.deltaY > 0 ? "coin" : "wallet");     // selections panel: wallet ↔ coin
+      if (choice === null) stepPick(e.deltaY > 0 ? 1 : -1);                  // selections panel: wallet · rings · coin
       else if (choice === "markets") stepMarket(e.deltaY > 0 ? 1 : -1);     // trading selection: coin · globe · forex coin
       else stepWallet(e.deltaY > 0 ? 1 : -1);
       setTimeout(() => { walletLock.current = false; }, 620);
@@ -18343,6 +20452,19 @@ export default function PnlCalendar() {
     setTimeout(() => { setView("trade"); setLaunched(true); setTradeIn(true); }, hold + 620);
     setTimeout(() => setTradeIn(false), hold + 620 + 460);
   };
+  // the rings in the middle pressed: each spins about its middle, its own way, and the three turn to face forward and
+  // come towards the viewer. Then the stage fades and Health is underneath, as a trading panel is
+  const enterHealth = () => {
+    if (!picking || pickFocus !== "rings") return;
+    setChoice("health");
+    onCardLeave(); onCoinLeave(); onRingLeave();
+    ringEase.current = 0.3;
+    // (the first launch's rehearsal, stageTour: the spin is played and then the selections panel is back)
+    if (warm.tour) { warm.tour.undo = () => setChoice(null); return; }
+    setTimeout(() => setLaunchExit(true), HEALTH_SPIN_MS);
+    setTimeout(() => { setView("health"); setLaunched(true); setTradeIn(true); }, HEALTH_SPIN_MS + 620);
+    setTimeout(() => setTradeIn(false), HEALTH_SPIN_MS + 620 + 460);
+  };
   // footer logo: back to the very beginning. The FLOW splash fades in over the app, and the app is swapped
   // for the wallets once it is covered, so the splash then opens onto the wallets exactly as at app start.
   const homeTimer = useRef(0);
@@ -18370,6 +20492,9 @@ export default function PnlCalendar() {
     cancelAnimationFrame(fxRaf.current); fxRaf.current = 0;
     fxCur.current = { ...COIN_STILL }; fxTarget.current = { ...COIN_STILL };
     setHoverFx(false);
+    cancelAnimationFrame(ringRaf.current); ringRaf.current = 0;
+    ringCur.current = { ...COIN_STILL }; ringTarget.current = { ...COIN_STILL };
+    setHoverRings(false);
     cancelAnimationFrame(globeRaf.current); globeRaf.current = 0;
     globeAnim.current = { cur: 0, target: 0, sway: 0, idle: false, spinAt: 0 };
     setHoverGlobe(false);
@@ -18380,7 +20505,7 @@ export default function PnlCalendar() {
     // home from the finance panels: the wallet of the year that was on screen (a year with no wallet: the current year's).
     // Home from a trading panel leaves it as it was
     const ofYear = WALLETS.findIndex((w) => (w.year || 0) === year - now.getFullYear());
-    const home = view === "trade" ? homeWallet : ofYear < 0 ? HOME_WALLET : ofYear;
+    const home = view === "trade" || view === "health" ? homeWallet : ofYear < 0 ? HOME_WALLET : ofYear;
     setHomeWallet(home);
     setActiveWallet(home);
     setChoice(null);
@@ -18559,7 +20684,7 @@ export default function PnlCalendar() {
 
         /* buttons feel physical */
         button { transition: transform .22s var(--ease), background .22s ease, border-color .22s ease, color .22s ease; }
-        button:active { transform: scale(0.965); }
+        /* the press itself: pressKit, near the top of the file (a shared :active scale snapped wherever a class has a transition of its own) */
         /* a button reached with the keyboard is ringed in the same white as a box in use (the engine's own ring is
            the system's accent colour). :where() keeps it as weak as it can be, so a button that says outline: none
            further down still has none */
@@ -18599,13 +20724,22 @@ export default function PnlCalendar() {
         .jr-sheet.loss, .jr-item.loss { --tone: var(--c-red-dim); --tone-bg: rgba(255,93,108,0.10); --tone-bd: rgba(255,93,108,0.34); }
         .jr-sheet.be, .jr-item.be { --tone: #d6c88f; --tone-bg: rgba(227,205,119,0.09); --tone-bd: rgba(227,205,119,0.30); }
         .jr-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-        .jr-res { display: inline-flex; gap: 3px; padding: 3px; border-radius: 12px; background: rgba(24,27,31,0.55); border: 1px solid rgba(255,255,255,0.08); }
-        .jr-res-b { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px 0 10px; border-radius: 9px; border: 1px solid transparent;
-                    background: none; color: var(--c-mute-2); font-size: 13px; font-weight: 600; cursor: pointer;
-                    transition: color .18s ease, background .18s ease, border-color .18s ease; }
-        .jr-res-b .msym { font-size: 17px; }
-        .jr-res-b:hover { color: var(--c-ink); }
-        .jr-res-b.on { color: var(--tone); background: var(--tone-bg); border-color: var(--tone-bd); }
+        /* the same as a sliding switch (SlideSeg cls="jr-res"): the box is three washes, one per result, cross-faded by
+           --w0 / --w1 / --w2, as full as the debts' and the ring's. No edge: the box is two clipped pieces, and an edge
+           drawn on them would have no left side */
+        .wr-seg.jr-res { gap: 3px; padding: 3px; border-radius: 12px; background: rgba(24,27,31,0.55); border-color: rgba(255,255,255,0.08); }
+        .wr-seg.jr-res button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px 0 10px; border-radius: 9px;
+                                border: 1px solid transparent; color: #8a9299; font-size: 13px; font-weight: 600; transition: color .3s ease; }
+        .wr-seg.jr-res button .msym { font-size: 17px; }
+        .wr-seg.jr-res button:hover { color: #e8eaec; }
+        .wr-seg.jr-res button.on { color: var(--tone); }
+        .wr-seg.jr-res .seg-box { top: 3px; bottom: 3px; }
+        .wr-seg.jr-res .seg-box, .wr-seg.jr-res .seg-fill { border-radius: 9px; }
+        .wr-seg.jr-res .seg-fill { background: none; }
+        .seg-w { position: absolute; inset: 0; border-radius: inherit; opacity: 0; transition: opacity .34s ease; }
+        .jr-res .seg-w:nth-child(1) { background: rgba(61,220,151,0.15); opacity: var(--w0, 0); }
+        .jr-res .seg-w:nth-child(2) { background: rgba(227,205,119,0.14); opacity: var(--w1, 0); }
+        .jr-res .seg-w:nth-child(3) { background: rgba(255,93,108,0.15); opacity: var(--w2, 0); }
         .jr-pnl { display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; width: 190px; height: 40px; padding: 0 13px; border-radius: 11px; cursor: text;
                   background: rgba(24,27,31,0.62); border: 1px solid rgba(255,255,255,0.10); color: var(--tone); font-size: 16px; font-weight: 700;
                   transition: border-color .25s ease, box-shadow .25s ease, opacity .25s ease; }
@@ -19289,11 +21423,11 @@ export default function PnlCalendar() {
            tucked to the side, smaller, dimmer and a touch out of focus. The other years' wallets stay out of sight.
            The blur is switched, never animated: it comes on once the wallet is most of the way out, and goes
            the moment it starts back. */
-        .pick-coin .wallet-unit.active, .markets .wallet-unit.active, .trade .wallet-unit.active {
+        .pick-rings .wallet-unit.active, .markets .wallet-unit.active, .trade .wallet-unit.active, .health .wallet-unit.active {
           transform: translate(-50%, -50%) translateX(-430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s;
         }
-        .pick-coin .wallet-unit.active:hover, .pick-coin .wallet-unit.active.th { opacity: 0.92; }
+        .pick-rings .wallet-unit.active:hover, .pick-rings .wallet-unit.active.th { opacity: 0.92; }
         /* the coin was pressed: the wallet slips away, and the trading selection (coin and IDX globe) takes the stage */
         .markets .wallet-unit.active, .trade .wallet-unit.active { transform: translate(-50%, -50%) translateX(-700px) scale(0.45); opacity: 0; pointer-events: none; }
         .pick .wallet-unit.side-right, .markets .wallet-unit.side-right, .trade .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
@@ -20003,10 +22137,6 @@ export default function PnlCalendar() {
           47% { transform: translateX(-16px); }
           100% { transform: translateX(0); }
         }
-        .flow-wrap.down { animation: flowDown .34s cubic-bezier(0.4,0,0.2,1) both; }
-        .flow-wrap.up { animation: flowUp .34s cubic-bezier(0.4,0,0.2,1) both; }
-        @keyframes flowDown { from { opacity: 0; transform: translateY(-26px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes flowUp { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: translateY(0); } }
         .dot-in { animation: dotIn .26s cubic-bezier(0.34,1.35,0.64,1) both; }
         .dot-out { animation: dotOut .22s ease both; }
         @keyframes dotIn { from { opacity: 0; transform: scale(0.2); } 70% { transform: scale(1.25); } to { opacity: 1; transform: scale(1); } }
@@ -20158,6 +22288,9 @@ export default function PnlCalendar() {
         .goal-fill { width: 100%; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #4f8fd6 var(--gs, 0%), #7fb6e0);
                      box-shadow: 0 0 12px rgba(127,182,224,0.35); will-change: transform;
                      transition: transform .9s cubic-bezier(0.32,0.72,0.24,1), background .4s ease; }
+        /* a debt's bar in its side's colour, as its dot and arrow are (22 October 2026; it was the blue above) */
+        .goal-fill.owe { background: linear-gradient(90deg, #c65f6c var(--gs, 0%), #e98e99); box-shadow: 0 0 12px rgba(233,142,153,0.28); }
+        .goal-fill.owed { background: linear-gradient(90deg, #45b282 var(--gs, 0%), #93dcb2); box-shadow: 0 0 12px rgba(147,220,178,0.28); }
         .goal-fill.done { background: linear-gradient(90deg, var(--c-green) var(--gs, 0%), #8ff0c4); box-shadow: 0 0 12px rgba(61,220,151,0.35); }
         .goal-icon-btn { background: none; border: none; color: #aab1b8; cursor: pointer; padding: 6px; line-height: 0;
                          border-radius: 8px; transition: color .15s ease, background .15s ease, transform .22s var(--ease); }
@@ -20689,7 +22822,11 @@ export default function PnlCalendar() {
         .sb-add:hover:not(:disabled) { color: #ffffff; background: rgba(255,93,108,0.26); border-color: rgba(255,93,108,0.6); }
         .sb-add:disabled { opacity: 0.45; cursor: default; }
         .sb-add.done { opacity: 1; color: var(--c-green-pale); background: rgba(61,220,151,0.10); border-color: rgba(61,220,151,0.34); }
-        .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease both; }
+        .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease backwards; }
+        .bk-pop { animation: fadeRight .3s ease backwards; }
+        .wk-tick { transition: opacity .3s ease; }
+        /* on its way out (Linger): it fades where it stands, and takes no press meanwhile */
+        .bk-msg.out, .bk-pop.out { animation: fadeOut ${FOOT_OUT_MS}ms ease forwards; pointer-events: none; }
         /* ---------- open app panel ---------- */
         .open-panel { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; }
         /* the grey backdrop is its own layer, so the outro can fade it while the logo and letters stay solid */
@@ -20951,9 +23088,11 @@ export default function PnlCalendar() {
         .hero-tile:not(:first-child) { background: transparent; }
         .hero-tile:not(:first-child) .ht-val { font-size: 18px; color: var(--c-ink-2); }
         .term .hero-tile:not(:first-child) { background: rgba(255,255,255,0.045); }
-        /* and their figures as big as the first one's (14 October 2026, measured: the finance rule above made them 18px on
-           the trading sides too, so Wins stood 3.5px taller than the other three; the trading tiles are four equal ones) */
+        /* the trading hero's four tiles are equal (22 October 2026): the finance side's quieter figures above reached them
+           too, so Wins stood 4px taller than the other three and the tops did not line up */
         .term .hero-tile:not(:first-child) .ht-val { font-size: 21px; color: #eef1f4; }
+        .qadd { opacity: 0.7; transition: opacity .2s ease; }
+        .qadd:hover, .qadd:focus-within { opacity: 1; }
         .cell > .cbar::after { transform-origin: 50% 100%; animation: cbarUp .55s var(--ease) var(--bd, 0ms) backwards; }
         @keyframes cbarUp { from { transform: scaleY(0); } to { transform: scaleY(1); } }
         /* the trading sides have these too (8 October 2026): a day's result as the bar, a red day as the ring, in their square corners */
@@ -21072,18 +23211,18 @@ export default function PnlCalendar() {
         .flow-label:hover { background: var(--c-line); }
         .score-hit { pointer-events: auto; cursor: pointer; display: flex; flex-direction: column; align-items: center; padding: 9px 14px; border-radius: 16px; transition: background .16s ease; }
         .score-hit:hover { background: rgba(255,255,255,0.07); }
-        .score-arc { animation: scoreDraw 1s cubic-bezier(0.3,0,0.2,1) both; transform-origin: center; }
+        .score-arc { animation: scoreDraw 1s cubic-bezier(0.3,0,0.2,1) backwards; transform-origin: center; }
         @keyframes scoreDraw { from { stroke-dasharray: 0 9999; } }
-        .bd-title { animation: bdTitleIn .3s cubic-bezier(0.34,1.15,0.64,1) both; }
+        .bd-title { animation: bdTitleIn .3s cubic-bezier(0.34,1.15,0.64,1) backwards; }
         @keyframes bdTitleIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .score-card { animation: bdItemIn .4s cubic-bezier(0.4,0,0.2,1) .12s both; }
+        .score-card { animation: bdItemIn .4s cubic-bezier(0.4,0,0.2,1) .12s backwards; }
         .sub-box { background-image: linear-gradient(150deg, color-mix(in srgb, var(--tc, transparent) 17%, transparent), transparent 64%);
                    border-color: color-mix(in srgb, var(--tc, #fff) 16%, rgba(255,255,255,0.05)); }
-        .sub-box { animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) both; }
+        .sub-box { animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) backwards; }
         @keyframes subBoxIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
         .bd-item { animation: bdItemIn .34s cubic-bezier(0.4,0,0.2,1) backwards; }
         @keyframes bdItemIn { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: translateY(0); } }
-        .bd-fill { display: block; height: 100%; border-radius: 99px; animation: bdGrow .55s cubic-bezier(0.4,0,0.2,1) both; transform-origin: left center; }
+        .bd-fill { display: block; height: 100%; border-radius: 99px; animation: bdGrow .55s cubic-bezier(0.4,0,0.2,1) backwards; transform-origin: left center; }
         @keyframes bdGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
         /* Money flow opening (timings: FLOW_* near the top of the file). The income bar fills from the top; each
            ribbon is uncovered from the left by its own sweep, fading up as it sets off; each expense bar grows out of
@@ -22662,6 +24801,380 @@ export default function PnlCalendar() {
           .dg-board.edit .dg-cell, .wdg, .dg-stack { transition-duration: .01s; }
         }
 
+        /* ---------- Health (22 October 2026): the third app, after Apple's rings, Garmin's day, Notion and Milanote. It wears
+           the finance side's cards and hero; its own colours are the rings' (green steps, orange moving, blue to-dos) ---------- */
+        .hl-title { display: inline-flex; animation: hlTitleIn .5s var(--ease) backwards; }
+        .hl-title > span { font-family: inherit; }
+        .hl-title > .tt { margin-left: -3px; }
+        @keyframes hlTitleIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .hl-today { margin-left: 4px; height: 28px; padding: 0 12px; border-radius: 99px; border: 1px solid rgba(47,208,138,0.32); background: rgba(47,208,138,0.10);
+                    color: #9cf0c8; font-size: 12px; font-weight: 700; cursor: pointer; animation: fadeRight .3s ease backwards; transition: background .18s ease; }
+        .hl-today:hover { background: rgba(47,208,138,0.18); }
+        .hl-hero-in { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: center; }
+        .hl-hero-rings { line-height: 0; filter: drop-shadow(0 10px 24px rgba(0,0,0,0.35)); }
+        .hl-rings { transform: rotate(-90deg); }           /* the arcs start at the top (the svg is turned, not each arc: see .score-arc) */
+        .hl-arc { transition: stroke-dasharray .7s cubic-bezier(0.22,1,0.36,1), opacity .3s ease; }
+        .hl-hero .hero-num { font-size: 48px; margin: 18px 0 16px; display: flex; align-items: baseline; gap: 14px; }
+        .hl-hero .hero-num small { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #8a9299; }
+        .hl-rr-list { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+        .hl-rr { display: inline-flex; align-items: baseline; gap: 8px; font-size: 13px; color: #c7cdd2; font-variant-numeric: tabular-nums; animation: fadeRight .4s ease backwards; }
+        .hl-rr:nth-child(2) { animation-delay: .06s; } .hl-rr:nth-child(3) { animation-delay: .12s; }
+        .hl-rr > i { width: 8px; height: 8px; border-radius: 99px; background: var(--c); box-shadow: 0 0 10px color-mix(in srgb, var(--c) 60%, transparent); align-self: center; }
+        .hl-rr > b { font-weight: 700; color: #eef1f4; }
+        .hl-rr em { font-style: normal; color: #8a9299; }
+        .hl-rr small { font-size: 11.5px; font-weight: 700; color: var(--c); }
+        .hl-hero .hero-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: stretch; }
+        .hl-hero .hero-tile, .hl-hero .hero-tile:first-child, .hl-hero .hero-tile:not(:first-child) { padding: 11px 14px 12px 22px; background: rgba(255,255,255,0.045); }
+        .hl-hero .hero-tile .ht-val, .hl-hero .hero-tile:first-child .ht-val, .hl-hero .hero-tile:not(:first-child) .ht-val {
+          font-family: 'Inter', sans-serif; font-size: 21px; font-weight: 800; color: #eef1f4; padding: 0; text-transform: none; letter-spacing: -0.01em; }
+        .hl-ellip { overflow: hidden; text-overflow: ellipsis; }
+        .hl-cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8a9299; }
+        .hl-empty { padding: 14px 2px; font-size: 13px; color: #8e969e; line-height: 1.5; }
+        .hl-hint { font-size: 12px; color: #8e969e; }
+        .hl-note { font-size: 12.5px; color: #aab1b8; line-height: 1.5; margin-top: 10px; }
+        .hl-note b { color: #eef1f4; font-weight: 700; }
+        .hl-note.good { color: #8fd7a4; }
+        .hl-save { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 700;
+                   border: 1px solid rgba(47,208,138,0.36); background: rgba(47,208,138,0.12); color: #9cf0c8; transition: background .18s ease, opacity .18s ease; }
+        .hl-save .msym { font-size: 18px; }
+        .hl-save:hover:not(:disabled) { background: rgba(47,208,138,0.2); }
+        .hl-save:disabled { opacity: 0.4; cursor: default; }
+        .bk-btn.danger { color: #ff8d97; border-color: rgba(255,93,108,0.3); }
+        .bk-btn.danger:hover { background: rgba(255,93,108,0.12); border-color: rgba(255,93,108,0.5); color: #ffb3ba; }
+        .bk-btn .msym { font-size: 15px; vertical-align: -3px; margin-right: 5px; }
+        .hl-num { position: relative; display: inline-block; }
+        .hl-num .pc-in { width: 100%; }
+        .hl-num.u .pc-in { padding-right: 42px; }
+        .hl-num > i { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); font-style: normal; font-size: 12px; color: #6f777f; pointer-events: none; }
+        .hl-x { width: 26px; height: 26px; border-radius: 8px; border: 1px solid transparent; background: none; color: #8a9299; font-size: 11px; cursor: pointer; flex: none; }
+        .hl-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 7px; font-size: 11px; font-weight: 600; color: #aab1b8;
+                  background: rgba(255,255,255,0.06); white-space: nowrap; }
+        .hl-prog { display: flex; align-items: center; gap: 14px; margin: 4px 0 10px; }
+        .hl-prog-t { font-size: 12.5px; color: #8e969e; white-space: nowrap; }
+        .hl-prog-t b { color: #eef1f4; }
+        .hl-prog-bar { flex: 1; height: 6px; border-radius: 6px; background: rgba(255,255,255,0.07); overflow: hidden; }
+        .hl-prog-bar > i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, #4fb3ff, #a8e1ff); transform-origin: 0 50%;
+                           transition: transform .6s cubic-bezier(0.22,1,0.36,1); }
+        /* the to-do rows: the tick draws itself, and a done row dims with its words struck through */
+        .hl-list { display: flex; flex-direction: column; gap: 4px; }
+        .hl-todo { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 8px 6px 6px; border-radius: 12px; background: rgba(255,255,255,0.03);
+                   animation: fadeRight .36s ease backwards; transition: background .2s ease; }
+        .hl-todo:hover { background: rgba(255,255,255,0.055); }
+        .hl-check { flex: none; width: 28px; height: 28px; padding: 0; border-radius: 50%; cursor: pointer; border: 2px solid rgba(79,179,255,0.55); background: none;
+                    display: inline-flex; align-items: center; justify-content: center; transition: background .22s ease, border-color .22s ease; }
+        .hl-check svg { width: 18px; height: 18px; fill: none; stroke: #0d1a24; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+        .hl-check path { stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .3s cubic-bezier(0.4,0,0.2,1); }
+        .hl-todo.done .hl-check { background: #4fb3ff; border-color: #4fb3ff; }
+        .hl-todo.done .hl-check path { stroke-dashoffset: 0; transition-delay: .06s; }
+        .hl-todo-t { flex: 1; min-width: 0; font-size: 14px; color: #e8eaec; transition: color .25s ease; overflow-wrap: anywhere; }
+        .hl-todo-t > span { position: relative; }
+        .hl-todo-t > span::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px; background: #8a9299; transform: scaleX(0); transform-origin: 0 50%;
+                            transition: transform .3s cubic-bezier(0.4,0,0.2,1); }
+        .hl-todo.done .hl-todo-t { color: #7d858d; }
+        .hl-todo.done .hl-todo-t > span::after { transform: scaleX(1); }
+        .hl-tags { display: inline-flex; align-items: center; gap: 6px; }
+        .hl-streak { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 700; color: #ffaf7a; }
+        .hl-streak .msym { font-size: 16px; }
+        .hl-ask { display: inline-flex; align-items: center; gap: 6px; animation: fadeRight .2s ease backwards; }
+        .hl-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
+        .hl-add-t { flex: 1 1 260px; width: auto; height: 36px; }
+        .hl-dows { flex: none; }
+        .hl-len { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #8e969e; }
+        .hl-len .jr-in { width: 58px; height: 32px; text-align: center; }
+        .hl-plus { width: 36px; height: 36px; border-radius: 11px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+                   border: 1px solid rgba(79,179,255,0.4); background: rgba(79,179,255,0.14); color: #a8e1ff; transition: background .18s ease, opacity .18s ease; }
+        .hl-plus:hover:not(:disabled) { background: rgba(79,179,255,0.24); }
+        .hl-plus:disabled { opacity: 0.35; cursor: default; }
+        /* the week: a timetable, the hours down the side */
+        .hl-tt { --hh: 46px; }
+        .hl-tt-head { display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
+        .hl-tt-head b { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; text-align: center; padding: 4px 0; border-radius: 7px; }
+        .hl-tt-head b.now { color: #a8e1ff; background: rgba(79,179,255,0.10); }
+        .hl-tt-body { position: relative; display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr)); gap: 4px; }
+        .hl-tt-hours { position: relative; }
+        .hl-tt-hours span { position: absolute; right: 8px; transform: translateY(-50%); font-size: 10.5px; color: #6f777f; font-variant-numeric: tabular-nums; }
+        .hl-tt-hours span:first-child { transform: none; }
+        .hl-tt-day { position: relative; border-radius: 10px; background: rgba(255,255,255,0.022); cursor: copy; }
+        .hl-tt-day.now { background: rgba(79,179,255,0.05); box-shadow: inset 0 0 0 1px rgba(79,179,255,0.16); }
+        .hl-tt-day > i { position: absolute; left: 0; right: 0; height: 1px; background: rgba(255,255,255,0.045); pointer-events: none; }
+        .hl-tt-day > i:first-child { display: none; }
+        .hl-cls { position: absolute; left: 3px; right: 3px; padding: 5px 7px; border-radius: 8px; border: none; text-align: left; cursor: pointer; overflow: hidden;
+                  display: flex; flex-direction: column; gap: 1px; color: #eef1f4; font-size: 11px;
+                  background: linear-gradient(160deg, color-mix(in srgb, var(--c) 34%, #1d2125), color-mix(in srgb, var(--c) 20%, #1a1d21));
+                  box-shadow: inset 3px 0 0 var(--c), 0 6px 14px rgba(0,0,0,0.25); animation: hlClsIn .42s var(--ease) backwards; transition: filter .18s ease; }
+        .hl-cls:hover { filter: brightness(1.15); }
+        .hl-cls b { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-cls span { color: color-mix(in srgb, var(--c) 55%, #c7cdd2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        @keyframes hlClsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        .hl-now { position: absolute; left: -2px; right: -2px; height: 2px; background: #ff7a6b; border-radius: 2px; pointer-events: none; z-index: 2; box-shadow: 0 0 8px rgba(255,122,107,0.6); }
+        .hl-now::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 99px; background: #ff7a6b; }
+        .hl-week .hl-hint { margin-top: 10px; }
+        .hl-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 14px; padding: 12px; border-radius: 14px; background: rgba(255,255,255,0.04);
+                   animation: hlFormIn .32s var(--ease) backwards; }
+        @keyframes hlFormIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        /* a timetable read off a picture: the button over the week, what it says, and the sheet to check what was found */
+        .hl-scan-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+        .hl-scan-btn { display: inline-flex; align-items: center; gap: 6px; }
+        .hl-scan-btn .msym { font-size: 17px; }
+        .hl-scan-btn:disabled .msym { animation: hlSpin 1s linear infinite; }
+        @keyframes hlSpin { to { transform: rotate(360deg); } }
+        .hl-scan-say { font-size: 12.5px; color: #c7cdd2; animation: fadeRight .3s ease backwards; }
+        .hl-scan-head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; }
+        .hl-scan-head .msym { grid-row: span 2; font-size: 24px; color: #7fb6e0; }
+        .hl-scan-head b { font-size: 14px; color: #eef1f4; }
+        .hl-scan-head small { font-size: 12px; color: #8e969e; }
+        .hl-scan-rows { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+        .hl-scan-row { display: grid; grid-template-columns: 28px 74px 110px 110px minmax(0, 1.6fr) minmax(0, 1fr); gap: 6px; align-items: center;
+                       animation: fadeDown .25s ease backwards; animation-delay: calc(var(--i) * 35ms); transition: opacity .2s ease; }
+        .hl-scan-row.off { opacity: 0.45; }
+        .hl-scan-row .jr-in { height: 32px; width: 100%; min-width: 0; color-scheme: dark; }
+        .hl-scan-tick { width: 26px; height: 26px; padding: 0; border-radius: 8px; border: 1.5px solid rgba(255,255,255,0.22); background: none; cursor: pointer; display: grid; place-items: center;
+                        transition: background .2s ease, border-color .2s ease; }
+        .hl-scan-tick svg { width: 18px; height: 18px; fill: none; stroke: #0f1a14; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+        .hl-scan-tick path { stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .3s cubic-bezier(0.4,0,0.2,1); }
+        .hl-scan-tick.on { background: #2fd08a; border-color: #2fd08a; }
+        .hl-scan-tick.on path { stroke-dashoffset: 0; }
+        .hl-form > .jr-in { flex: 1 1 200px; width: auto; height: 34px; }
+        .hl-times { display: inline-flex; align-items: center; gap: 6px; }
+        .hl-times .jr-in { width: 138px; height: 34px; color-scheme: dark; }
+        .hl-times i { font-style: normal; font-size: 12px; color: #8e969e; }
+        .hl-dots { display: inline-flex; gap: 6px; }
+        .hl-dots button, .hl-bi-tools button[style] { width: 18px; height: 18px; padding: 0; border-radius: 99px; border: 2px solid transparent; background: var(--c); cursor: pointer;
+                          box-shadow: 0 0 0 1px rgba(0,0,0,0.3); transition: border-color .15s ease; }
+        .hl-dots button.on, .hl-bi-tools button.on { border-color: #ffffff; }
+        .hl-form-go { display: inline-flex; gap: 8px; margin-left: auto; align-items: center; }
+        /* activity */
+        .hl-act-top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px; }
+        .hl-steps-in { display: flex; flex-direction: column; gap: 6px; }
+        .hl-num.big .pc-in { width: 180px; height: 52px; font-size: 26px; font-weight: 800; letter-spacing: -0.01em; }
+        .hl-quick { display: inline-flex; gap: 6px; }
+        .hl-stats { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: #8e969e; }
+        .hl-stats b { color: #eef1f4; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .hl-good { color: #ffaf7a; display: inline-flex; align-items: center; gap: 3px; }
+        .hl-good .msym { font-size: 16px; }
+        .hl-bars { position: relative; display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; height: 170px; margin: 18px 0 6px; padding-bottom: 20px; }
+        .hl-goal-line { position: absolute; left: 0; right: 0; margin-bottom: 20px; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
+        .hl-goal-line i { position: absolute; left: 2px; top: -17px; font-style: normal; font-size: 10.5px; color: #9cf0c8; font-variant-numeric: tabular-nums; }
+        .hl-bar { position: relative; display: flex; flex-direction: column; justify-content: flex-end; padding: 0; border: none; background: none; cursor: pointer; }
+        .hl-bar-col { position: relative; flex: 1; display: flex; align-items: flex-end; border-radius: 7px; background: rgba(255,255,255,0.025); }
+        .hl-bar-col > i { display: block; width: 100%; border-radius: 7px; background: linear-gradient(180deg, rgba(47,208,138,0.55), rgba(47,208,138,0.22));
+                          transform-origin: 50% 100%; animation: cbarUp .55s var(--ease) backwards; }
+        .hl-bar.met .hl-bar-col > i { background: linear-gradient(180deg, #9cf0c8, #2fd08a); box-shadow: 0 0 14px rgba(47,208,138,0.35); }
+        .hl-bar.sel .hl-bar-col { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.55); }
+        .hl-bar.later { opacity: 0.35; }
+        .hl-bar-col em { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%); font-style: normal; font-size: 10px; color: #c7cdd2;
+                         white-space: nowrap; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+        .hl-bar:hover .hl-bar-col em, .hl-bar.sel .hl-bar-col em { opacity: 1; }
+        .hl-bar-d { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; font-size: 10.5px; color: #6f777f; }
+        .hl-bar.sel .hl-bar-d { color: #eef1f4; font-weight: 700; }
+        .hl-month { margin-top: 22px; }
+        .hl-month-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+        .hl-month-head b { font-size: 13px; font-weight: 700; color: #eef1f4; }
+        .hl-month-head span { font-size: 12px; color: #8e969e; }
+        .hl-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px 6px; max-width: 560px; }
+        .hl-mdow { text-align: center; font-size: 10.5px; color: #6f777f; padding-bottom: 2px; }
+        .hl-mday { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 0 3px; border: none; border-radius: 10px; background: none; cursor: pointer;
+                   transition: background .18s ease; }
+        .hl-mday:hover { background: rgba(255,255,255,0.05); }
+        .hl-mday.sel { background: rgba(255,255,255,0.08); }
+        .hl-mday svg { width: 38px; height: 38px; }
+        .hl-mday i { font-style: normal; font-size: 10.5px; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .hl-mday.today i { color: #a8e1ff; font-weight: 700; }
+        .hl-mday.later { opacity: 0.3; cursor: default; }
+        .hl-apple { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
+        .hl-apple .info-tip { left: auto; right: -140px; }
+        .hl-phone { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+        .hl-phone-dot { width: 8px; height: 8px; border-radius: 99px; background: #5b636b; flex: none; transition: background .3s ease, box-shadow .3s ease; }
+        .hl-phone-dot.on { background: #2fd08a; box-shadow: 0 0 9px rgba(47,208,138,0.6); }
+        .hl-phone-t { font-size: 12.5px; color: #aab1b8; }
+        .hl-phone-t b { color: #eef1f4; font-weight: 700; }
+        .hl-phone .bk-btn, .hl-apple > .bk-btn { height: 32px; padding: 0 13px; font-size: 12px; }
+        .hl-how { flex: 1 1 100%; margin: 0; padding: 12px 16px 12px 34px; border-radius: 12px; background: rgba(255,255,255,0.035); display: flex; flex-direction: column; gap: 7px;
+                  font-size: 12.5px; line-height: 1.55; color: #aab1b8; animation: hlFormIn .3s var(--ease) backwards; }
+        .hl-how li::marker { color: #6f777f; font-weight: 700; }
+        .hl-how b { color: #eef1f4; font-weight: 600; }
+        .hl-how li > b:first-child { color: #9cf0c8; }
+        .hl-how code { padding: 1px 6px; border-radius: 5px; background: rgba(255,255,255,0.08); color: #eef1f4; font-size: 12px; }
+        .hl-read { width: 160px; height: 5px; border-radius: 5px; background: rgba(255,255,255,0.08); overflow: hidden; }
+        .hl-read i { display: block; height: 100%; background: #2fd08a; transform-origin: 0 50%; transition: transform .2s linear; }
+        /* body */
+        .hl-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .hl-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; }
+        .hl-fields .hl-num, .hl-fields .wr-seg { width: 100%; }
+        .hl-fields .wr-seg button { flex: 1; }
+        .hl-actv { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+        .hl-bmi { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 26px; align-items: center; margin-top: 20px; }
+        .hl-bmi-n { display: flex; flex-direction: column; gap: 6px; }
+        .hl-bmi-n b { font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 32px; font-weight: 400; line-height: 1; -webkit-font-smoothing: none; }
+        .hl-bmi-n > span:last-child { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+        .hl-gauge-bar { position: relative; height: 12px; border-radius: 12px; background: rgba(255,255,255,0.05); }
+        .hl-gauge-bar > i { position: absolute; top: 0; bottom: 0; opacity: 0.75; }
+        .hl-gauge-bar > i:first-child { border-radius: 12px 0 0 12px; }
+        .hl-gauge-bar > i:nth-child(5) { border-radius: 0 12px 12px 0; }
+        .hl-gauge-pin { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 99px; background: #15181b; border: 3px solid var(--c);
+                        box-shadow: 0 0 12px color-mix(in srgb, var(--c) 60%, transparent); animation: hlPinIn .7s var(--ease) .1s backwards; }
+        @keyframes hlPinIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .hl-gauge-t { position: relative; height: 18px; margin-top: 4px; }
+        .hl-gauge-t span { position: absolute; transform: translateX(-50%); font-size: 10.5px; color: #6f777f; }
+        .hl-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 18px; }
+        .hl-tile { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.04); animation: fadeRight .4s ease backwards; }
+        .hl-tile:nth-child(2) { animation-delay: .05s; } .hl-tile:nth-child(3) { animation-delay: .1s; } .hl-tile:nth-child(4) { animation-delay: .15s; }
+        .hl-tile b { font-size: 22px; font-weight: 800; color: #eef1f4; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+        .hl-tile small { font-size: 12px; color: #8a9299; }
+        /* diet */
+        .hl-goal-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 14px; color: #c7cdd2; }
+        .hl-goal-form b { color: #eef1f4; }
+        .hl-goal-form .hl-num { width: 112px; }
+        .hl-goal-form .hl-num.u .pc-in { padding-right: 58px; }
+        .hl-goal-by { color: #8e969e; }
+        .hl-goal-by b { color: #e6c877; }
+        .hl-goal-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+        .hl-goal-head > div:first-child { display: flex; flex-direction: column; gap: 4px; }
+        .hl-goal-big { font-size: 26px; font-weight: 800; color: #e6c877; letter-spacing: -0.01em; }
+        .hl-goal-big small { font-size: 14px; font-weight: 600; color: #aab1b8; letter-spacing: 0; margin-left: 4px; }
+        .hl-goal-sub { font-size: 12.5px; color: #8e969e; }
+        .hl-goal-prog { display: flex; flex-direction: column; gap: 5px; width: min(320px, 100%); }
+        .hl-goal-prog .hl-prog-bar { flex: none; }
+        .hl-goal-prog .hl-prog-bar > i { background: linear-gradient(90deg, #b39549, #e6c877); }
+        .hl-goal-prog small { font-size: 11.5px; color: #8e969e; text-align: right; }
+        .hl-way { margin-top: 16px; }
+        .hl-warn { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.45;
+                   color: #f0d9a0; background: rgba(230,200,119,0.08); box-shadow: inset 0 0 0 1px rgba(230,200,119,0.2); }
+        .hl-warn > span:nth-child(2) { flex: 1 1 280px; }
+        .hl-warn .msym { font-size: 18px; color: #e6c877; }
+        .hl-warn b { color: #fff3cf; }
+        .hl-wchart { margin-top: 18px; }
+        .hl-wchart svg { display: block; overflow: visible; }
+        .hl-ax { font-size: 10.5px; fill: #6f777f; font-variant-numeric: tabular-nums; }
+        .hl-ax.gold { fill: #e6c877; }
+        .hl-wdot { animation: fadeIn .5s ease .9s backwards; }
+        .hl-plan { animation: fadeIn .6s ease .2s backwards; }
+        .hl-diet-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; margin-top: 14px; padding-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
+        .hl-log { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #8e969e; }
+        .hl-log .hl-num { width: 120px; }
+        .hl-log small { font-size: 12px; color: #8fd7a4; font-variant-numeric: tabular-nums; }
+        .hl-log small.bad { color: #ff8d97; }
+        .hl-diet-go { display: inline-flex; gap: 8px; margin-left: auto; }
+        /* gym */
+        .hl-gym-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .hl-sheet { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; padding: 14px; border-radius: 16px; background: rgba(255,255,255,0.04); animation: hlFormIn .32s var(--ease) backwards; }
+        .hl-sheet-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .hl-sname { flex: 1 1 160px; width: auto; height: 34px; }
+        .hl-sheet-row .hl-num { width: 104px; }
+        .hl-ex { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 12px; background: rgba(0,0,0,0.14); animation: fadeRight .3s ease backwards; }
+        .hl-ex-head { display: flex; gap: 6px; align-items: center; }
+        .hl-ex-head .jr-in { height: 34px; }
+        .hl-sets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .hl-set { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 2px; border-radius: 11px; background: rgba(255,255,255,0.035); }
+        .hl-set > i { font-style: normal; font-size: 11px; color: #6f777f; width: 12px; text-align: right; }
+        .hl-set .pc-in { width: 64px; padding: 6px 8px; text-align: center; }
+        .hl-set em { font-style: normal; color: #6f777f; }
+        .hl-more { align-self: flex-start; }
+        .hl-gnote { min-height: 56px; }
+        .hl-gym-cols { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 18px; align-items: start; }
+        .hl-gym-cols:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
+        .hl-sessions { display: flex; flex-direction: column; gap: 4px; }
+        .hl-sess { border-radius: 12px; background: rgba(255,255,255,0.03); animation: fadeRight .34s ease backwards; transition: background .2s ease; }
+        .hl-sess.sel { box-shadow: inset 3px 0 0 #e2808c; }
+        .hl-sess.open { background: rgba(255,255,255,0.055); }
+        .hl-sess-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 6px 12px; border: none; background: none; cursor: pointer; text-align: left; color: #c7cdd2; font-size: 13px; }
+        .hl-sess-row:hover { color: #eef1f4; }
+        .hl-sess-d { width: 92px; flex: none; font-weight: 700; color: #eef1f4; }
+        .hl-sess-f { flex: 1; min-width: 0; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        .hl-sess-k { color: #ffaf7a; font-size: 12px; white-space: nowrap; }
+        .hl-sess-in { display: flex; flex-direction: column; gap: 5px; padding: 2px 12px 12px 114px; font-size: 12.5px; color: #aab1b8; animation: hlFormIn .26s var(--ease) backwards; }
+        .hl-sess-in b { color: #eef1f4; margin-right: 8px; }
+        .hl-sess-in .bk-btn { align-self: flex-start; margin-top: 4px; }
+        .hl-sess-note { color: #8e969e; font-style: italic; }
+        .hl-prs { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 14px; background: rgba(226,128,140,0.06); box-shadow: inset 0 0 0 1px rgba(226,128,140,0.14); }
+        .hl-pr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: baseline; font-size: 12.5px; animation: fadeRight .34s ease backwards; }
+        .hl-pr b { color: #eef1f4; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-pr i { font-style: normal; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .hl-pr em { font-style: normal; color: #f0a6ae; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .hl-prs small { font-size: 11px; color: #6f777f; line-height: 1.4; margin-top: 2px; }
+        /* the vision board: a dotted board, notes and pictures lying on it */
+        .hl-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .hl-board-bar .bk-btn { height: 34px; padding: 0 12px; font-size: 12.5px; }
+        .hl-board { position: relative; border-radius: 16px; overflow: hidden;
+                    background: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.09) 1px, transparent 1.5px) 0 0 / 22px 22px, rgba(0,0,0,0.16);
+                    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); }
+        .hl-board-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 0 20%;
+                          text-align: center; font-size: 13px; color: #6f777f; line-height: 1.5; pointer-events: none; }
+        .hl-board-empty .msym { font-size: 34px; color: #4b5258; }
+        .hl-bi { position: absolute; border-radius: 12px; box-shadow: 0 10px 26px rgba(0,0,0,0.38); animation: hlBiIn .45s var(--ease) backwards;
+                 transition: box-shadow .2s ease; }
+        .hl-bi.lift { box-shadow: 0 26px 50px rgba(0,0,0,0.55); z-index: 100000 !important; transition: none; }
+        @keyframes hlBiIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .hl-bi.note { background: linear-gradient(170deg, color-mix(in srgb, var(--c) 30%, #262a2e), color-mix(in srgb, var(--c) 18%, #202326)); }
+        .hl-bi-grip { position: absolute; left: 0; right: 0; top: 0; height: 18px; cursor: grab; border-radius: 12px 12px 0 0; z-index: 1; touch-action: none; }
+        .hl-bi-grip::after { content: ""; position: absolute; left: 50%; top: 7px; width: 28px; height: 4px; margin-left: -14px; border-radius: 4px; background: rgba(255,255,255,0.2);
+                             opacity: 0; transition: opacity .18s ease; }
+        .hl-bi:hover .hl-bi-grip::after { opacity: 1; }
+        .hl-bi-text { min-height: 72px; padding: 20px 14px 14px; font-size: 14px; font-weight: 600; line-height: 1.45; color: #f2f3f4; white-space: pre-wrap; outline: none; overflow-wrap: anywhere; cursor: text; }
+        .hl-bi-text:empty::before { content: attr(data-ph); color: rgba(255,255,255,0.35); }
+        .hl-bi-pic { cursor: grab; touch-action: none; line-height: 0; border-radius: 12px; overflow: hidden; background: #15181b; }
+        .hl-bi-pic img, .hl-bi-pic canvas { display: block; width: 100%; height: auto; pointer-events: none; }
+        .hl-bi-pic > i { display: block; height: 140px; }
+        .hl-bi-tools { position: absolute; right: 6px; bottom: -32px; display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 10px; z-index: 2;
+                       background: #22262a; box-shadow: 0 8px 18px rgba(0,0,0,0.4); opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .18s ease, transform .2s var(--ease); }
+        .hl-bi:hover .hl-bi-tools, .hl-bi:focus-within .hl-bi-tools { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .hl-bi-tools .hl-bi-del, .hl-bi-tools .hl-bi-open { width: 24px; height: 24px; padding: 0; border: none; border-radius: 7px; background: none; color: #8a9299; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .hl-bi-tools .hl-bi-del:hover { color: #ff8d97; background: rgba(255,93,108,0.12); }
+        .hl-bi-tools .hl-bi-open:hover { color: #eef1f4; background: rgba(255,255,255,0.08); }
+        .hl-bi-tools .msym { font-size: 16px; }
+        .hl-bi-size { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; z-index: 1; touch-action: none; }
+        .hl-bi-size::after { content: ""; position: absolute; right: 5px; bottom: 5px; width: 7px; height: 7px; border-right: 2px solid rgba(255,255,255,0.3); border-bottom: 2px solid rgba(255,255,255,0.3);
+                             border-radius: 0 0 3px 0; opacity: 0; transition: opacity .18s ease; }
+        .hl-bi:hover .hl-bi-size::after { opacity: 1; }
+        @media (max-width: 900px) {
+          .hl-hero-in { grid-template-columns: 1fr; justify-items: start; }
+          .hl-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .hl-gym-cols, .hl-bmi { grid-template-columns: 1fr; }
+          .hl-hero .hero-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        /* ---------- the selections panel's middle one: the activity rings in 3D (between finance and trading since 23 October
+           2026, at his request). Placed like the coin: in the middle when in focus, tucked to the right of the wallet or to
+           the left of the coin. With the coin in the middle the wallet is out of sight beyond them; on the way into
+           Health it fades where it is ---------- */
+        .pick-coin .wallet-unit.active { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; z-index: 3; filter: blur(2px);
+          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s; }
+        .health .wallet-unit.active { opacity: 0; pointer-events: none; }
+        .health .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
+        .health .wallet-unit.side-left { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; }
+        .ring-unit {
+          position: fixed; left: 50%; top: 50%; z-index: 4; width: 320px; height: 320px; border-radius: 50%; transform: translate(-50%, -50%); cursor: pointer;
+          filter: blur(0px); will-change: transform, opacity, filter;
+          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, visibility 0s;
+        }
+        .ring-unit.side { transform: translate(-50%, -50%) translateX(430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
+                          transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease .12s, filter 0s linear .26s, visibility 0s; }
+        .ring-unit.side:hover, .ring-unit.side.th { opacity: 0.92; }
+        .ring-unit.side.left { transform: translate(-50%, -50%) translateX(-430px) scale(0.56); }
+        .ring-unit.side.far { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
+        .ring-unit.away { transform: translate(-50%, -50%) translateX(520px) scale(0.42); opacity: 0; visibility: hidden; pointer-events: none; filter: blur(2px);
+                          transition: transform .5s cubic-bezier(0.22,1,0.36,1), opacity .18s ease, visibility 0s linear .5s; }
+        .ring-unit.away.left { transform: translate(-50%, -50%) translateX(-520px) scale(0.42); }      /* the coin pressed: they go off to the left */
+        .ring-unit.go { pointer-events: none; }
+        .ring-tilt, .ring-float, .ring-3d, .rg-in, .rg-ring { position: absolute; inset: 0; transform-style: preserve-3d; }
+        .ring-tilt { pointer-events: none; will-change: transform; }
+        .ring-float { animation: coinFloat 7s ease-in-out infinite; }
+        .ring-float.still { animation-play-state: paused; }
+        .ring-3d { transform: rotateX(18deg) rotateY(-24deg); transition: transform .8s cubic-bezier(0.22,1,0.36,1); }
+        .rg-l { position: absolute; left: 50%; top: 50%; backface-visibility: hidden; will-change: transform; }
+        .rg-glare { position: absolute; left: 50%; top: 50%; width: 240px; height: 240px; margin: -120px 0 0 -120px; border-radius: 50%; pointer-events: none;
+                    transform: translate3d(0, 0, 40px); opacity: 0; transition: opacity .3s ease;
+                    background: radial-gradient(closest-side, rgba(255,255,255,0.16), rgba(255,255,255,0.05) 55%, transparent); }
+        .ring-unit:not(.side):hover .rg-glare, .ring-unit:not(.side).th .rg-glare { opacity: 1; }
+        /* pressed in focus: it turns to face forward and comes towards the viewer, while each ring spins about its middle,
+           the outer and the inner one way, the middle one the other. Plain transform keyframes, run by the graphics process */
+        .ring-unit.go .ring-3d { transform: translateZ(70px) rotateX(0deg) rotateY(0deg); transition: transform 1s cubic-bezier(0.22,1,0.36,1); }
+        .ring-unit.go .rg-ring.r0 { animation: rgSpin0 1.2s cubic-bezier(0.45,0,0.25,1) backwards; }
+        .ring-unit.go .rg-ring.r1 { animation: rgSpin1 1.2s cubic-bezier(0.45,0,0.25,1) .04s backwards; }
+        .ring-unit.go .rg-ring.r2 { animation: rgSpin2 1.2s cubic-bezier(0.45,0,0.25,1) .08s backwards; }
+        @keyframes rgSpin0 { from { transform: rotateZ(0deg); } to { transform: rotateZ(360deg); } }
+        @keyframes rgSpin1 { from { transform: rotateZ(0deg); } to { transform: rotateZ(-360deg); } }
+        @keyframes rgSpin2 { from { transform: rotateZ(0deg); } to { transform: rotateZ(720deg); } }
       `)}</style>
 
       {/* one hidden icon, always present: it gets the icon font set up during the opening screen, so the first
@@ -22769,7 +25282,7 @@ export default function PnlCalendar() {
             {WALLETS.map((w, wi) => <span key={w.id} className={activeWallet === wi ? "at" : ""} aria-hidden={activeWallet !== wi}>{now.getFullYear() + (w.year || 0)}</span>)}
           </div>
 
-          <div className={`launch-wrap phase${phase}${picking ? (pickFocus === "coin" ? " pick pick-coin" : " pick") : inMarkets ? " markets" : choice === "trade" ? ` trade trade-${tradeKind}` : ""}`}>
+          <div className={`launch-wrap phase${phase}${picking ? (pickFocus === "coin" ? " pick pick-coin" : pickFocus === "rings" ? " pick pick-rings" : " pick") : inMarkets ? " markets" : choice === "trade" ? ` trade trade-${tradeKind}` : choice === "health" ? " health" : ""}`}>
             {/* ---- the card that gets pulled out ---- */}
             <div ref={cardRef}
                  className={`big-card${WALLETS.some((w) => w.cards[0] === picked) ? " from-back" : ""}${WALLETS[activeWallet]?.cards.includes(picked) ? "" : " away"}${launchExit ? " out" : ""}`}
@@ -22802,7 +25315,7 @@ export default function PnlCalendar() {
               const isActive = wi === activeWallet;
               const dist = wi - activeWallet;
               const side = dist < 0 ? "side-left" : "side-right";
-              const walletTucked = choice !== "wallet" && pickFocus === "coin";     // selections panel, coin in focus
+              const walletTucked = choice !== "wallet" && pickFocus !== "wallet";     // selections panel, the coin or the rings in focus
               return (
                 <div key={w.id}
                      className={`wallet-unit ${w.id} ${isActive ? "active" : side}${Math.abs(dist) > 1 ? " far" : ""}${launchExit && choice === "wallet" ? " out" : ""}`}
@@ -22852,7 +25365,7 @@ export default function PnlCalendar() {
             })}
 
             {/* ---- selections panel: the trading coin, the wallet's neighbour. On the trading selection it is "crypto" ---- */}
-            <div data-nowarm="" className={`coin-unit${choice === "wallet" ? " away" : picking ? (pickFocus === "coin" ? "" : " side")
+            <div data-nowarm="" className={`coin-unit${choice === "wallet" ? " away" : picking ? (pickFocus === "coin" ? "" : pickFocus === "rings" ? " side" : " side far") : choice === "health" ? " side gone"
                               : inMarkets ? (marketFocus === "crypto" ? "" : marketFocus === "idx" ? " side left" : " side left far")
                               : tradeKind === "crypto" ? " toss" : tradeKind === "idx" ? " side left gone" : " side left far gone"}`}
                  onMouseMove={coinFocused ? onCoinMove : undefined}
@@ -22900,6 +25413,20 @@ export default function PnlCalendar() {
                 </div>
               </div></div></div>
             </div>
+
+            {/* ---- selections panel: the activity rings, Health, between the wallet and the coin ---- */}
+            <div data-nowarm="" className={`ring-unit${picking ? (pickFocus === "rings" ? "" : pickFocus === "coin" ? " side left" : " side") : choice === "health" ? " go" : choice === "wallet" ? " away" : " away left"}`}
+                 onMouseMove={ringsFocused ? onRingMove : undefined}
+                 onMouseEnter={ringsFocused ? () => setHoverRings(true) : undefined}
+                 onMouseLeave={ringsFocused ? onRingLeave : undefined}
+                 onClick={(e) => { e.stopPropagation(); if (picking) { ringsFocused ? enterHealth() : focusPick("rings"); } }}>
+              <div className="coin-shadow" ref={ringShadowRef} />
+              <div className="ring-tilt" ref={ringTiltRef}>
+                <div className={`ring-float${ringsFocused && !hoverRings ? "" : " still"}`}>
+                  <div className="ring-3d"><HlRings3D /><div className="rg-glare" ref={ringGlareRef} /></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -22936,6 +25463,9 @@ export default function PnlCalendar() {
       ) : view === "home" ? (
         <HomeDash market="finance" M={FIN_M} who={user} loaded={loaded} layout={fdashLive.current || finDashNow} ctx={finCtx} api={finDashApi}
                   busy={!!(quickOpen || billOpen || settingsOpen || recap || cfgDraft || catView || scoreView || rulePop || partPop)} />
+      ) : view === "health" ? (
+        <div className="hlt"><HealthApp onHome={goHome} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
+                                        onOther={(side, data) => (side === "finance" ? takeFinance(data) : takeSide(side, data))} /></div>
       ) : view === "year" ? (
         <div ref={yearWrapRef}>
           <div className="year-shell" style={{ opacity: yearIntro ? 0 : 1 }}>
@@ -23617,7 +26147,7 @@ export default function PnlCalendar() {
                 ) : (
                   <div key={`bd-${catView}`} style={S.bdList}>
                     {catBreakdown.rows.map((r, i) => {
-                      const pct = Math.max(1, Math.round((r.amount / catBreakdown.total) * 100));
+                      const pct = Math.max(1, Math.round((r.amount / (catBreakdown.base || catBreakdown.total)) * 100));
                       return (
                         <div key={r.key || r.label} className="bd-item" style={{ ...S.bdRow, animationDelay: `${60 + i * 55}ms` }}>
                           <span style={r.icon ? { ...S.bdName, display: "flex", alignItems: "center", gap: 7 } : S.bdName}>
@@ -23634,7 +26164,9 @@ export default function PnlCalendar() {
                     })}
                     <div className="bd-item" style={{ ...S.bdTotal, animationDelay: `${60 + catBreakdown.rows.length * 55}ms` }}>
                       {catView === "left"
-                        ? `In goals ${fmt(catBreakdown.inGoals)} · Not in a goal ${fmt(catBreakdown.free)} · Left over ${fmt(catBreakdown.total)}`
+                        ? (catBreakdown.early > 0
+                          ? `In goals ${fmt(catBreakdown.inGoals)} · Left over this month ${fmt(catBreakdown.total)} · ${fmt(catBreakdown.early)} came from savings`
+                          : `In goals ${fmt(catBreakdown.inGoals)} · Not in a goal ${fmt(catBreakdown.free)} · Left over ${fmt(catBreakdown.total)}`)
                         : `Total ${fmt(catBreakdown.total)}`}
                     </div>
                   </div>
@@ -23698,7 +26230,7 @@ export default function PnlCalendar() {
       {settingsOpen && (
         <SettingsPop onClose={() => setSettingsOpen(false)} title="Money" start={{ home: homeOn, pick: pickHome }}>
           <div className="set-row">
-            <span className="set-k"><b>Currency</b><small>Shown and typed in</small></span>
+            <span className="set-k"><b>Currency</b><small>What every amount is shown and typed in</small></span>
             <SlideSeg value={currency} onPick={pickCurrency} options={[["IDR", "IDR"], ["MYR", "MYR"]]} />
           </div>
           <div className="set-row">
@@ -23721,7 +26253,7 @@ export default function PnlCalendar() {
         </SettingsPop>
       )}
 
-      {launched && view !== "trade" && (() => {
+      {launched && view !== "trade" && view !== "health" && (() => {
         const sideMonth = view === "month" || year !== now.getFullYear() ? month : now.getMonth();
         const td = quickApi.current.today(), room = td.limit - td.spent, tk = keyOf(now.getFullYear(), now.getMonth(), now.getDate());
         const foot = !(spending[tk] || []).length ? { text: "Nothing logged today", sub: `${fmt(td.limit)} to spend`, ink: "#e8eaec" }
@@ -23751,26 +26283,27 @@ export default function PnlCalendar() {
         );
       })()}
       <UndoNote />
-      {!(launched && view === "trade") && quickOpen && <QuickLog api={quickApi} cur={cur} isMYR={isMYR} seed={quickSeed} onClose={closeQuick} plain={!launched} />}
-      {launched && view !== "trade" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
-      {launched && view !== "trade" && <div style={S.footerRow}>
+      {!(launched && (view === "trade" || view === "health")) && quickOpen && <QuickLog api={quickApi} cur={cur} isMYR={isMYR} seed={quickSeed} onClose={closeQuick} plain={!launched} />}
+      {launched && view !== "trade" && view !== "health" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
+      {launched && view !== "trade" && view !== "health" && <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
-         {saveError && <span className="bk-msg" role="status" style={{ color: "#ff8d97" }} title="Your browser refused to store the data (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
           <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves a backup to the exports folder" : "Downloads a backup of everything"} /></button>
           <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings entries back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
-          {backupMsg && <span className="bk-msg" role="status">{backupMsg}</span>}
-          {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the data you had before this import">Undo</button>}
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {dev && <>
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
           <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated entries only" /></button>
-          {testMsg && <span className="bk-msg" role="status" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
+          {/* what comes and goes stands after the buttons, so a note or "Saving…" never moves one under the pointer */}
+          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
+          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your browser refused to store the data (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
+          <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+          <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the data you had before this import">Undo</button>} />
+          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
         <button className="foot-logo" onClick={goHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
 

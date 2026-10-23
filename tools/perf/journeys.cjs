@@ -2503,6 +2503,32 @@ const glassfade = async (c) => {
   }
   c.key("Escape"); await c.sleep(500);
 };
+// the full app + Health merge, a smoke test (--fresh; 23 October 2026): finance's Home with the exchanger, its calculator
+// and the time plan, then crypto's Home, then Health entered by the rings; the page's errors after each
+const mergesmoke = async (c) => {
+  const key = (k) => c.js(`window.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, metaKey: true, bubbles: true, cancelable: true })); 0`);
+  const errs = () => c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`);
+  const has = (sels) => c.js(`JSON.stringify(Object.fromEntries(${JSON.stringify(sels)}.map((s) => [s, !!document.querySelector(s)])))`);
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  c.log("PICK", await has([".wallet-unit", ".ring-unit", ".coin-unit"]));
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  c.log("FINANCE", await has([".dash", ".dash-tools", ".wdg"]), await errs());
+  await key("e"); await c.sleep(900); c.log("CMD-E", await has([".fx-sheet", ".calc-sheet"])); c.key("Escape"); await c.sleep(600);
+  await key("t"); await c.sleep(900); c.log("CMD-T", await has([".tp-sheet"])); c.key("Escape"); await c.sleep(600);
+  c.log("FINANCE-ERR", await errs());
+  c.wc.reload(); await c.sleep(SPLASH_MS + 1500);
+  await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(5000);
+  c.log("CRYPTO", await has([".term", ".dash", ".wdg"]), await errs());
+  c.wc.reload(); await c.sleep(SPLASH_MS + 1500);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  const r = await c.js(`(() => { const e = document.querySelector('.ring-unit'); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
+  if (r) { await c.click(r.l + r.w * 0.82, r.t + r.h * 0.2); await c.sleep(3800); }
+  c.log("HEALTH", await has([".hl-page", ".hlt"]), await errs());
+};
 // the calculator beside the exchanger (--shots for a still, the usual profile; 23 October 2026): ⌘E on crypto's Home, where
 // the two stand, a sum pressed on the keypad, one typed once the keypad has been pressed, ⌘E closes both
 const calcpad = async (c) => {
@@ -3204,5 +3230,460 @@ const glasslook = async (c) => {
   }
   await c.js(`localStorage.setItem('flow-glass', '50'); 0`);
 };
-module.exports = { splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// Every panel and pop-up on all four sides (stills with --shots; run on a profile with test data on every side, e.g.
+// `seedprep --profile=look --fresh`, then `look --profile=look --shots`). After each press the log lists what is
+// moving 60ms and 300ms later (CSS animations by name, transitions by property, each with the class of what it moves),
+// so a pop-up or a button that changes without moving shows up as "nothing moving".
+const lookall = async (c) => {
+  const what = `(e) => e ? (e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "")) : "?"`;
+  const moving = () => c.js(`(() => { const d = ${what}; const n = {};
+    for (const a of document.getAnimations()) { if (a.playState !== "running") continue; const t = a.effect && a.effect.target;
+      if (t && t.closest && t.closest(".warm-host")) continue;
+      const k = (a.animationName || ("~" + a.transitionProperty)) + " @" + d(t); n[k] = (n[k] || 0) + 1; }
+    return Object.entries(n).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => v > 1 ? k + " ×" + v : k).join(" | ") || "nothing moving"; })()`);
+  const act = async (name, fn, wait = 1200, shoot = true) => {
+    c.log("LOOK", name);
+    await fn(); await c.sleep(60); c.log("  60ms", await moving()); await c.sleep(240); c.log("  300ms", await moving());
+    await c.sleep(Math.max(0, wait - 300)); if (shoot && c.shots) await c.shot(name);
+  };
+  const tap = (sel, nth = 0) => () => c.press(sel, nth);
+  const tapText = (sel, text) => () => c.js(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`).then((p) => p ? c.click(p[0], p[1]) : c.log("  NOT FOUND", text));
+  const esc = () => act("esc", async () => c.key("Escape"), 900, false);
+  const view = async (name, sel, block = "start") => { await c.js(`(() => { const e = ${sel}; if (e) e.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' }); })()`); await c.sleep(2000); if (c.shots) await c.shot(name); };
+  const top = () => c.js(`scrollTo({ top: 0, behavior: 'instant' })`);
+  const goHome = async () => { await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500); return c.press(".foot-logo"); };
+  const cmdN = async () => { c.wc.sendInputEvent({ type: "keyDown", keyCode: "N", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "char", keyCode: "n", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "N", modifiers: ["control"] }); };
+
+  await c.sleep(1100); if (c.shots) await c.shot("splash");
+  await c.sleep(SPLASH_MS - 1100); if (c.shots) await c.shot("pick");
+  if (!process.argv.includes("--trade-only")) await lookFinance();
+  async function lookFinance() {
+  await act("pick-coin", tap(".coin-unit"), 1100);
+  await act("markets", tap(".coin-unit"), 1700);
+  await act("markets-idx", tap(".idx-unit"), 1200);
+  await act("markets-fx", tap(".coin-unit.fx"), 1200);
+  await act("markets-back", async () => c.key("Escape"), 1300);
+  await act("pick-wallet", tap(".wallet-unit.active"), 1100);
+  await act("wallets", tap(".wallet-unit.active"), 1500);
+  await act("card", () => c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08), 1500);
+  await act("enter-finance", tap(".big-card"), 6500);
+  // finance, the year
+  await act("year-chart", tap(".chart-btn"), 2600); await esc();
+  await act("year-wrapped", tap(".year-big"), 2600); await esc();
+  await act("settings", tap('button[aria-label="Settings"]'), 1200); await esc();
+  await act("sidebar", tap(".snav-burger"), 1200); await esc();
+  await act("quicklog", cmdN, 1200); await esc();
+  await act("month", async () => c.press(".ycell", await monthBox(c)), 3600);
+  await act("month-chart", tap(".chart-btn"), 2600); await esc();
+  await act("month-wrapped", tap(".month-big"), 2600); await esc();
+  await act("day", tap(".cell", 9), 1600);
+  await view("day-panel", `document.querySelector('.cell.sel') || document.querySelectorAll('.cell')[9]`, "start");
+  for (const [i, n] of [[0, "card-weekly"], [1, "card-flow"], [2, "card-goals"]]) await view(n, `document.querySelectorAll('.flow-card')[${i}]`);
+  await view("flow-score", `document.querySelector('.score-hit')`, "center");
+  await view("flow-proj", `document.querySelector('.proj-tile')`, "center");
+  await view("flow-ins", `document.querySelector('.ins-box')`, "center");
+  await view("debts", `document.querySelector('.debt-sec')`, "center");
+  await view("page-end", `document.querySelector('.foot-logo')`, "end");
+  await view("flow-chart", `document.querySelector('.flow-label')`, "center");
+  await act("cat-pop", tap(".flow-label"), 1600); await esc();
+  await view("score-dial", `document.querySelector('.score-hit')`, "center");
+  await act("score-pop", tap(".score-hit"), 1600); await esc();
+  await c.js(`document.querySelectorAll('.flow-card')[1].scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1200);
+  await act("fold-flow", tap(".flow-card .chev", 1), 1000);
+  await act("unfold-flow", tap(".flow-card .chev", 1), 1800);
+  await top(); await c.sleep(800);
+  await act("sidebar-month", tap(".snav-burger"), 1200);
+  await act("split-bill", tapText(".snav button", "Split bill"), 1500); await esc();
+  await act("home", goHome, 5000);
+  }
+  // the three trading sides
+  for (const [side, sel] of [["crypto", null], ["idx", ".idx-unit"], ["fx", ".coin-unit.fx"]]) {
+    await act(`${side}-in`, async () => {
+      await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+      if (sel) { await c.press(sel); await c.sleep(1100); await c.press(sel); } else await c.press(".coin-unit");
+    }, 6000);
+    await act(`${side}-calc`, tap(".calc-fab"), 1800); await esc();
+    await act(`${side}-month`, async () => c.press(".ycell", await monthBox(c)), 3600);
+    await act(`${side}-calc-month`, tap(".calc-fab"), 1600);
+    await act(`${side}-calc-test`, tapText("button.pc-clear.test", "Test levels"), 1400); await esc();
+    await act(`${side}-day`, tap(".cell", 9), 1600);
+    await view(`${side}-day-panel`, `document.querySelectorAll('.cell')[9]`, "start");
+    await act(`${side}-trade`, tap(".jr-sum"), 1400);
+    for (const [i, n] of [[0, "card-1"], [1, "card-2"], [2, "card-3"]]) await view(`${side}-${n}`, `document.querySelectorAll('.flow-card')[${i}]`);
+    await top(); await c.sleep(600);
+    await act(`${side}-home`, goHome, 5000);
+  }
+};
+
+// Presses every safe pressable thing on a month panel, one after the other, and logs for each what came onto the page
+// and whether it moved in (run on a profile with test data, `sweep --profile=look`; `--side=crypto|idx|fx` for a trading
+// side). Skipped: what leaves the panel, files, test data, accounts, deleting. "STILL" lines are the ones to look at:
+// something new appeared with nothing moving.
+const sweep = async (c) => {
+  const side = (process.argv.find((a) => a.startsWith("--side=")) || "--side=finance").slice(7);
+  await c.sleep(SPLASH_MS);
+  if (side === "finance") {
+    await c.press(".wallet-unit.active"); await c.sleep(1400);
+    await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+    await c.press(".big-card"); await c.sleep(6500);
+  } else {
+    await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+    const sel = side === "idx" ? ".idx-unit" : side === "fx" ? ".coin-unit.fx" : null;
+    if (sel) { await c.press(sel); await c.sleep(1100); await c.press(sel); } else await c.press(".coin-unit");
+    await c.sleep(6000);
+  }
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await c.press(".cell", 9); await c.sleep(1800);
+  // each pressable is kept as a selector and its place among the matches, and found again before its press: a press
+  // can put a whole part of the panel there afresh
+  const list = JSON.parse(await c.js(`(() => {
+    const SKIP = /delete|remove|clear|reset|restore|export|import|switch|test data|back to home|picture|file|account|trash|bin\\b|undo|previous month|next month/i;
+    const NAV = ".foot-logo, .month-btn, .snav-burger, .bk-btn, .who-btn, .pick-back, .snav, .warm-host, input, textarea, select, .row-grip, .nav-arrow, .chev";
+    const out = [];
+    for (const el of document.querySelectorAll("body *")) {
+      const isBtn = el.tagName === "BUTTON" || el.getAttribute("role") === "button";
+      if (!isBtn && getComputedStyle(el).cursor !== "pointer") continue;
+      if (!isBtn && el.parentElement && getComputedStyle(el.parentElement).cursor === "pointer") continue;
+      if (el.closest(NAV) || el instanceof SVGElement) continue;
+      const words = (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + el.textContent.slice(0, 40);
+      if (SKIP.test(words) || /delete|delete_sweep|close/.test(el.textContent.trim())) continue;
+      const sel = el.tagName.toLowerCase() + [...el.classList].filter((k) => /^[a-z][\\w-]*$/i.test(k)).map((k) => "." + k).join("");
+      out.push({ sel, nth: [...document.querySelectorAll(sel)].indexOf(el) });
+    }
+    return JSON.stringify(out); })()`));
+  const n = list.length;
+  for (let i = 0; i < n; i++) {
+    const r = await c.js(`(() => { window.__sw = window.__sw || {}; const el = document.querySelectorAll(${JSON.stringify(list[i].sel)})[${list[i].nth}]; if (!el) return null;
+      el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || getComputedStyle(el).visibility === "hidden") return null;
+      const d = (e) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+      window.__sw.desc = d(el) + " '" + ((el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent).trim().replace(/\\s+/g, " ").slice(0, 28)) + "'";
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!r) continue;
+    await c.sleep(350);
+    await c.js(`window.__sw.added = []; window.__sw.mo = new MutationObserver((ms) => { for (const m of ms) for (const a of m.addedNodes) if (a.nodeType === 1 && !a.closest(".warm-host")) window.__sw.added.push(a); });
+      window.__sw.mo.observe(document.body, { childList: true, subtree: true }); window.__sw.before = document.getAnimations().length;`);
+    await c.click(r.x, r.y);
+    await c.sleep(70);
+    const out = await c.js(`(() => { window.__sw.mo.disconnect();
+      const added = window.__sw.added.filter((a) => a.isConnected && !window.__sw.added.some((b) => b !== a && b.contains(a)));
+      const vis = added.filter((a) => { const r = a.getBoundingClientRect(); return r.width > 4 && r.height > 4; });
+      const moving = (a) => { for (let e = a; e && e !== document.body; e = e.parentElement) if (e.getAnimations().some((x) => x.playState === "running")) return true;
+        return a.getAnimations({ subtree: true }).some((x) => x.playState === "running"); };
+      const still = vis.filter((a) => !moving(a));
+      const d = (e) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+      return { desc: window.__sw.desc, added: vis.length, still: still.map(d).slice(0, 4), run: document.getAnimations().filter((x) => x.playState === "running").length }; })()`);
+    c.log(out.still.length ? "STILL" : out.added ? "MOVES" : out.run ? "CHANGE" : "NONE", out.desc, "added", out.added, "running", out.run, out.still.join(" "));
+    await c.sleep(600);
+    c.key("Escape"); await c.sleep(500);
+  }
+};
+
+// The press on every pressable (pressKit): each is held, then let go, and quick-clicked; the log says how far it sank
+// (its `scale`), whether its own `transform` was left as it was, and that it is back to 1 afterwards. A thing with a
+// press of its own (a day tile) must not sink.
+const press = async (c) => {
+  await c.sleep(SPLASH_MS);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  c.log("FRAMES in 1s", await c.js(`new Promise((done) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else done(n); }; requestAnimationFrame(f); })`));
+  const read = (sel, nth) => c.js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null;
+    const cs = getComputedStyle(el), a = el.__press; return { scale: cs.scale + (a ? " [" + a.playState + " " + Math.round(a.currentTime) + "ms]" : ""), transform: cs.transform }; })()`);
+  for (const [sel, nth] of [[".chart-btn", 0], [".nav-arrow", 1], [".month-big", 0], [".info-btn", 0], [".collapse-btn", 0], [".cell", 9],
+    [".flow-label", 1], [".score-hit", 0], [".ins-more", 0], [".goal-sym", 0], [".goal-new", 0], [".plain-arrow.chev", 0], [".split-btn", 0], [".snav-burger", 0]]) {
+    const at = await c.js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null;
+      el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2), Math.round(r.width), Math.round(r.height)]; })()`);
+    if (!at) { c.log("PRESS", sel, "not found"); continue; }
+    await c.sleep(500);
+    c.log("  aims at", await c.js(`(() => { const hit = document.elementFromPoint(${at[0]}, ${at[1]}), t = window.__perf.press.target(hit), el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}];
+      const d = (e) => e ? e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).slice(0, 2).join(".") : "") : "nothing";
+      return d(hit) + " -> " + d(t) + (t === el ? " (itself)" : t ? "" : "") + " depth " + (t ? window.__perf.press.depth(t).toFixed(3) : "-"); })()`));
+    const rest = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseMove", x: at[0], y: at[1] }); await c.sleep(300);
+    const hover = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseDown", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(180);
+    const held = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseUp", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(120);
+    const mid = await read(sel, nth);
+    await c.sleep(400);
+    const after = await read(sel, nth);
+    c.log("PRESS", sel, `${at[2]}x${at[3]}`, "held", held && held.scale, "120ms after", mid && mid.scale, "after", after && after.scale,
+      held && hover && held.transform === hover.transform ? "transform kept" : `transform ${hover && hover.transform} -> ${held && held.transform}`, "rest", rest && rest.scale);
+    c.key("Escape"); await c.sleep(700);
+  }
+  // a quick click: down and up 20ms apart, read 60ms on
+  const at = await c.js(`(() => { const el = document.querySelector(".chart-btn"); el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)]; })()`);
+  await c.sleep(400);
+  c.wc.sendInputEvent({ type: "mouseDown", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(20);
+  c.wc.sendInputEvent({ type: "mouseUp", x: at[0], y: at[1], button: "left", clickCount: 1 });
+  const dip = [];
+  for (let i = 0; i < 8; i++) { await c.sleep(40); dip.push((await read(".chart-btn", 0)).scale); }
+  c.log("TAP", dip.join(" "));
+  c.key("Escape"); await c.sleep(700);
+};
+
+// Stills of the 22 October 2026 pass (run with --shots on a profile with test data, `polish --profile=look`): the
+// journal's Win / Breakeven / Loss sliding (mid-way and settled), the trading hero's four tiles, both sides' settings
+// switch, and Money flow coming into view while the page is scrolled (no hole before it pops in).
+const polish = async (c) => {
+  const box = (sel, pad = 12) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(r.width + ${pad} * 2), height: Math.round(r.height + ${pad} * 2) }; })()`);
+  const shotOf = async (name, sel, pad) => { const r = await box(sel, pad); if (r) await c.shot(name, r); else c.log("NO", sel); };
+  await c.sleep(SPLASH_MS);
+  // finance: Money flow scrolled into view a little at a time
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await c.js(`(() => { const e = document.querySelectorAll('.flow-card')[0]; scrollTo({ top: e.getBoundingClientRect().bottom + scrollY - innerHeight + 40, behavior: 'instant' }); })()`); await c.sleep(1200);
+  for (const n of [1, 2, 3]) { await c.js(`scrollBy({ top: 90, behavior: 'instant' })`); await c.sleep(700); await c.shot(`flow-scroll-${n}`); }
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'end', behavior: 'instant' })`); await c.sleep(1500);
+  await shotOf("foot-finance", ".foot-logo", 0);
+  await c.press('button[aria-label="Settings"]'); await c.sleep(1000);
+  await shotOf("set-finance", ".set-modal");
+  await c.press(".set-modal .wr-seg button:last-of-type"); await c.sleep(170); await shotOf("set-finance-mid", ".set-modal .wr-seg", 6);
+  await c.sleep(600); await shotOf("set-finance-myr", ".set-modal .wr-seg", 6);
+  await c.press(".set-modal .wr-seg button:first-of-type"); await c.sleep(800);
+  c.key("Escape"); await c.sleep(800);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  // crypto: the hero, then a day's journal
+  await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(6000);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await shotOf("crypto-tiles", ".hero-tiles");
+  await c.press(".cell", 9); await c.sleep(1800);
+  await c.js(`document.querySelector('.jr-res').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(800);
+  await shotOf("res-win", ".jr-res", 8);
+  await c.press(".jr-res button", 2); await c.sleep(160); await shotOf("res-mid", ".jr-res", 8);
+  await c.sleep(700); await shotOf("res-loss", ".jr-res", 8);
+  await c.press(".jr-res button", 1); await c.sleep(800); await shotOf("res-be", ".jr-res", 8);
+  await c.press(".jr-res button", 0); await c.sleep(800); await shotOf("res-win-again", ".jr-res", 8);
+  await shotOf("crypto-sheet", ".jr-sheet", 8);
+};
+
+// Stills of the second 22 October 2026 batch (`fixes --profile=look --shots`): the weekly chart's round scale, the Left
+// over pop-up when more went into the goals than was left, the debts' bars in their side's colour, and the stock and
+// forex journal forms (their two columns even).
+const fixes = async (c) => {
+  const box = (sel, pad = 10) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(r.width + ${pad} * 2), height: Math.round(Math.min(innerHeight - Math.max(0, r.top - ${pad}), r.height + ${pad} * 2)) }; })()`);
+  const view = async (sel, block = "start") => { await c.js(`document.querySelector(${JSON.stringify(sel)})?.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' })`); await c.sleep(2200); };
+  await c.sleep(SPLASH_MS);
+  await c.shot("start");
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await view(".flow-card"); await c.shot("weekly", await box(".flow-card"));
+  c.log("TICKS", await c.js(`[...document.querySelectorAll('.wk-tick')].map((t) => t.textContent + (getComputedStyle(t).opacity === "0" ? " (faded)" : "")).join(" | ")`));
+  await view(".debt-sec", "center"); await c.shot("debts", await box(".debt-sec"));
+  const left = `[...document.querySelectorAll('.flow-label')].find((e) => e.textContent.includes('Left over'))`;
+  await c.js(`(() => { const e = ${left}; if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); })()`); await c.sleep(2400);
+  await c.js(`(() => { const e = ${left}; if (e) e.click(); })()`); await c.sleep(1500);
+  c.log("LEFT", await c.js(`[...document.querySelectorAll('.bd-item')].map((e) => e.innerText.replace(/\\s+/g, " ")).join(" / ")`));
+  await c.shot("left");
+  c.key("Escape"); await c.sleep(800);
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  for (const [side, sel] of [["idx", ".idx-unit"], ["fx", ".coin-unit.fx"]]) {
+    await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+    await c.press(".idx-unit"); await c.sleep(1100); if (side === "fx") { await c.press(".coin-unit.fx"); await c.sleep(1100); }
+    await c.press(sel); await c.sleep(6000);
+    await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+    await c.press(".cell", 9); await c.sleep(1800);
+    await view(".jr-sheet"); await c.shot(`${side}-form`, await box(".jr-sheet"));
+    c.log("COLS", side, await c.js(`[...document.querySelector('.jr-sheet .jr-cols').children].map((e) => Math.round(e.getBoundingClientRect().height)).join(" / ")`));
+    await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+    await c.press(".foot-logo"); await c.sleep(5000);
+  }
+};
+
+
+// Health (23 October 2026; run with --shots --fresh): the rings on the selections panel (tucked beside the wallet, in the
+// middle, tucked beside the coin, under the pointer, on their way in), the page empty, then with test data a still of every part of it, and
+// presses on its pieces with what was saved after each: a to-do ticked and one added, a class added on an empty hour, a
+// day's steps typed, a goal of 75 kg in 3 months, a gym session, a note on the board dragged, a day stepped. No file box
+// is opened (a hidden run must never open one)
+const health = async (c) => {
+  const box = (sel, pad = 10) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(Math.min(innerWidth, r.width + ${pad} * 2)), height: Math.round(Math.min(innerHeight - Math.max(0, r.top - ${pad}), r.height + ${pad} * 2)) }; })()`);
+  const view = async (sel, block = "start", wait = 2200) => { await c.js(`document.querySelector(${JSON.stringify(sel)})?.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' })`); await c.sleep(wait); };
+  const shot = async (name, sel) => { if (c.shots) await c.shot(name, sel ? (await box(sel)) || undefined : undefined); };
+  const set = (sel, text) => c.js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(text)}); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  const blur = (sel) => c.js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el) el.blur(); return !!el; })()`);
+  const tapText = (sel, text) => c.js(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
+  const saved = (what) => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null; if (!v) return 'nothing saved';
+    return JSON.stringify(${what}); })()`);
+  const errs = () => c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`);
+  try { c.wc.debugger.attach("1.3"); await c.wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); } catch (e) { c.log("no focus emulation", e.message); }
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await shot("h-pick");
+  await c.press(".ring-unit"); await c.sleep(1400); await shot("h-pick-rings");
+  await c.press(".coin-unit"); await c.sleep(1300); await shot("h-pick-coin");
+  await c.press(".ring-unit"); await c.sleep(1400);
+  c.log("RINGS", await c.js(`JSON.stringify({ wrap: document.querySelector('.launch-wrap').className, rings: document.querySelector('.ring-unit').className, coin: document.querySelector('.coin-unit:not(.fx)').className })`));
+  const r = await c.js(`(() => { const r = document.querySelector('.ring-unit').getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
+  for (let i = 0; i <= 12; i++) { c.move(r.l + r.w * (0.5 + 0.32 * i / 12), r.t + r.h * (0.5 - 0.3 * i / 12)); await c.sleep(16); }
+  await c.sleep(1100); await shot("h-rings-hover");
+  await c.click(r.l + r.w * 0.82, r.t + r.h * 0.2); await c.sleep(420); await shot("h-rings-go");
+  await c.sleep(3200); await shot("h-empty");
+  c.log("IN", await c.js(`JSON.stringify({ page: !!document.querySelector('.hl-page'), cards: [...document.querySelectorAll('.hlt .flow-card')].map((e) => e.dataset.card) })`));
+  await view(".foot-logo", "end", 600);
+  await c.js(`document.querySelector('button[aria-label="Add test data"]').click()`); await c.sleep(1800);
+  c.log("TEST", await saved(`{ todos: v.todos.length, classes: v.classes.length, gym: v.gym.length, board: v.board.length, steps: Object.keys(v.steps).length, weights: Object.keys(v.weights).length, goal: v.goal, profile: v.profile }`));
+  await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(2400); await shot("h-top");
+  for (const [name, card] of [["todo", "to-do"], ["week", "week"], ["activity", "activity"], ["body", "body"], ["diet", "diet"], ["gym", "gym"], ["board", "vision board"]]) {
+    await view(`[data-card="${card}"]`); await shot(`h-${name}`, `[data-card="${card}"]`);
+  }
+  // a to-do ticked, and one added for a week
+  await view('[data-card="to-do"]', "start", 1200);
+  await c.js(`document.querySelector('.hl-todo .hl-check').click()`); await c.sleep(700);
+  await set(".hl-add-t", "Buy groceries"); await tapText(".hl-rep button", "Every day"); await c.sleep(300);
+  await set(".hl-len .jr-in", "7"); await c.js(`document.querySelector('.hl-plus').click()`); await c.sleep(900);
+  c.log("TODO", await saved(`v.todos.filter((t) => !t.test || Object.keys(t.done).length).slice(-2).map((t) => t.text + ' ' + t.rep + ' ' + t.len + ' done:' + Object.keys(t.done).length)`));
+  c.log("TODO ROWS", await c.js(`[...document.querySelectorAll('.hl-todo')].map((e) => (e.classList.contains('done') ? '[x] ' : '[ ] ') + e.innerText.replace(/\\s+/g, ' ')).join(' / ')`));
+  await shot("h-todo-after", '[data-card="to-do"]');
+  // a class on an empty hour: Saturday at ten
+  await view('[data-card="week"]', "start", 1200);
+  const sat = await c.js(`(() => { const d = document.querySelectorAll('.hl-tt-day')[5].getBoundingClientRect(); return { x: d.left + d.width / 2, y: d.top + 46 * 2.5 }; })()`);
+  await c.click(sat.x, sat.y); await c.sleep(600);
+  await set(".hl-form > .jr-in", "Org meeting"); await c.sleep(200); await shot("h-week-form", '[data-card="week"]');
+  await c.js(`document.querySelector('.hl-form .hl-save').click()`); await c.sleep(900);
+  c.log("CLASS", await saved(`v.classes.filter((x) => !x.test).map((x) => x.name + ' ' + x.dow + ' ' + x.from + '-' + x.to)`));
+  // a day's steps, typed
+  await view('[data-card="activity"]', "start", 1200);
+  await set(".hl-steps-in input", "9500"); await blur(".hl-steps-in input"); await c.sleep(900);
+  c.log("STEPS", await saved(`{ today: v.steps[Object.keys(v.steps).sort().pop()], typed: Object.keys(v.typed) }`));
+  // the goal: off, then 75 kg in 3 months
+  await view('[data-card="diet"]', "start", 1200);
+  await tapText('[data-card="diet"] .bk-btn', "Change goal"); await c.sleep(700);
+  await set('.hl-goal-form input[aria-label="Target weight"]', "75"); await c.sleep(300);
+  c.log("GOAL FORM", await c.js(`document.querySelector('.hl-goal-form')?.innerText.replace(/\\s+/g, ' ')`));
+  await c.js(`document.querySelector('.hl-goal-form .hl-save').click()`); await c.sleep(1400);
+  c.log("GOAL", await saved(`v.goal`), "//", await c.js(`[...document.querySelectorAll('[data-card="diet"] .hl-tile')].map((e) => e.innerText.replace(/\\s+/g, ' ')).join(' | ') + ' // ' + (document.querySelector('.hl-warn')?.innerText.replace(/\\s+/g, ' ') || 'no warning')`));
+  await shot("h-diet-goal", '[data-card="diet"]');
+  // a gym session
+  await view('[data-card="gym"]', "start", 1200);
+  await tapText('[data-card="gym"] .hl-save', "Log a session"); await c.sleep(600);
+  await set(".hl-ex-head .jr-in", "Bench press");
+  await c.js(`(() => { const ins = document.querySelectorAll('.hl-set .pc-in'); const put = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
+    put(ins[0], '80'); put(ins[1], '5'); put(ins[2], '80'); put(ins[3], '5'); return true; })()`); await c.sleep(300);
+  await shot("h-gym-sheet", '[data-card="gym"]');
+  await c.js(`[...document.querySelectorAll('.hl-sheet .hl-save')].pop().click()`); await c.sleep(900);
+  c.log("GYM", await saved(`v.gym.filter((x) => !x.test).map((s) => s.name + ' ' + s.min + 'min ' + s.ex.map((e) => e.name + ' ' + e.sets.map((x) => x.kg + 'x' + x.reps).join(',')).join(';'))`));
+  // the board: a note dragged 160px right and 90 down
+  await view('[data-card="vision board"]', "start", 1200);
+  const g = await c.js(`(() => { const r = document.querySelector('.hl-bi .hl-bi-grip').getBoundingClientRect(); return { x: r.left + 30, y: r.top + 8 }; })()`);
+  const send = (type, p, more) => c.wc.sendInputEvent({ type, x: Math.round(p.x), y: Math.round(p.y), ...more });
+  send("mouseMove", g); await c.sleep(60); send("mouseDown", g, { button: "left", clickCount: 1 }); await c.sleep(60);
+  for (let i = 1; i <= 16; i++) { send("mouseMove", { x: g.x + 10 * i, y: g.y + 5.6 * i }, { modifiers: ["leftButtonDown"] }); await c.sleep(16); }
+  send("mouseUp", { x: g.x + 160, y: g.y + 90 }, { button: "left", clickCount: 1 }); await c.sleep(700);
+  c.log("BOARD", await saved(`v.board.slice(0, 2).map((b) => b.text + ' @' + b.x + ',' + b.y + ' z' + b.z)`));
+  await shot("h-board-after", '[data-card="vision board"]');
+  // a day back, by the arrow
+  await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(600);
+  await c.press(".hl-page .nav-arrow", 0); await c.sleep(1800); await shot("h-yesterday");
+  // the sidebar: its rows, and one of them pressed
+  await c.press(".snav-burger"); await c.sleep(1200); await shot("h-sidebar");
+  c.log("SIDEBAR", await c.js(`[...document.querySelectorAll('.snav .sd-t')].map((e) => e.textContent).join(' / ')`));
+  await tapText(".snav button", "Gym"); await c.sleep(1600);
+  c.log("GYM ROW", await c.js(`Math.round(document.querySelector('[data-card="gym"]').getBoundingClientRect().top)`));
+  // ⌘N: the box of a new to-do
+  c.wc.sendInputEvent({ type: "keyDown", keyCode: "N", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "N", modifiers: ["control"] }); await c.sleep(900);
+  c.log("CMD N", await c.js(`document.activeElement && document.activeElement.className`));
+  c.log("ERRORS", await errs());
+};
+
+// Health's backup (run with --fresh): Export with nothing of his own (and with test data only), then with a to-do of his
+// own, the file's name and what is in it; that file handed to Health's Import (empty after Clear test data and the to-do
+// removed: it must come back), then to the finance side's Import (it must go to Health), and a finance file to Health's.
+// The download is caught before a file is made (a real one would bring a save box up on his screen)
+const hbackup = async (c) => {
+  const say = () => c.js(`[...document.querySelectorAll('.bk-msg')].map((e) => e.textContent).join(' | ') || '(no message)'`);
+  const held = () => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null;
+    return v ? JSON.stringify({ todos: v.todos.map((t) => t.text + (t.test ? '*' : '')), steps: Object.keys(v.steps).length, classes: v.classes.length }) : 'nothing'; })()`);
+  const give = (json, name) => c.js(`(() => { const input = document.querySelector('input[type=file][accept="application/json,.json"]'); const dt = new DataTransfer();
+    dt.items.add(new File([${JSON.stringify(json)}], ${JSON.stringify(name)}, { type: 'application/json' })); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const exportNow = async () => {
+    await c.js(`window.__saved = null; if (!window.__mkUrl) { window.__mkUrl = URL.createObjectURL; URL.createObjectURL = (b) => { window.__blob = b; return window.__mkUrl(b); }; }
+      HTMLAnchorElement.prototype.click = function () { const a = this; window.__blob.text().then((t) => { window.__saved = { name: a.download, text: t }; }); }; 0`);
+    await c.js(`document.querySelector('button[aria-label="Export"]').click()`); await c.sleep(900);
+    return c.js(`window.__saved`);
+  };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  c.log("EMPTY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
+  await c.js(`document.querySelector('button[aria-label="Add test data"]').click()`); await c.sleep(1200);
+  c.log("TEST ONLY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
+  await c.js(`(() => { const el = document.querySelector('.hl-add-t'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Pack the gym bag'); el.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.hl-plus').click(); return true; })()`);
+  await c.sleep(900);
+  const file = await exportNow();
+  const data = file && JSON.parse(file.text);
+  c.log("EXPORT", file && file.name, data && JSON.stringify({ app: data.app, todos: data.health.todos.map((t) => t.text), steps: Object.keys(data.health.steps).length, classes: data.health.classes.length, goal: data.health.goal, profile: data.health.profile.kg, tests: data.health.tests }));
+  await c.sleep(3800);
+  await c.js(`document.querySelector('button[aria-label="Clear test data"]').click()`); await c.sleep(900);
+  await c.js(`[...document.querySelectorAll('.hl-todo')].find((e) => e.textContent.includes('Pack the gym bag')).querySelector('.hl-x').click()`); await c.sleep(900);
+  c.log("CLEARED", await held());
+  await give(file.text, file.name); await c.sleep(1200);
+  c.log("IMPORTED HERE", await held(), "//", await say());
+  // home, into finance, and the same file handed to its Import
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = JSON.parse(localStorage.getItem(k)); v.todos = []; localStorage.setItem(k, JSON.stringify(v)); return true; })()`);
+  await give(file.text, file.name); await c.sleep(1400);
+  c.log("FROM FINANCE", await held(), "//", await say());
+  const fin = JSON.stringify({ spending: { "2026-10-20": [{ id: "e1", amount: 25000, desc: "kopi" }] }, incomes: {}, limits: {}, currency: "IDR", goals: [], debts: [] });
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  await give(fin, "flow-pnl-export.json"); await c.sleep(1400);
+  c.log("FINANCE FILE", await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('pnl-calendar-idr')); return k ? JSON.stringify(JSON.parse(localStorage.getItem(k)).spending) : 'nothing'; })()`), "//", await say());
+};
+
+// Steps from the iPhone (23 October 2026; run with --shots --fresh): the file the iPhone's shortcut saves, handed over as
+// the Mac app would (window.__phone, see tools/perf/preload.cjs): taken in as Health opens, a day typed by hand that the
+// next file leaves alone, Check now with nothing new and with a newer file, and the setup's steps unfolded
+const hphone = async (c) => {
+  const day = (back) => { const d = new Date(); d.setDate(d.getDate() - back); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const file = (n) => ["flow-health", ...[6, 5, 4, 3, 2, 1, 0].map((b) => `${day(b)};${n + b * 1000}`), `weight;${day(0)};89,6;kg`].join("\n");
+  const held = () => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null;
+    return v ? JSON.stringify({ steps: Object.entries(v.steps).sort().map(([d, n]) => d.slice(5) + ':' + n).join(' '), typed: Object.keys(v.typed), weights: v.weights, phone: v.phone }) : 'nothing'; })()`);
+  const say = () => c.js(`[...document.querySelectorAll('.hl-apple .bk-msg')].map((e) => e.textContent).join(' | ') || '(no message)'`);
+  const row = () => c.js(`document.querySelector('.hl-phone-t')?.textContent || 'no phone row'`);
+  try { c.wc.debugger.attach("1.3"); await c.wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); } catch (e) { c.log("no focus emulation", e.message); }
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`window.__phone = { text: ${JSON.stringify(file(5000))}, at: Date.now() - 3600000 }; 0`);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3800);
+  c.log("OPENED", await held(), "//", await row());
+  // a day typed by hand: the phone's next file leaves it alone
+  await c.js(`document.querySelector('[data-card="activity"]').scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1600);
+  await c.js(`(() => { const el = document.querySelector('.hl-steps-in input'); el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '4321'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); return true; })()`);
+  await c.sleep(600);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(700);
+  c.log("SAME FILE", await say());
+  await c.sleep(4600);
+  await c.js(`window.__phone = { text: ${JSON.stringify(file(7000))}, at: Date.now() }; 0`);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(900);
+  c.log("NEWER FILE", await held(), "//", await say(), "//", await row());
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => /steps|set it up/.test(b.textContent)).click()`); await c.sleep(900);
+  c.log("HOW", await c.js(`[...document.querySelectorAll('.hl-how li')].map((e) => e.textContent.slice(0, 40)).join(' / ')`));
+  await c.js(`document.querySelector('.hl-apple').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(1200);
+  if (c.shots) await c.shot("phone", await c.js(`(() => { const r = document.querySelector('.hl-apple').getBoundingClientRect(); return { x: Math.round(r.left - 20), y: Math.max(0, Math.round(r.top - 20)), width: Math.round(r.width + 40), height: Math.round(Math.min(innerHeight - r.top + 20, r.height + 40)) }; })()`));
+  // no file at all
+  await c.js(`window.__phone = null; 0`);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(700);
+  c.log("NO FILE", await say());
+};
+
+module.exports = { mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

@@ -9,6 +9,10 @@ if (process.argv.includes("--flow-fx-rates")) {
     table: () => Promise.resolve({ rates: day, at: Date.now() - 3600e3, src: "ExchangeRate-API" }),
     live: (codes) => Promise.resolve({ rates: Object.fromEntries(codes.filter((c) => live[c]).map((c) => [c, live[c]])), at: Date.now(), src: "TradingView" }) };
 }
+// the iPhone's Health file: whatever a journey has put in window.__phone ({ text, at }), else none
+window.flowHealth = { phone: () => Promise.resolve(window.__phone || null),
+  // a timetable's picture: the reading a journey has put in window.__ocr (the Mac's own, taken beforehand), else none
+  ocr: () => Promise.resolve(window.__ocr || { error: "read" }) };
 const P = (window.__perf = { frames: [], marks: [], warmed: [] });
 // --backup: a stand-in for the shell's copy a day, which writes nothing and notes what the page hands it (name, length, start)
 if (process.argv.includes("--flow-backup")) { P.kept = []; window.flowBackup = { keep: (name, text) => { P.kept.push([name, text.length, text.slice(0, 70).replace(/\s+/g, " ")]); return Promise.resolve(process.argv.includes("--flow-backup-fails") ? false : true); }, info: () => Promise.resolve({ days: 7, folder: "automatic backups" }) }; }

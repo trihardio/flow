@@ -113,6 +113,9 @@ app.whenReady().then(async () => {
     },
     // press the nth element matching a selector, at a point given as fractions of its box (the middle by default)
     async press(sel, nth = 0, fx = 0.5, fy = 0.5) {
+      // (since 23 October 2026 the rings stand between the wallet and the coin: a press meant for the coin while the wallet
+      // is in the middle brings the rings in first, as a hand would have to, so the journeys written before still go in)
+      if ((sel === ".coin-unit" || sel === ".coin-unit:not(.fx)") && (await js(`!!document.querySelector('.launch-wrap.pick:not(.pick-coin):not(.pick-rings)')`))) { await c.press(".ring-unit"); await sleep(900); }
       const find = () => js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null; const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
       let r = await find();
       // since 20 October 2026 a trading side opens on Home (the dashboard): a journey written for the yearly panel

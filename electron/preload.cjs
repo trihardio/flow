@@ -1,4 +1,5 @@
-/* The only bridges between the app and the desktop shell: the on-device AI helper, and the latest rates and prices. */
+/* The only bridges between the app and the desktop shell: the on-device AI helper, the latest rates and prices, and the
+   iPhone's Health file. */
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("flowAI", {
@@ -33,4 +34,12 @@ contextBridge.exposeInMainWorld("flowFX", {
   // the money exchanger: every currency against the dollar (daily), and live rates for the ones on screen
   table: () => ipcRenderer.invoke("fx:table"),
   live: (codes) => ipcRenderer.invoke("fx:live", codes),
+});
+
+contextBridge.exposeInMainWorld("flowHealth", {
+  // The file the iPhone's shortcut saves in iCloud Drive (see phoneRead in main.cjs): { text, at (when it was saved) },
+  // or null when there is none.
+  phone: () => ipcRenderer.invoke("health:phone"),
+  // a timetable's picture (bytes, its file's extension) read by the Mac's own text recognition, offline: { lines } or { error }
+  ocr: (bytes, ext) => ipcRenderer.invoke("health:ocr", bytes, ext),
 });
