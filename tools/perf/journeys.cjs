@@ -1345,5 +1345,42 @@ const polish = async (c) => {
   await shotOf("crypto-sheet", ".jr-sheet", 8);
 };
 
-module.exports = { polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// Stills of the second 22 October 2026 batch (`fixes --profile=look --shots`): the weekly chart's round scale, the Left
+// over pop-up when more went into the goals than was left, the debts' bars in their side's colour, and the stock and
+// forex journal forms (their two columns even).
+const fixes = async (c) => {
+  const box = (sel, pad = 10) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(r.width + ${pad} * 2), height: Math.round(Math.min(innerHeight - Math.max(0, r.top - ${pad}), r.height + ${pad} * 2)) }; })()`);
+  const view = async (sel, block = "start") => { await c.js(`document.querySelector(${JSON.stringify(sel)})?.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' })`); await c.sleep(2200); };
+  await c.sleep(SPLASH_MS);
+  await c.shot("start");
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await view(".flow-card"); await c.shot("weekly", await box(".flow-card"));
+  c.log("TICKS", await c.js(`[...document.querySelectorAll('.wk-tick')].map((t) => t.textContent + (getComputedStyle(t).opacity === "0" ? " (faded)" : "")).join(" | ")`));
+  await view(".debt-sec", "center"); await c.shot("debts", await box(".debt-sec"));
+  const left = `[...document.querySelectorAll('.flow-label')].find((e) => e.textContent.includes('Left over'))`;
+  await c.js(`(() => { const e = ${left}; if (e) e.scrollIntoView({ block: 'center', behavior: 'instant' }); })()`); await c.sleep(2400);
+  await c.js(`(() => { const e = ${left}; if (e) e.click(); })()`); await c.sleep(1500);
+  c.log("LEFT", await c.js(`[...document.querySelectorAll('.bd-item')].map((e) => e.innerText.replace(/\\s+/g, " ")).join(" / ")`));
+  await c.shot("left");
+  c.key("Escape"); await c.sleep(800);
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  for (const [side, sel] of [["idx", ".idx-unit"], ["fx", ".coin-unit.fx"]]) {
+    await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+    await c.press(".idx-unit"); await c.sleep(1100); if (side === "fx") { await c.press(".coin-unit.fx"); await c.sleep(1100); }
+    await c.press(sel); await c.sleep(6000);
+    await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+    await c.press(".cell", 9); await c.sleep(1800);
+    await view(".jr-sheet"); await c.shot(`${side}-form`, await box(".jr-sheet"));
+    c.log("COLS", side, await c.js(`[...document.querySelector('.jr-sheet .jr-cols').children].map((e) => Math.round(e.getBoundingClientRect().height)).join(" / ")`));
+    await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+    await c.press(".foot-logo"); await c.sleep(5000);
+  }
+};
+
+module.exports = { fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

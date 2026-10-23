@@ -789,6 +789,16 @@ const DOTS_PER_ROW = 12;
 // A chart line's first stretch runs from the y-axis to its first point. It sets off at this share of that point's
 // value, so it comes in with a slight rise. From zero it was a wall from the corner up to January, which he found weird.
 const CHART_LEAD = 0.9;
+/* A round top for a scale of three steps over 0 (22 October 2026: the weekly chart read 194Rb, 388Rb, 588Rb, thirds of
+   1.15 × its highest point). The step is the smallest of NICE_STEPS × a power of ten that holds `v` in three, worked out
+   in the units shown (`unit`: 1 for rupiah, the rate for ringgit), so the lines read 150Rb / 300Rb / 450Rb or 40k / 80k /
+   120k. At most a third of the height goes spare. */
+const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+const niceTop = (v, unit = 1, steps = 3) => {
+  const need = Math.max(v / unit / steps, 1);
+  const mag = 10 ** Math.floor(Math.log10(need));
+  return (NICE_STEPS.find((k) => k * mag >= need - 1e-9) || 10) * mag * steps * unit;
+};
 // the card leaving its wallet and going back in (see the styles): how long each way takes, and its speed curve
 const CARD_OUT_MS = 500, CARD_IN_MS = 420;
 const CARD_OUT_EASE = "cubic-bezier(0.3,0,0.15,1)", CARD_IN_EASE = "cubic-bezier(0.4,0,0.2,1)";
@@ -3252,7 +3262,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                     </span>
                   </div>
                   <div style={S.goalBarRow}>
-                    <GoalBar pct={pct} done={done} delay={120 + i * 60} />
+                    <GoalBar pct={pct} done={done} kind={k.dir} delay={120 + i * 60} />
                     <span style={{ ...S.goalPct, color: done ? "#8fd7a4" : "#c7cdd2" }}>
                       <CountNum value={Math.floor(pct)} duration={600} render={(n) => `${Math.round(n)}%`} />
                     </span>
@@ -3687,7 +3697,8 @@ const GoalRing = ({ pct, color, delay, children }) => {
     </span>
   );
 };
-const GoalBar = ({ pct, done, delay }) => {
+// kind: "owe" or "owed" (a debt's bar is the colour of its side; it was blue, the colour of transport and today's ring)
+const GoalBar = ({ pct, done, delay, kind }) => {
   const [on, setOn] = useState(false);
   useEffect(() => {
     let r2;
@@ -3698,7 +3709,7 @@ const GoalBar = ({ pct, done, delay }) => {
     <div className="goal-track">
       {/* the fill is the track's whole width, slid in from the left (a moved surface, never a new width): its gradient
           starts where the track shows it, so it reads exactly as a fill that is only pct wide */}
-      <div className={`goal-fill${done ? " done" : ""}`}
+      <div className={`goal-fill${kind ? ` ${kind}` : ""}${done ? " done" : ""}`}
            style={{ transform: `translateX(${on ? Math.max(0, Math.min(100, pct)) - 100 : -100}%)`, "--gs": `${100 - Math.max(0, Math.min(100, pct))}%`,
                     transitionDelay: on ? `${delay || 0}ms` : "0ms" }} />
     </div>
@@ -6760,9 +6771,12 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
           <JrRow icon="hourglass_top" tint="#8fb4e0" label="Duration">
             <input {...text("dur", 16)} onKeyDown={onKey} placeholder="e.g. 5h 40m" aria-label="Duration" />
           </JrRow>
-          {fx && (
-            <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
-              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 2.5" aria-label="R factor" />
+          {/* forex and stocks keep the R under the duration, which evens the two columns: on stocks the right one runs
+              on with the prices and the two values worked out from them (22 October 2026: an empty block stood under
+              Duration beside Buy value and Sell value) */}
+          {(fx || idx) && (
+            <JrRow icon="balance" tint="#e0b97c" label={idx ? "RR" : "R / Factor"}>
+              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder={idx ? "e.g. 3.2" : "e.g. 2.5"} aria-label="R factor" />
             </JrRow>
           )}
         </div>
@@ -6800,9 +6814,11 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
             <PairBox pad={11} ghost=" x" {...num("lev")} placeholder="e.g. 20" aria-label="Leverage" />
           </JrRow>
           )}
-          <JrRow icon="balance" tint="#e0b97c" label={idx ? "RR" : "R / Factor"}>
-            <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder={idx ? "e.g. 3.2" : "e.g. 8"} aria-label="R factor" />
-          </JrRow>
+          {!idx && (
+            <JrRow icon="balance" tint="#e0b97c" label="R / Factor">
+              <PairBox pad={11} ghost=" R" {...num("rr")} style={{ color: "#ecd3a4" }} placeholder="e.g. 8" aria-label="R factor" />
+            </JrRow>
+          )}
           {idx && (
             <>
               <JrRow icon="login" tint="#8fb4e0" label="Avg entry"><input {...rp("entry")} placeholder="Average buy price" aria-label="Average entry price" /></JrRow>
@@ -9507,6 +9523,14 @@ export default function PnlCalendar() {
     else str = String(v);
     return (neg ? "-" : "") + str;
   };
+  // a scale's line: like fmtCoarse, but a round step that is not a whole jt (or k, M in ringgit) keeps its one decimal
+  // (1,5jt), decided by the line's own value `at`, so the figure keeps one width while it counts towards it
+  const fmtTick = (n, at = n) => {
+    const v = Math.abs(n) / (isMYR ? MYR_RATE : 1), a = Math.abs(at) / (isMYR ? MYR_RATE : 1);
+    const [d, u] = v >= 1e6 ? [1e6, isMYR ? "M" : "jt"] : v >= 1e3 ? [1e3, isMYR ? "k" : "Rb"] : [1, ""];
+    const half = a >= d && a < d * 1000 && Math.abs(a / d - Math.round(a / d)) > 1e-6;
+    return (n < 0 ? "-" : "") + (half ? (Math.floor((v / d) * 10) / 10).toFixed(1).replace(".", ",") : String(Math.floor(v / d))) + u;
+  };
   // while it counts: the resting units, each at one steady precision (see liveText), so nothing flickers
   const fmtLive = (n, busy, span) => {
     if (!busy || !span) return fmt(n);
@@ -10757,7 +10781,8 @@ export default function PnlCalendar() {
     const iw = W - PL - PR, ih = H - PT - PB;
     const weekLimit = Math.max(...weekData.days.map((d) =>
       limits[monthKeyOf(d.date.getFullYear(), d.date.getMonth())] || DEFAULT_LIMIT));
-    const maxV = Math.max(...weekData.days.map((d) => d.total + d.plan), ...(weekOn ? weekOn.vals : []), weekLimit, 1) * 1.15;
+    // the top is the round step above the highest point with an eighth to spare (it was 1.15 × that point, cut in thirds)
+    const maxV = niceTop(Math.max(...weekData.days.map((d) => d.total + d.plan), ...(weekOn ? weekOn.vals : []), weekLimit, 1) * 1.12, isMYR ? MYR_RATE : 1);
     const X = (i) => PL + (i / 6) * iw;
     const Y = (v) => PT + ih - (v / maxV) * ih;
 
@@ -10774,7 +10799,7 @@ export default function PnlCalendar() {
     };
     const line = curve(pts);
     const area = pts.length > 1 ? `${line} L ${X(pts.length - 1)} ${PT + ih} L ${X(0)} ${PT + ih} Z` : "";
-    const yTicks = [0, 0.33, 0.66, 1].map((f) => f * maxV);
+    const yTicks = [0, 1, 2, 3].map((k) => (k * maxV) / 3);
     const endIdx = pts.length - 1;
     // what is planned (WeekPlans): a dashed line that carries on from the last point drawn, each day at what it
     // already holds plus what is planned for it; a planned day at or before that point gets an upright of its own
@@ -10830,7 +10855,7 @@ export default function PnlCalendar() {
         {yTicks.map((v, i) => (
           <text key={i} className="wk-tick" x={PL - 12} y={Y(v) + 4} fill="#8a9299" fontSize="11" textAnchor="end"
                 style={{ opacity: Math.abs(Y(v) - Y(weekLimit)) < 13 ? 0 : 1 }}>
-            {v === 0 ? "0" : <CountNum value={v} duration={CMP_MS} render={(n) => fmtCoarse(n)} still />}
+            {v === 0 ? "0" : <CountNum value={v} duration={CMP_MS} render={(n) => fmtTick(n, v)} still />}
           </text>
         ))}
         {weekData.days.map((d, i) => (
@@ -11248,12 +11273,15 @@ export default function PnlCalendar() {
       const inGoals = rows.reduce((x, r) => x + r.amount, 0);
       const free = Math.max(0, left - inGoals);
       if (free > 0) rows.push({ key: "__free__", label: "Not in a goal", amount: free, color: "#8a9299", icon: "account_balance_wallet" });
-      const total = Math.max(left, inGoals);
+      // the total is always what the chart calls Left over. When more went into the goals than the month left over, the
+      // rest came out of savings from before (22 October 2026: it read "Left over 3,85jt" beside a chart saying 457Rb,
+      // the larger of the two); the %s are then of what went into the goals
+      const total = left, base = Math.max(left, inGoals), early = Math.max(0, inGoals - left);
       const pv = new Date(year, month - 1, 1), pvy = pv.getFullYear(), pvm = pv.getMonth();
       let prevSp = 0;
       for (let d = 1, n = new Date(pvy, pvm + 1, 0).getDate(); d <= n; d++) (spending[keyOf(pvy, pvm, d)] || []).forEach((it) => { prevSp += it.amount; });
       const prevLeft = (incomes[monthKeyOf(pvy, pvm)] || []).reduce((x, it) => x + it.amount, 0) - prevSp;
-      return { rows, total, inGoals, free, vsPct: prevLeft > 0 ? ((left - prevLeft) / prevLeft) * 100 : null };
+      return { rows, total, base, early, inGoals, free, vsPct: prevLeft > 0 ? ((left - prevLeft) / prevLeft) * 100 : null };
     }
     if (catView === "income") {
       monthIncomes.forEach((it) => {
@@ -14870,6 +14898,9 @@ export default function PnlCalendar() {
         .goal-fill { width: 100%; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #4f8fd6 var(--gs, 0%), #7fb6e0);
                      box-shadow: 0 0 12px rgba(127,182,224,0.35); will-change: transform;
                      transition: transform .9s cubic-bezier(0.32,0.72,0.24,1), background .4s ease; }
+        /* a debt's bar in its side's colour, as its dot and arrow are (22 October 2026; it was the blue above) */
+        .goal-fill.owe { background: linear-gradient(90deg, #c65f6c var(--gs, 0%), #e98e99); box-shadow: 0 0 12px rgba(233,142,153,0.28); }
+        .goal-fill.owed { background: linear-gradient(90deg, #45b282 var(--gs, 0%), #93dcb2); box-shadow: 0 0 12px rgba(147,220,178,0.28); }
         .goal-fill.done { background: linear-gradient(90deg, #3ddc97 var(--gs, 0%), #8ff0c4); box-shadow: 0 0 12px rgba(61,220,151,0.35); }
         .goal-icon-btn { background: none; border: none; color: #aab1b8; cursor: pointer; padding: 6px; line-height: 0;
                          border-radius: 8px; transition: color .15s ease, background .15s ease; }
@@ -16968,7 +16999,7 @@ export default function PnlCalendar() {
                 ) : (
                   <div key={`bd-${catView}`} style={S.bdList}>
                     {catBreakdown.rows.map((r, i) => {
-                      const pct = Math.max(1, Math.round((r.amount / catBreakdown.total) * 100));
+                      const pct = Math.max(1, Math.round((r.amount / (catBreakdown.base || catBreakdown.total)) * 100));
                       return (
                         <div key={r.key || r.label} className="bd-item" style={{ ...S.bdRow, animationDelay: `${60 + i * 55}ms` }}>
                           <span style={r.icon ? { ...S.bdName, display: "flex", alignItems: "center", gap: 7 } : S.bdName}>
@@ -16985,7 +17016,9 @@ export default function PnlCalendar() {
                     })}
                     <div className="bd-item" style={{ ...S.bdTotal, animationDelay: `${60 + catBreakdown.rows.length * 55}ms` }}>
                       {catView === "left"
-                        ? `In goals ${fmt(catBreakdown.inGoals)} · Not in a goal ${fmt(catBreakdown.free)} · Left over ${fmt(catBreakdown.total)}`
+                        ? (catBreakdown.early > 0
+                          ? `In goals ${fmt(catBreakdown.inGoals)} · Left over this month ${fmt(catBreakdown.total)} · ${fmt(catBreakdown.early)} came from savings`
+                          : `In goals ${fmt(catBreakdown.inGoals)} · Not in a goal ${fmt(catBreakdown.free)} · Left over ${fmt(catBreakdown.total)}`)
                         : `Total ${fmt(catBreakdown.total)}`}
                     </div>
                   </div>
