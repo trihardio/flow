@@ -1383,8 +1383,8 @@ const fixes = async (c) => {
 };
 
 
-// Health (23 October 2026; run with --shots --fresh): the rings on the selections panel (tucked beside the coin, in the
-// middle, under the pointer, on their way in), the page empty, then with test data a still of every part of it, and
+// Health (23 October 2026; run with --shots --fresh): the rings on the selections panel (tucked beside the wallet, in the
+// middle, tucked beside the coin, under the pointer, on their way in), the page empty, then with test data a still of every part of it, and
 // presses on its pieces with what was saved after each: a to-do ticked and one added, a class added on an empty hour, a
 // day's steps typed, a goal of 75 kg in 3 months, a gym session, a note on the board dragged, a day stepped. No file box
 // is opened (a hidden run must never open one)
@@ -1404,8 +1404,9 @@ const health = async (c) => {
   const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
   await shot("h-pick");
-  await c.press(".coin-unit"); await c.sleep(1300); await shot("h-pick-coin");
   await c.press(".ring-unit"); await c.sleep(1400); await shot("h-pick-rings");
+  await c.press(".coin-unit"); await c.sleep(1300); await shot("h-pick-coin");
+  await c.press(".ring-unit"); await c.sleep(1400);
   c.log("RINGS", await c.js(`JSON.stringify({ wrap: document.querySelector('.launch-wrap').className, rings: document.querySelector('.ring-unit').className, coin: document.querySelector('.coin-unit:not(.fx)').className })`));
   const r = await c.js(`(() => { const r = document.querySelector('.ring-unit').getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
   for (let i = 0; i <= 12; i++) { c.move(r.l + r.w * (0.5 + 0.32 * i / 12), r.t + r.h * (0.5 - 0.3 * i / 12)); await c.sleep(16); }
@@ -1498,7 +1499,7 @@ const hbackup = async (c) => {
   await c.sleep(SPLASH_MS);
   await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
-  await c.press(".coin-unit"); await c.sleep(1100); await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
   c.log("EMPTY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
   await c.js(`document.querySelector('button[aria-label="Add test data"]').click()`); await c.sleep(1200);
   c.log("TEST ONLY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
@@ -1525,7 +1526,7 @@ const hbackup = async (c) => {
   const fin = JSON.stringify({ spending: { "2026-10-20": [{ id: "e1", amount: 25000, desc: "kopi" }] }, incomes: {}, limits: {}, currency: "IDR", goals: [], debts: [] });
   await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
   await c.press(".foot-logo"); await c.sleep(5000);
-  await c.press(".coin-unit"); await c.sleep(1100); await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
   await give(fin, "flow-pnl-export.json"); await c.sleep(1400);
   c.log("FINANCE FILE", await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('pnl-calendar-idr')); return k ? JSON.stringify(JSON.parse(localStorage.getItem(k)).spending) : 'nothing'; })()`), "//", await say());
 };

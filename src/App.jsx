@@ -674,8 +674,8 @@ const stageTour = async (tell = () => {}) => {
       leave();
       if (tour.undo) { tour.undo(); tour.undo = null; await beat(); }
       for (let i = 0; i < 5 && !q(".launch-wrap.pick"); i++) { const b = q(".pick-back"); if (!b) break; b.click(); await beat(); }
-      if (q(".launch-wrap.pick-rings")) { const c = q(".coin-unit:not(.fx)"); if (c) c.click(); await beat(); }
-      if (q(".launch-wrap.pick-coin")) { const w = q(".wallet-unit.active"); if (w) w.click(); await beat(); }
+      if (q(".launch-wrap.pick-coin")) { const r = q(".ring-unit"); if (r) r.click(); await beat(); }
+      if (q(".launch-wrap.pick-rings")) { const w = q(".wallet-unit.active"); if (w) w.click(); await beat(); }
       veil.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, view: window, clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 }));
       await beat();
       still();
@@ -687,10 +687,9 @@ const stageTour = async (tell = () => {}) => {
   const go = async (say) => {
     await over(".who-btn");
     await over(wallet);
-    await press(coin); await over(coin);
     await press(rings); await over(rings);        // the rings (Health) in the middle, and their way in
     await enter(rings);
-    await press(coin);
+    await press(coin); await over(coin);
     say(0.12);
     await press(coin);                    // the trading panel
     const opened = performance.now();
@@ -707,6 +706,7 @@ const stageTour = async (tell = () => {}) => {
     await press(coin); await enter(coin);
     say(0.7);
     await press(".pick-back");            // the selections panel, the coin in the middle
+    await press(rings);                   // the rings in the middle
     await press(wallet);                  // the wallet in the middle
     await press(wallet);                  // the wallets panel
     await over(wallet);
@@ -881,7 +881,7 @@ const TRADE_FLIP_MS = 900;
 const IDX_REVEAL_MS = 1900;
 const IDX_SPIN_MS = 1500;          // one full turn of the globe when it is pressed
 const MARKET_ROW = ["crypto", "idx", "fx"];      // the trading panel from left to right: the coin, the IDX globe, the forex coin
-const PICK_ROW = ["wallet", "coin", "rings"];      // the selections panel from left to right: the wallet (finance), the coin (trading), the rings (Health)
+const PICK_ROW = ["wallet", "rings", "coin"];      // the selections panel from left to right: the wallet (finance), the rings (Health), the coin (trading)
 const IDX_TILT = 16;               // how far its axis leans from upright, degrees
 
 // Month title, pixel font: "t" is drawn one font pixel (3px) further right in its box than the other letters, which
@@ -14394,7 +14394,7 @@ export default function PnlCalendar() {
   const onRingLeave = () => { setHoverRings(false); ringEase.current = 0.06; ringTarget.current = { ...COIN_STILL }; kickCoin(ringRig); };
   // selections panel: bring the wallet or the coin into the middle (a press on the tucked one, or the scroll wheel)
   const focusPick = (which) => { setPickFocus(which); onCardLeave(); onCoinLeave(); onRingLeave(); };
-  // the scroll wheel goes one along the selections panel and stops at its ends: wallet, coin, rings
+  // the scroll wheel goes one along the selections panel and stops at its ends: wallet, rings, coin
   const stepPick = (dir) => {
     setPickFocus((f) => PICK_ROW[Math.max(0, Math.min(PICK_ROW.length - 1, PICK_ROW.indexOf(f) + dir))]);
     onCardLeave(); onCoinLeave(); onRingLeave();
@@ -14460,7 +14460,7 @@ export default function PnlCalendar() {
       e.preventDefault();
       if (walletLock.current) return;
       walletLock.current = true;
-      if (choice === null) stepPick(e.deltaY > 0 ? 1 : -1);                  // selections panel: wallet · coin · rings
+      if (choice === null) stepPick(e.deltaY > 0 ? 1 : -1);                  // selections panel: wallet · rings · coin
       else if (choice === "markets") stepMarket(e.deltaY > 0 ? 1 : -1);     // trading selection: coin · globe · forex coin
       else stepWallet(e.deltaY > 0 ? 1 : -1);
       setTimeout(() => { walletLock.current = false; }, 620);
@@ -15530,11 +15530,11 @@ export default function PnlCalendar() {
            tucked to the side, smaller, dimmer and a touch out of focus. The other years' wallets stay out of sight.
            The blur is switched, never animated: it comes on once the wallet is most of the way out, and goes
            the moment it starts back. */
-        .pick-coin .wallet-unit.active, .markets .wallet-unit.active, .trade .wallet-unit.active {
+        .pick-rings .wallet-unit.active, .markets .wallet-unit.active, .trade .wallet-unit.active, .health .wallet-unit.active {
           transform: translate(-50%, -50%) translateX(-430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s;
         }
-        .pick-coin .wallet-unit.active:hover, .pick-coin .wallet-unit.active.th { opacity: 0.92; }
+        .pick-rings .wallet-unit.active:hover, .pick-rings .wallet-unit.active.th { opacity: 0.92; }
         /* the coin was pressed: the wallet slips away, and the trading selection (coin and IDX globe) takes the stage */
         .markets .wallet-unit.active, .trade .wallet-unit.active { transform: translate(-50%, -50%) translateX(-700px) scale(0.45); opacity: 0; pointer-events: none; }
         .pick .wallet-unit.side-right, .markets .wallet-unit.side-right, .trade .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
@@ -17949,10 +17949,13 @@ export default function PnlCalendar() {
           .hl-hero .hero-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
 
-        /* ---------- the selections panel's third: the activity rings in 3D. Placed like the coin: in the middle when in
-           focus, tucked to the right beside the coin, out of sight beyond it while the wallet is in the middle ---------- */
-        .pick-rings .wallet-unit.active, .health .wallet-unit.active { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; z-index: 3; filter: blur(2px);
+        /* ---------- the selections panel's middle one: the activity rings in 3D (between finance and trading since 23 October
+           2026, at his request). Placed like the coin: in the middle when in focus, tucked to the right of the wallet or to
+           the left of the coin. With the coin in the middle the wallet is out of sight beyond them; on the way into
+           Health it fades where it is ---------- */
+        .pick-coin .wallet-unit.active { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; z-index: 3; filter: blur(2px);
           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease, filter 0s linear .26s; }
+        .health .wallet-unit.active { opacity: 0; pointer-events: none; }
         .health .wallet-unit.side-right { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
         .health .wallet-unit.side-left { transform: translate(-50%, -50%) translateX(-760px) scale(0.42); opacity: 0; pointer-events: none; }
         .ring-unit {
@@ -17963,9 +17966,11 @@ export default function PnlCalendar() {
         .ring-unit.side { transform: translate(-50%, -50%) translateX(430px) scale(0.56); opacity: 0.65; z-index: 3; filter: blur(2px);
                           transition: transform .8s cubic-bezier(0.22,1,0.36,1), opacity .5s ease .12s, filter 0s linear .26s, visibility 0s; }
         .ring-unit.side:hover, .ring-unit.side.th { opacity: 0.92; }
+        .ring-unit.side.left { transform: translate(-50%, -50%) translateX(-430px) scale(0.56); }
         .ring-unit.side.far { transform: translate(-50%, -50%) translateX(760px) scale(0.42); opacity: 0; pointer-events: none; }
         .ring-unit.away { transform: translate(-50%, -50%) translateX(520px) scale(0.42); opacity: 0; visibility: hidden; pointer-events: none; filter: blur(2px);
                           transition: transform .5s cubic-bezier(0.22,1,0.36,1), opacity .18s ease, visibility 0s linear .5s; }
+        .ring-unit.away.left { transform: translate(-50%, -50%) translateX(-520px) scale(0.42); }      /* the coin pressed: they go off to the left */
         .ring-unit.go { pointer-events: none; }
         .ring-tilt, .ring-float, .ring-3d, .rg-in, .rg-ring { position: absolute; inset: 0; transform-style: preserve-3d; }
         .ring-tilt { pointer-events: none; will-change: transform; }
@@ -18162,7 +18167,7 @@ export default function PnlCalendar() {
             })}
 
             {/* ---- selections panel: the trading coin, the wallet's neighbour. On the trading selection it is "crypto" ---- */}
-            <div data-nowarm="" className={`coin-unit${choice === "wallet" ? " away" : picking ? (pickFocus === "coin" ? "" : pickFocus === "rings" ? " side left" : " side") : choice === "health" ? " side left gone"
+            <div data-nowarm="" className={`coin-unit${choice === "wallet" ? " away" : picking ? (pickFocus === "coin" ? "" : pickFocus === "rings" ? " side" : " side far") : choice === "health" ? " side gone"
                               : inMarkets ? (marketFocus === "crypto" ? "" : marketFocus === "idx" ? " side left" : " side left far")
                               : tradeKind === "crypto" ? " toss" : tradeKind === "idx" ? " side left gone" : " side left far gone"}`}
                  onMouseMove={coinFocused ? onCoinMove : undefined}
@@ -18211,8 +18216,8 @@ export default function PnlCalendar() {
               </div></div></div>
             </div>
 
-            {/* ---- selections panel: the activity rings, Health, on the very right. With the wallet in the middle they are out of sight beyond the coin ---- */}
-            <div data-nowarm="" className={`ring-unit${picking ? (pickFocus === "rings" ? "" : pickFocus === "coin" ? " side" : " side far") : choice === "health" ? " go" : " away"}`}
+            {/* ---- selections panel: the activity rings, Health, between the wallet and the coin ---- */}
+            <div data-nowarm="" className={`ring-unit${picking ? (pickFocus === "rings" ? "" : pickFocus === "coin" ? " side left" : " side") : choice === "health" ? " go" : choice === "wallet" ? " away" : " away left"}`}
                  onMouseMove={ringsFocused ? onRingMove : undefined}
                  onMouseEnter={ringsFocused ? () => setHoverRings(true) : undefined}
                  onMouseLeave={ringsFocused ? onRingLeave : undefined}
