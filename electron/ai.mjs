@@ -5,11 +5,11 @@
    or a goal icon. */
 import fs from "node:fs";
 import { getLlama } from "node-llama-cpp";
-import { classify, unpack, norm } from "./ai-classify.mjs";
+import { classify, unpack, norm, loadHeads } from "./ai-classify.mjs";
 
 const [MODEL_PATH, HEAD_PATH] = process.argv.slice(2);
 const IDLE_MS = 5 * 60 * 1000;
-const heads = JSON.parse(fs.readFileSync(HEAD_PATH, "utf8"));
+const heads = loadHeads(HEAD_PATH);
 for (const head of Object.values(heads)) unpack(head);
 
 let engine = null;                 // promise of the embedding context

@@ -5,3 +5,9 @@ release/*.dmg
 node_modules/
 dist/
 .DS_Store
+
+# Superdesign: temporary files it hands to its service
+.superdesign/tmp/
+
+# the full on-device model, kept outside the shipped files (models/flow-ai.gguf is made from it by tools/ai/prune-vocab.mjs)
+tools/ai/models/*.gguf
