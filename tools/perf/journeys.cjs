@@ -1382,5 +1382,153 @@ const fixes = async (c) => {
   }
 };
 
-module.exports = { fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+
+// Health (23 October 2026; run with --shots --fresh): the rings on the selections panel (tucked beside the coin, in the
+// middle, under the pointer, on their way in), the page empty, then with test data a still of every part of it, and
+// presses on its pieces with what was saved after each: a to-do ticked and one added, a class added on an empty hour, a
+// day's steps typed, a goal of 75 kg in 3 months, a gym session, a note on the board dragged, a day stepped. No file box
+// is opened (a hidden run must never open one)
+const health = async (c) => {
+  const box = (sel, pad = 10) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(Math.min(innerWidth, r.width + ${pad} * 2)), height: Math.round(Math.min(innerHeight - Math.max(0, r.top - ${pad}), r.height + ${pad} * 2)) }; })()`);
+  const view = async (sel, block = "start", wait = 2200) => { await c.js(`document.querySelector(${JSON.stringify(sel)})?.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' })`); await c.sleep(wait); };
+  const shot = async (name, sel) => { if (c.shots) await c.shot(name, sel ? (await box(sel)) || undefined : undefined); };
+  const set = (sel, text) => c.js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(text)}); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  const blur = (sel) => c.js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el) el.blur(); return !!el; })()`);
+  const tapText = (sel, text) => c.js(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
+  const saved = (what) => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null; if (!v) return 'nothing saved';
+    return JSON.stringify(${what}); })()`);
+  const errs = () => c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`);
+  try { c.wc.debugger.attach("1.3"); await c.wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); } catch (e) { c.log("no focus emulation", e.message); }
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await shot("h-pick");
+  await c.press(".coin-unit"); await c.sleep(1300); await shot("h-pick-coin");
+  await c.press(".ring-unit"); await c.sleep(1400); await shot("h-pick-rings");
+  c.log("RINGS", await c.js(`JSON.stringify({ wrap: document.querySelector('.launch-wrap').className, rings: document.querySelector('.ring-unit').className, coin: document.querySelector('.coin-unit:not(.fx)').className })`));
+  const r = await c.js(`(() => { const r = document.querySelector('.ring-unit').getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
+  for (let i = 0; i <= 12; i++) { c.move(r.l + r.w * (0.5 + 0.32 * i / 12), r.t + r.h * (0.5 - 0.3 * i / 12)); await c.sleep(16); }
+  await c.sleep(1100); await shot("h-rings-hover");
+  await c.click(r.l + r.w * 0.82, r.t + r.h * 0.2); await c.sleep(420); await shot("h-rings-go");
+  await c.sleep(3200); await shot("h-empty");
+  c.log("IN", await c.js(`JSON.stringify({ page: !!document.querySelector('.hl-page'), cards: [...document.querySelectorAll('.hlt .flow-card')].map((e) => e.dataset.card) })`));
+  await view(".foot-logo", "end", 600);
+  await c.js(`document.querySelector('button[aria-label="Add test data"]').click()`); await c.sleep(1800);
+  c.log("TEST", await saved(`{ todos: v.todos.length, classes: v.classes.length, gym: v.gym.length, board: v.board.length, steps: Object.keys(v.steps).length, weights: Object.keys(v.weights).length, goal: v.goal, profile: v.profile }`));
+  await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(2400); await shot("h-top");
+  for (const [name, card] of [["todo", "to-do"], ["week", "week"], ["activity", "activity"], ["body", "body"], ["diet", "diet"], ["gym", "gym"], ["board", "vision board"]]) {
+    await view(`[data-card="${card}"]`); await shot(`h-${name}`, `[data-card="${card}"]`);
+  }
+  // a to-do ticked, and one added for a week
+  await view('[data-card="to-do"]', "start", 1200);
+  await c.js(`document.querySelector('.hl-todo .hl-check').click()`); await c.sleep(700);
+  await set(".hl-add-t", "Buy groceries"); await tapText(".hl-rep button", "Every day"); await c.sleep(300);
+  await set(".hl-len .jr-in", "7"); await c.js(`document.querySelector('.hl-plus').click()`); await c.sleep(900);
+  c.log("TODO", await saved(`v.todos.filter((t) => !t.test || Object.keys(t.done).length).slice(-2).map((t) => t.text + ' ' + t.rep + ' ' + t.len + ' done:' + Object.keys(t.done).length)`));
+  c.log("TODO ROWS", await c.js(`[...document.querySelectorAll('.hl-todo')].map((e) => (e.classList.contains('done') ? '[x] ' : '[ ] ') + e.innerText.replace(/\\s+/g, ' ')).join(' / ')`));
+  await shot("h-todo-after", '[data-card="to-do"]');
+  // a class on an empty hour: Saturday at ten
+  await view('[data-card="week"]', "start", 1200);
+  const sat = await c.js(`(() => { const d = document.querySelectorAll('.hl-tt-day')[5].getBoundingClientRect(); return { x: d.left + d.width / 2, y: d.top + 46 * 2.5 }; })()`);
+  await c.click(sat.x, sat.y); await c.sleep(600);
+  await set(".hl-form > .jr-in", "Org meeting"); await c.sleep(200); await shot("h-week-form", '[data-card="week"]');
+  await c.js(`document.querySelector('.hl-form .hl-save').click()`); await c.sleep(900);
+  c.log("CLASS", await saved(`v.classes.filter((x) => !x.test).map((x) => x.name + ' ' + x.dow + ' ' + x.from + '-' + x.to)`));
+  // a day's steps, typed
+  await view('[data-card="activity"]', "start", 1200);
+  await set(".hl-steps-in input", "9500"); await blur(".hl-steps-in input"); await c.sleep(900);
+  c.log("STEPS", await saved(`{ today: v.steps[Object.keys(v.steps).sort().pop()], typed: Object.keys(v.typed) }`));
+  // the goal: off, then 75 kg in 3 months
+  await view('[data-card="diet"]', "start", 1200);
+  await tapText('[data-card="diet"] .bk-btn', "Change goal"); await c.sleep(700);
+  await set('.hl-goal-form input[aria-label="Target weight"]', "75"); await c.sleep(300);
+  c.log("GOAL FORM", await c.js(`document.querySelector('.hl-goal-form')?.innerText.replace(/\\s+/g, ' ')`));
+  await c.js(`document.querySelector('.hl-goal-form .hl-save').click()`); await c.sleep(1400);
+  c.log("GOAL", await saved(`v.goal`), "//", await c.js(`[...document.querySelectorAll('[data-card="diet"] .hl-tile')].map((e) => e.innerText.replace(/\\s+/g, ' ')).join(' | ') + ' // ' + (document.querySelector('.hl-warn')?.innerText.replace(/\\s+/g, ' ') || 'no warning')`));
+  await shot("h-diet-goal", '[data-card="diet"]');
+  // a gym session
+  await view('[data-card="gym"]', "start", 1200);
+  await tapText('[data-card="gym"] .hl-save', "Log a session"); await c.sleep(600);
+  await set(".hl-ex-head .jr-in", "Bench press");
+  await c.js(`(() => { const ins = document.querySelectorAll('.hl-set .pc-in'); const put = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
+    put(ins[0], '80'); put(ins[1], '5'); put(ins[2], '80'); put(ins[3], '5'); return true; })()`); await c.sleep(300);
+  await shot("h-gym-sheet", '[data-card="gym"]');
+  await c.js(`[...document.querySelectorAll('.hl-sheet .hl-save')].pop().click()`); await c.sleep(900);
+  c.log("GYM", await saved(`v.gym.filter((x) => !x.test).map((s) => s.name + ' ' + s.min + 'min ' + s.ex.map((e) => e.name + ' ' + e.sets.map((x) => x.kg + 'x' + x.reps).join(',')).join(';'))`));
+  // the board: a note dragged 160px right and 90 down
+  await view('[data-card="vision board"]', "start", 1200);
+  const g = await c.js(`(() => { const r = document.querySelector('.hl-bi .hl-bi-grip').getBoundingClientRect(); return { x: r.left + 30, y: r.top + 8 }; })()`);
+  const send = (type, p, more) => c.wc.sendInputEvent({ type, x: Math.round(p.x), y: Math.round(p.y), ...more });
+  send("mouseMove", g); await c.sleep(60); send("mouseDown", g, { button: "left", clickCount: 1 }); await c.sleep(60);
+  for (let i = 1; i <= 16; i++) { send("mouseMove", { x: g.x + 10 * i, y: g.y + 5.6 * i }, { modifiers: ["leftButtonDown"] }); await c.sleep(16); }
+  send("mouseUp", { x: g.x + 160, y: g.y + 90 }, { button: "left", clickCount: 1 }); await c.sleep(700);
+  c.log("BOARD", await saved(`v.board.slice(0, 2).map((b) => b.text + ' @' + b.x + ',' + b.y + ' z' + b.z)`));
+  await shot("h-board-after", '[data-card="vision board"]');
+  // a day back, by the arrow
+  await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(600);
+  await c.press(".hl-page .nav-arrow", 0); await c.sleep(1800); await shot("h-yesterday");
+  // the sidebar: its rows, and one of them pressed
+  await c.press(".snav-burger"); await c.sleep(1200); await shot("h-sidebar");
+  c.log("SIDEBAR", await c.js(`[...document.querySelectorAll('.snav .sd-t')].map((e) => e.textContent).join(' / ')`));
+  await tapText(".snav button", "Gym"); await c.sleep(1600);
+  c.log("GYM ROW", await c.js(`Math.round(document.querySelector('[data-card="gym"]').getBoundingClientRect().top)`));
+  // ⌘N: the box of a new to-do
+  c.wc.sendInputEvent({ type: "keyDown", keyCode: "N", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "N", modifiers: ["control"] }); await c.sleep(900);
+  c.log("CMD N", await c.js(`document.activeElement && document.activeElement.className`));
+  c.log("ERRORS", await errs());
+};
+
+// Health's backup (run with --fresh): Export with nothing of his own (and with test data only), then with a to-do of his
+// own, the file's name and what is in it; that file handed to Health's Import (empty after Clear test data and the to-do
+// removed: it must come back), then to the finance side's Import (it must go to Health), and a finance file to Health's.
+// The download is caught before a file is made (a real one would bring a save box up on his screen)
+const hbackup = async (c) => {
+  const say = () => c.js(`[...document.querySelectorAll('.bk-msg')].map((e) => e.textContent).join(' | ') || '(no message)'`);
+  const held = () => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null;
+    return v ? JSON.stringify({ todos: v.todos.map((t) => t.text + (t.test ? '*' : '')), steps: Object.keys(v.steps).length, classes: v.classes.length }) : 'nothing'; })()`);
+  const give = (json, name) => c.js(`(() => { const input = document.querySelector('input[type=file][accept="application/json,.json"]'); const dt = new DataTransfer();
+    dt.items.add(new File([${JSON.stringify(json)}], ${JSON.stringify(name)}, { type: 'application/json' })); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  const exportNow = async () => {
+    await c.js(`window.__saved = null; if (!window.__mkUrl) { window.__mkUrl = URL.createObjectURL; URL.createObjectURL = (b) => { window.__blob = b; return window.__mkUrl(b); }; }
+      HTMLAnchorElement.prototype.click = function () { const a = this; window.__blob.text().then((t) => { window.__saved = { name: a.download, text: t }; }); }; 0`);
+    await c.js(`document.querySelector('button[aria-label="Export"]').click()`); await c.sleep(900);
+    return c.js(`window.__saved`);
+  };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.press(".coin-unit"); await c.sleep(1100); await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  c.log("EMPTY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
+  await c.js(`document.querySelector('button[aria-label="Add test data"]').click()`); await c.sleep(1200);
+  c.log("TEST ONLY", JSON.stringify(await exportNow()), await say()); await c.sleep(3800);
+  await c.js(`(() => { const el = document.querySelector('.hl-add-t'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Pack the gym bag'); el.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.hl-plus').click(); return true; })()`);
+  await c.sleep(900);
+  const file = await exportNow();
+  const data = file && JSON.parse(file.text);
+  c.log("EXPORT", file && file.name, data && JSON.stringify({ app: data.app, todos: data.health.todos.map((t) => t.text), steps: Object.keys(data.health.steps).length, classes: data.health.classes.length, goal: data.health.goal, profile: data.health.profile.kg, tests: data.health.tests }));
+  await c.sleep(3800);
+  await c.js(`document.querySelector('button[aria-label="Clear test data"]').click()`); await c.sleep(900);
+  await c.js(`[...document.querySelectorAll('.hl-todo')].find((e) => e.textContent.includes('Pack the gym bag')).querySelector('.hl-x').click()`); await c.sleep(900);
+  c.log("CLEARED", await held());
+  await give(file.text, file.name); await c.sleep(1200);
+  c.log("IMPORTED HERE", await held(), "//", await say());
+  // home, into finance, and the same file handed to its Import
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = JSON.parse(localStorage.getItem(k)); v.todos = []; localStorage.setItem(k, JSON.stringify(v)); return true; })()`);
+  await give(file.text, file.name); await c.sleep(1400);
+  c.log("FROM FINANCE", await held(), "//", await say());
+  const fin = JSON.stringify({ spending: { "2026-10-20": [{ id: "e1", amount: 25000, desc: "kopi" }] }, incomes: {}, limits: {}, currency: "IDR", goals: [], debts: [] });
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  await c.press(".coin-unit"); await c.sleep(1100); await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3600);
+  await give(fin, "flow-pnl-export.json"); await c.sleep(1400);
+  c.log("FINANCE FILE", await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('pnl-calendar-idr')); return k ? JSON.stringify(JSON.parse(localStorage.getItem(k)).spending) : 'nothing'; })()`), "//", await say());
+};
+
+module.exports = { hbackup, health, fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

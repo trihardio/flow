@@ -49,7 +49,7 @@ protocol.registerSchemesAsPrivileged([
 // where Export puts a backup: Rassam's own folder beside the project, not Downloads, in a folder per side that is
 // picked from how the file's name begins
 const EXPORT_DIR = path.join(app.getPath("home"), "Documents", "misc", "react app", "Financial Tracker", "exports");
-const EXPORT_SIDES = { "pnl-export": "financial exports", "crypto-export": "crypto exports", "idx-export": "idx exports", "fx-export": "forex exports" };
+const EXPORT_SIDES = { "pnl-export": "financial exports", "crypto-export": "crypto exports", "idx-export": "idx exports", "fx-export": "forex exports", "health-export": "health exports" };
 // A file's name begins with the account's first name since 11 October 2026 ("rassam-pnl-export-11-10-2026.json": letters
 // and digits, then the side); one named the old way, with the side first, still finds its folder.
 // An export never replaces a file (11 October 2026: "it should have a (1) or (2) at the end so it doesnt replace the
@@ -82,7 +82,7 @@ app.setName("Flow");
    When that is the case the page is told (--flow-gfx-cold, read in preload.cjs) and builds them all before its opening
    plays (warmPrime in App.jsx); when it is done a note is left in that same folder, so it goes with the cache if the
    system clears it. The note names the system and the engine: a new one of either builds its programs anew. */
-const GFX_VER = `${os.release()}|${process.versions.electron}|2`;      // (the last figure: raised when the preparation draws more than it did, so it is gone through once more)
+const GFX_VER = `${os.release()}|${process.versions.electron}|3`;      // (the last figure: raised when the preparation draws more than it did, so it is gone through once more)
 const GFX_AI_MAX_MS = 30000;          // the page waits for the AI helper's one-time setup this long at most (it took 24s when measured)
 const gfxHome = (() => {
   if (process.platform !== "darwin") return "";
