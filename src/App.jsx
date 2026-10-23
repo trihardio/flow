@@ -9734,22 +9734,41 @@ const HlMini = ({ vals }) => (
    picks, for as many days as he says or with no end; each day's tick is its own. Taken off one day, it stays on the
    others. The box keeps what is typed to itself (memo, the page's ref), so typing redraws nothing behind it ---------- */
 const HL_REPS = [["once", "Once"], ["daily", "Every day"], ["weekdays", "Weekdays"], ["days", "Days"]];
+/* The day a new to-do is for (23 October 2026: "make me be able to add to do for future days"): the day on screen to
+   begin with, or today, tomorrow and the five days after them, or any later day from the date box. What is planned
+   for the days ahead stands under the list as "Coming up", and a press on one goes to its day */
+const hlRel = (k, today) => {
+  const n = hlDays(today, k);
+  return n === 0 ? "Today" : n === 1 ? "Tomorrow" : n > 1 && n < 7 ? `${DOW_FULL[hlDow(k)]} ${hlDate(k).getDate()}` : hlNice(k);      // (further off, with its month)
+};
+const HL_SOON = 8, HL_SOON_DAYS = 60;      // "Coming up" lists so many to-dos that start after the day on screen, this many days ahead at most
 const HlTodos = memo(({ todos, day, today, api }) => {
   const [text, setText] = useState("");
   const [rep, setRep] = useState("once");
   const [dows, setDows] = useState([]);
   const [len, setLen] = useState("");
+  const [when, setWhen] = useState(null);      // the day the next to-do is for; null: the day on screen
+  const [note, setNote] = useState(null);      // the day the last one was added for, when that is not the day on screen
   const [ask, setAsk] = useState(null);        // the repeating to-do whose × was pressed: only this day, or every day?
-  const box = useRef(null);
+  const box = useRef(null), noteTimer = useRef(0);
+  useEffect(() => { setWhen(null); }, [day]);
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+  const at = when || day;
+  const week = Array.from({ length: 7 }, (_, i) => hlAddDays(today, i));
+  const picks = day < today || day > week[6] ? [day, ...week] : week;
   const list = todos.filter((t) => hlOn(t, day));
   const done = list.filter((t) => t.done[day]).length;
+  const soon = todos.filter((t) => t.from > day && hlDays(day, t.from) <= HL_SOON_DAYS).sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)).slice(0, HL_SOON);
   const add = () => {
     const t = text.trim();
     if (!t) { nudge(box.current); return; }
     if (rep === "days" && !dows.length) return;
-    api.current.add({ text: t, rep, dows: rep === "days" ? dows : [], len: rep === "once" ? 0 : Math.min(3650, Number(len) || 0) });
+    api.current.add({ text: t, rep, dows: rep === "days" ? dows : [], len: rep === "once" ? 0 : Math.min(3650, Number(len) || 0), from: at });
     setText("");
+    clearTimeout(noteTimer.current);
+    if (at !== day) { setNote(at); noteTimer.current = setTimeout(() => setNote(null), 6000); }
   };
+  const forWord = at === today ? "today" : at === hlAddDays(today, 1) ? "tomorrow" : hlNice(at);
   return (
     <div className="hl-todos">
       <div className="hl-prog">
@@ -9785,8 +9804,18 @@ const HlTodos = memo(({ todos, day, today, api }) => {
           );
         })}
       </div>
+      {soon.length > 0 && (
+        <div className="hl-soon">
+          <span className="hl-cap">Coming up</span>
+          {soon.map((t, i) => (
+            <button key={t.id} className="hl-soon-row" style={{ animationDelay: `${i * 30}ms` }} onClick={() => api.current.pick(t.from)} title={`Go to ${hlNice(t.from)}`}>
+              <b>{hlRel(t.from, today)}</b><span>{t.text}</span>{t.rep !== "once" && <i>{hlRepWord(t)} from then</i>}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="hl-add">
-        <input ref={box} className="jr-in hl-add-t" placeholder={`Add a to-do for ${day === today ? "today" : hlNice(day)}…`} value={text} maxLength={200}
+        <input ref={box} className="jr-in hl-add-t" placeholder={`Add a to-do for ${forWord}…`} value={text} maxLength={200}
                onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
         <SlideSeg cls="hl-rep" value={rep} onPick={setRep} options={HL_REPS} />
         {rep === "days" && (
@@ -9803,6 +9832,22 @@ const HlTodos = memo(({ todos, day, today, api }) => {
             days</label>
         )}
         <button className="hl-plus" onClick={add} aria-label="Add the to-do" disabled={rep === "days" && !dows.length}><span className="msym">add</span></button>
+        <div className="hl-when">
+          <span className="hl-when-k">{rep === "once" ? "On" : "Starting"}</span>
+          <span className="jr-pick">
+            {picks.map((k) => <button key={k} className={`jr-chip${at === k ? " on" : ""}`} onClick={() => { setWhen(k); box.current?.focus(); }}>{hlRel(k, today)}</button>)}
+            <label className={`jr-chip hl-when-date${picks.includes(at) ? "" : " on"}`} title="Another day">
+              <span className="msym">calendar_month</span>{picks.includes(at) ? "Other day" : hlNice(at)}
+              <input type="date" min={today} value={at} aria-label="Another day" onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) { /* the picker opens by itself */ } }}
+                     onChange={(e) => { const k = e.target.value; if (hlDayOk(k)) { setWhen(k); box.current?.focus(); } }} />
+            </label>
+          </span>
+          <Linger on={note} show={(out, k) => (
+            <span key={k} className={`bk-msg hl-when-note${out ? " out" : ""}`}>
+              Added for {hlNice(k)}{!out && <button className="bk-btn" onClick={() => { setNote(null); api.current.pick(k); }}>Show</button>}
+            </span>
+          )} />
+        </div>
       </div>
     </div>
   );
@@ -17860,6 +17905,23 @@ export default function PnlCalendar() {
                    border: 1px solid rgba(79,179,255,0.4); background: rgba(79,179,255,0.14); color: #a8e1ff; transition: background .18s ease, opacity .18s ease; }
         .hl-plus:hover:not(:disabled) { background: rgba(79,179,255,0.24); }
         .hl-plus:disabled { opacity: 0.35; cursor: default; }
+        /* the day a new to-do is for, and what is planned for the days ahead */
+        .hl-when { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .hl-when-k { font-size: 12.5px; color: #8e969e; min-width: 56px; }
+        .hl-when-date { position: relative; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+        .hl-when-date .msym { font-size: 15px; }
+        .hl-when-date input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; color-scheme: dark; }
+        .hl-when-date input::-webkit-calendar-picker-indicator { position: absolute; inset: 0; width: auto; height: auto; opacity: 0; cursor: pointer; }
+        .hl-when-note { display: inline-flex; align-items: center; gap: 8px; color: #a8e1ff; }
+        .hl-when-note .bk-btn { height: 24px; padding: 0 9px; font-size: 11px; }
+        .hl-soon { display: flex; flex-direction: column; gap: 3px; margin-top: 12px; }
+        .hl-soon .hl-cap { margin-bottom: 4px; }
+        .hl-soon-row { display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 7px 10px; border: none; border-radius: 10px; background: rgba(79,179,255,0.04);
+                       text-align: left; cursor: pointer; color: #c7cdd2; font-size: 13px; animation: fadeRight .32s ease backwards; transition: background .18s ease; }
+        .hl-soon-row:hover { background: rgba(79,179,255,0.09); }
+        .hl-soon-row b { width: 86px; flex: none; font-weight: 700; color: #a8e1ff; }
+        .hl-soon-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .hl-soon-row i { font-style: normal; font-size: 11.5px; color: #8e969e; white-space: nowrap; }
         /* the week: a timetable, the hours down the side */
         .hl-tt { --hh: 46px; }
         .hl-tt-head { display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }

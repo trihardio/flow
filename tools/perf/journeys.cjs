@@ -1568,5 +1568,40 @@ const hphone = async (c) => {
   c.log("NO FILE", await say());
 };
 
-module.exports = { hphone, hbackup, health, fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// To-dos for days ahead (23 October 2026; run with --shots --fresh): one for tomorrow, one for a day ten days on picked in
+// the date box, what was saved, "Coming up", its Show and a row of it pressed (the day on screen), and a repeating one
+// starting on a later day
+const hfuture = async (c) => {
+  const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const type = (sel, v) => c.js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)}); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  const tap = (sel, text) => c.js(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
+  const saved = () => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null; return v ? JSON.stringify(v.todos.map((t) => t.text + ' @' + t.from + ' ' + t.rep)) : 'nothing'; })()`);
+  const shown = () => c.js(`JSON.stringify({ title: document.querySelector('.hl-page .month-btn')?.textContent, rows: [...document.querySelectorAll('.hl-todo .hl-todo-t')].map((e) => e.textContent),
+    soon: [...document.querySelectorAll('.hl-soon-row')].map((e) => e.innerText.replace(/\\s+/g, ' ')), ph: document.querySelector('.hl-add-t').placeholder, on: [...document.querySelectorAll('.hl-when .jr-chip.on')].map((e) => e.textContent) })`);
+  try { c.wc.debugger.attach("1.3"); await c.wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); } catch (e) { c.log("no focus emulation", e.message); }
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3800);
+  await c.js(`document.querySelector('[data-card="to-do"]').scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1800);
+  c.log("START", await shown());
+  await tap(".hl-when .jr-chip", "Tomorrow"); await c.sleep(300);
+  await type(".hl-add-t", "Buy a birthday present"); await c.js(`document.querySelector('.hl-plus').click()`); await c.sleep(900);
+  c.log("TOMORROW", await saved(), "//", await shown());
+  if (c.shots) await c.shot("future-added", await c.js(`(() => { const r = document.querySelector('[data-card="to-do"]').getBoundingClientRect(); return { x: Math.round(r.left), y: Math.max(0, Math.round(r.top)), width: Math.round(r.width), height: Math.round(Math.min(innerHeight - r.top, r.height)) }; })()`));
+  await c.js(`(() => { const el = document.querySelector('.hl-when-date input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(day(10))}); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await c.sleep(300);
+  await type(".hl-add-t", "Renew the student card"); await c.js(`document.querySelector('.hl-plus').click()`); await c.sleep(900);
+  c.log("TEN DAYS", await saved(), "//", await shown());
+  await tap(".hl-rep button", "Every day"); await tap(".hl-when .jr-chip", "Tomorrow"); await c.sleep(300);
+  await type(".hl-add-t", "Walk to campus"); await c.js(`document.querySelector('.hl-plus').click()`); await c.sleep(900);
+  c.log("REPEATING", await saved(), "//", await shown());
+  await tap(".hl-when-note .bk-btn", "Show"); await c.sleep(1400);
+  c.log("SHOW", await shown());
+  if (c.shots) await c.shot("future-tomorrow", await c.js(`(() => { const r = document.querySelector('[data-card="to-do"]').getBoundingClientRect(); return { x: Math.round(r.left), y: Math.max(0, Math.round(r.top)), width: Math.round(r.width), height: Math.round(Math.min(innerHeight - r.top, r.height)) }; })()`));
+  await tap(".hl-soon-row", "Renew"); await c.sleep(1400);
+  c.log("SOON ROW", await shown());
+};
+
+module.exports = { hfuture, hphone, hbackup, health, fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };
