@@ -9444,7 +9444,7 @@ const HL_LIFTS = ["Bench press", "Incline bench press", "Overhead press", "Later
   "Pull-up", "Lat pulldown", "Barbell row", "Seated row", "Face pull", "Biceps curl", "Hammer curl", "Deadlift", "Romanian deadlift",
   "Squat", "Front squat", "Leg press", "Leg curl", "Leg extension", "Hip thrust", "Calf raise", "Lunge", "Plank", "Treadmill", "Cycling"];
 const hlBlank = () => ({ version: 1, profile: { cm: 0, kg: 0, age: 21, sex: "m", act: 1.375, steps: HL_SEE.steps, move: HL_SEE.move },
-  goal: null, weights: {}, steps: {}, typed: {}, food: {}, todos: [], classes: [], gym: [], board: [], tests: { steps: {}, weights: {}, profile: 0 } });
+  goal: null, weights: {}, steps: {}, typed: {}, food: {}, todos: [], classes: [], gym: [], board: [], tests: { steps: {}, weights: {}, profile: 0 }, phone: null });
 const hlNum = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
 const hlDayOk = (k) => typeof k === "string" && /^\d{4}-\d{2}-\d{2}$/.test(k);
 const hlTimeOk = (t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
@@ -9485,6 +9485,8 @@ const cleanHealth = (d) => {
     ex: (Array.isArray(s.ex) ? s.ex : []).filter((e) => e && hlText(e.name, 60).trim()).slice(0, 30).map((e) => ({
       name: hlText(e.name, 60), sets: (Array.isArray(e.sets) ? e.sets : []).slice(0, 30).map((x) => ({ kg: hlNum(x && x.kg, 0, 1000) || 0, reps: hlNum(x && x.reps, 0, 1000) || 0 })) })),
     ...(s.src === "apple" ? { src: "apple", kcal: hlNum(s.kcal, 0, 10000) || 0 } : {}), ...test(s) }));
+  const ph = d.phone;     // the iPhone's file last taken in: when it was saved, how many days it held, its last day
+  if (ph && hlNum(ph.at, 1, 1e14)) b.phone = { at: +ph.at, days: hlNum(ph.days, 0, 400) || 0, to: hlDayOk(ph.to) ? ph.to : "" };
   b.board = (Array.isArray(d.board) ? d.board : []).filter((c) => c && c.id && (c.kind === "note" || (c.kind === "pic" && shotIdOk(c.img)))).slice(0, 200).map((c) => ({
     id: String(c.id), kind: c.kind, x: hlNum(c.x, 0, 4000) || 0, y: hlNum(c.y, 0, 4000) || 0, w: hlNum(c.w, 120, 640) || 220, z: hlNum(c.z, 0, 1e9) || 0,
     text: hlText(c.text, 2000), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
@@ -9580,6 +9582,55 @@ const hlAppleRead = async (file, tell) => {
   for (const day in bySrc) steps[day] = Math.round(Math.max(...Object.values(bySrc[day])));
   const days = Object.keys(steps).sort();
   return { steps, weights, days: days.length, from: days[0], to: days[days.length - 1] };
+};
+/* ---------- Health from the iPhone, every day by itself (23 October 2026: "is it possible to automatically import from
+   my iphone"). Apple keeps Health data on the iPhone and the watch only, so a Shortcut there saves the last 7 days of
+   steps and the latest weight as flow-health.txt in iCloud Drive every day (how: HL_PHONE_STEPS), and the Mac app reads
+   that file (window.flowHealth, electron/main.cjs): a file on the disk, no request. One line a day, "2026-10-23;6240",
+   and "weight;2026-10-23;90,2;kg". Read leniently: the phone writes numbers its own way (6.240 or 6,240 for steps,
+   90,2 for a weight), and a line it can't read is passed over ---------- */
+// a number as a phone may write it. whole: a count, where a lone . or , between groups of three can only be a thousands mark
+const hlNumText = (s, whole) => {
+  const m = /-?\d[\d.,]*/.exec(String(s).replace(/[\s\u00a0\u202f']/g, ""));
+  if (!m) return NaN;
+  let t = m[0].replace(/[.,]$/, "");
+  const dot = t.lastIndexOf("."), com = t.lastIndexOf(",");
+  if (dot >= 0 && com >= 0) t = dot > com ? t.replace(/,/g, "") : t.replace(/\./g, "").replace(",", ".");
+  else if (/^-?\d{1,3}([.,]\d{3})+$/.test(t) && (whole || /[.,].*[.,]/.test(t))) t = t.replace(/[.,]/g, "");
+  else t = t.replace(",", ".");
+  return Number(t);
+};
+// the day of a line: 2026-10-23 as it stands, or a moment with its zone (2026-10-22T17:00:00Z) on this Mac's calendar
+const hlPhoneDay = (s) => {
+  const m = /(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?)?/.exec(String(s));
+  if (!m) return null;
+  if (m[6]) {
+    const zone = m[6] === "Z" ? "Z" : `${m[6].slice(0, 3)}:${m[6].slice(-2)}`, d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00${zone}`);
+    return Number.isNaN(+d) ? null : hlKey(d);
+  }
+  const k = `${m[1]}-${m[2]}-${m[3]}`, d = hlDate(k);
+  return !Number.isNaN(+d) && hlKey(d) === k ? k : null;
+};
+// { steps: { day: n }, weights: { day: kg }, days, from, to }, or null when there is nothing in it. Lines of one day add up
+// (the shortcut groups them by day; without that a day comes in pieces)
+const hlPhoneRead = (text) => {
+  if (typeof text !== "string") return null;
+  const steps = {}, weights = {};
+  for (const raw of text.slice(0, 400000).split(/\r?\n/)) {
+    const parts = raw.split(";").map((x) => x.trim());
+    if (/^weight$/i.test(parts[0])) {
+      const day = hlPhoneDay(parts[1] || ""), v = hlNumText(parts[2] || "", false), unit = (parts[3] || "kg").toLowerCase();
+      const kg = /lb|pound/.test(unit) ? v * 0.453592 : /st/.test(unit) ? v * 6.35029 : v;
+      if (day && kg >= 25 && kg <= 400) weights[day] = Math.round(kg * 10) / 10;
+      continue;
+    }
+    if (parts.length < 2) continue;
+    const day = hlPhoneDay(parts[0]), n = hlNumText(parts[1], true);
+    if (day && n >= 0 && n <= 200000) steps[day] = Math.min(200000, (steps[day] || 0) + Math.round(n));
+  }
+  const days = Object.keys(steps).sort();
+  if (!days.length && !Object.keys(weights).length) return null;
+  return { steps, weights, days: days.length, from: days[0] || "", to: days[days.length - 1] || "" };
 };
 
 /* ---------- health: what the page shows, worked out from the data ---------- */
@@ -9824,9 +9875,31 @@ const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
   );
 });
 
+// the Mac app hands the iPhone's file over (a plain browser has no such thing, and shows none of it)
+const HL_PHONE_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.phone);
+const HL_PHONE_MS = 5 * 60000;          // while Health is open, the file is looked at again this often (and when the window comes back)
+// how to make the shortcut and its automation, as the Activity card shows it (the same as was written to him)
+const HL_PHONE_STEPS = [
+  ["Make the shortcut", <>In the Shortcuts app on your iPhone, tap <b>+</b> and name it <b>Flow steps</b>.</>],
+  ["Steps of the last 7 days", <>Add <b>Find Health Samples</b>: Type is <b>Steps</b>. Tap Add Filter: <b>Start Date</b> is <b>in the last 7 days</b>. Group By: <b>Day</b>.</>],
+  ["One line a day", <>Add <b>Repeat with Each</b>. Inside it add <b>Text</b> and fill it with: <b>Repeat Item</b> (tap it, choose <b>Start Date</b>, Date Format <b>Custom</b>: <code>yyyy-MM-dd</code>), then <code>;</code>, then <b>Repeat Item</b> again, choosing <b>Value</b>.</>],
+  ["Put the lines together", <>After End Repeat add <b>Combine Text</b>: Repeat Results, with <b>New Lines</b>.</>],
+  ["Your latest weight", <>Add <b>Find Health Samples</b>: Type is <b>Weight</b>, Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit <b>1</b>.</>],
+  ["The file", <>Add <b>Text</b> with three lines: <code>flow-health</code> · <b>Combined Text</b> · <code>weight;</code> Start Date <code>;</code> Value <code>;</code> Unit (each from the weight's Health Samples, the date as <code>yyyy-MM-dd</code> again).</>],
+  ["Save it in iCloud Drive", <>Add <b>Save File</b>: turn off Ask Where to Save, folder <b>Shortcuts</b>, Subpath <code>flow-health.txt</code>, turn on <b>Overwrite If File Exists</b>. Run it once and allow Health.</>],
+  ["Every day by itself", <>In <b>Automation</b>, tap <b>+</b>, <b>Time of Day</b>, e.g. 22:00 Daily, <b>Run Immediately</b>, then choose Flow steps. Pick a time you usually have the phone in hand: a locked iPhone keeps Health locked too.</>],
+  ["On this Mac", <>iCloud Drive on (System Settings, your name, iCloud). Flow reads the file when Health opens, and every few minutes while it is open.</>],
+];
+// when the phone saved its file: "today, 22:00", "Thu 22 Oct, 22:00"
+const hlWhen = (at) => {
+  const d = new Date(at), k = hlKey(d), t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return k === hlKey(new Date()) ? `today, ${t}` : `${hlNice(k)}, ${t}`;
+};
+
 /* ---------- health: activity. The day's steps (typed, or taken from an Apple Health export), the last two weeks as
    bars against the goal, and the month as rings, Apple's activity history ---------- */
-const HlActivity = memo(({ h, day, today, api }) => {
+const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
+  const [how, setHow] = useState(false);         // the steps that set up the iPhone's shortcut, unfolded
   const [busy, setBusy] = useState(null);        // the share of the export read so far, while it is being read
   const [said, setSaid] = useState("");
   const file = useRef(null);
@@ -9901,6 +9974,22 @@ const HlActivity = memo(({ h, day, today, api }) => {
         </div>
       </div>
       <div className="hl-apple">
+        {HL_PHONE_OK && (
+          <>
+            <div className="hl-phone">
+              <span className={`hl-phone-dot${h.phone ? " on" : ""}`} />
+              <span className="hl-phone-t">{h.phone ? <>From your iPhone: <b>{h.phone.days} day{h.phone.days === 1 ? "" : "s"}</b>, saved {hlWhen(h.phone.at)}</> : <>Steps from your iPhone, <b>every day by itself</b></>}</span>
+              <button className="bk-btn" onClick={() => api.current.phoneNow()}><span className="msym">sync</span>Check now</button>
+              <button className="bk-btn" onClick={() => setHow((v) => !v)}>{how ? "Hide the steps" : h.phone ? "The steps" : "How to set it up"}</button>
+              <Linger on={phoneSaid || null} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+            </div>
+            {how && (
+              <ol className="hl-how">
+                {HL_PHONE_STEPS.map(([name, say]) => <li key={name}><b>{name}.</b> {say}</li>)}
+              </ol>
+            )}
+          </>
+        )}
         <button className="bk-btn" onClick={() => file.current?.click()} disabled={busy !== null}>
           <span className="msym">ios_share</span>{busy !== null ? `Reading… ${Math.round(busy * 100)}%` : "Import from Apple Health"}
         </button>
@@ -10447,11 +10536,48 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
     })();
   }, []);
   useWarmScreen(entering ? null : "health-day");
+  // the iPhone's file (hlPhoneRead): a file already taken in (saved at the same moment) is passed over; days whose steps
+  // he typed himself keep them, as with the Apple Health import
+  const [phoneSaid, setPhoneSaid] = useState("");
+  const phoneTimer = useRef(0);
+  const sayPhone = (m) => { clearTimeout(phoneTimer.current); setPhoneSaid(m); phoneTimer.current = setTimeout(() => setPhoneSaid(""), 4200); };
+  const phoneCheck = useRef(null);
+  phoneCheck.current = async (asked) => {
+    if (!HL_PHONE_OK) return;
+    let f = null;
+    try { f = await window.flowHealth.phone(); } catch (e) { f = null; }
+    if (!f || typeof f.text !== "string" || !(f.at > 0)) { if (asked) sayPhone("No file from the iPhone yet: run the shortcut once"); return; }
+    if (hRef.current.phone && hRef.current.phone.at === f.at) { if (asked) sayPhone("Up to date"); return; }
+    const got = hlPhoneRead(f.text);
+    if (!got) { if (asked) sayPhone("Nothing could be read from the iPhone's file: is the date set to yyyy-MM-dd?"); return; }
+    const now = hlKey(new Date());
+    up((x) => {
+      const steps = { ...x.steps }, weights = { ...x.weights }, ts = { ...x.tests.steps }, tw = { ...x.tests.weights };
+      for (const k in got.steps) {
+        if (k > now || x.typed[k]) continue;
+        if (got.steps[k] > 0) steps[k] = got.steps[k]; else delete steps[k];
+        delete ts[k];
+      }
+      for (const k in got.weights) { if (k <= now) { weights[k] = got.weights[k]; delete tw[k]; } }
+      return { ...x, steps, weights, tests: { ...x.tests, steps: ts, weights: tw }, phone: { at: f.at, days: got.days, to: got.to } };
+    });
+    if (asked) sayPhone(`Updated: ${got.days} day${got.days === 1 ? "" : "s"} from your iPhone`);
+  };
+  useEffect(() => {
+    if (!loaded || !HL_PHONE_OK) return;
+    phoneCheck.current(false);
+    const again = () => { if (document.visibilityState === "visible") phoneCheck.current(false); };
+    const t = setInterval(again, HL_PHONE_MS);
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("focus", again);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", again); window.removeEventListener("focus", again); clearTimeout(phoneTimer.current); };
+  }, [loaded]);
 
   /* ---------- everything a card can change, as one ref: the cards are memo'd and redraw only when what they show changes ---------- */
   const api = useRef(null);
   api.current = {
     pick: (k) => setDay(k),
+    phoneNow: () => phoneCheck.current(true),
     add: (f) => up((x) => ({ ...x, todos: [...x.todos, { id: uid(), from: day, done: {}, skip: {}, ...f }] })),
     toggle: (id) => up((x) => ({ ...x, todos: x.todos.map((t) => {
       if (t.id !== id) return t;
@@ -10680,7 +10806,7 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
           <HlWeek classes={h.classes} todayDow={todayDow} nowMin={nowMin} api={api} />
         </FoldCard>
         <FoldCard name="activity" title="Activity" sub={`${hlFmt(dd.steps)} of ${hlFmt(p.steps)} steps`}>
-          <HlActivity h={h} day={day} today={today} api={api} />
+          <HlActivity h={h} day={day} today={today} api={api} phoneSaid={phoneSaid} />
         </FoldCard>
         <FoldCard name="body" title="Body" sub={kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)}` : ""}>
           <HlBody profile={p} kg={kg} api={api} />
@@ -17809,8 +17935,19 @@ export default function PnlCalendar() {
         .hl-mday.today i { color: #a8e1ff; font-weight: 700; }
         .hl-mday.later { opacity: 0.3; cursor: default; }
         .hl-apple { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
-        .hl-apple > .bk-btn { height: 32px; padding: 0 13px; font-size: 12px; }
         .hl-apple .info-tip { left: auto; right: -140px; }
+        .hl-phone { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+        .hl-phone-dot { width: 8px; height: 8px; border-radius: 99px; background: #5b636b; flex: none; transition: background .3s ease, box-shadow .3s ease; }
+        .hl-phone-dot.on { background: #2fd08a; box-shadow: 0 0 9px rgba(47,208,138,0.6); }
+        .hl-phone-t { font-size: 12.5px; color: #aab1b8; }
+        .hl-phone-t b { color: #eef1f4; font-weight: 700; }
+        .hl-phone .bk-btn, .hl-apple > .bk-btn { height: 32px; padding: 0 13px; font-size: 12px; }
+        .hl-how { flex: 1 1 100%; margin: 0; padding: 12px 16px 12px 34px; border-radius: 12px; background: rgba(255,255,255,0.035); display: flex; flex-direction: column; gap: 7px;
+                  font-size: 12.5px; line-height: 1.55; color: #aab1b8; animation: hlFormIn .3s var(--ease) backwards; }
+        .hl-how li::marker { color: #6f777f; font-weight: 700; }
+        .hl-how b { color: #eef1f4; font-weight: 600; }
+        .hl-how li > b:first-child { color: #9cf0c8; }
+        .hl-how code { padding: 1px 6px; border-radius: 5px; background: rgba(255,255,255,0.08); color: #eef1f4; font-size: 12px; }
         .hl-read { width: 160px; height: 5px; border-radius: 5px; background: rgba(255,255,255,0.08); overflow: hidden; }
         .hl-read i { display: block; height: 100%; background: #2fd08a; transform-origin: 0 50%; transition: transform .2s linear; }
         /* body */

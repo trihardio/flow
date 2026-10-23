@@ -1531,5 +1531,42 @@ const hbackup = async (c) => {
   c.log("FINANCE FILE", await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('pnl-calendar-idr')); return k ? JSON.stringify(JSON.parse(localStorage.getItem(k)).spending) : 'nothing'; })()`), "//", await say());
 };
 
-module.exports = { hbackup, health, fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// Steps from the iPhone (23 October 2026; run with --shots --fresh): the file the iPhone's shortcut saves, handed over as
+// the Mac app would (window.__phone, see tools/perf/preload.cjs): taken in as Health opens, a day typed by hand that the
+// next file leaves alone, Check now with nothing new and with a newer file, and the setup's steps unfolded
+const hphone = async (c) => {
+  const day = (back) => { const d = new Date(); d.setDate(d.getDate() - back); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const file = (n) => ["flow-health", ...[6, 5, 4, 3, 2, 1, 0].map((b) => `${day(b)};${n + b * 1000}`), `weight;${day(0)};89,6;kg`].join("\n");
+  const held = () => c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null;
+    return v ? JSON.stringify({ steps: Object.entries(v.steps).sort().map(([d, n]) => d.slice(5) + ':' + n).join(' '), typed: Object.keys(v.typed), weights: v.weights, phone: v.phone }) : 'nothing'; })()`);
+  const say = () => c.js(`[...document.querySelectorAll('.hl-apple .bk-msg')].map((e) => e.textContent).join(' | ') || '(no message)'`);
+  const row = () => c.js(`document.querySelector('.hl-phone-t')?.textContent || 'no phone row'`);
+  try { c.wc.debugger.attach("1.3"); await c.wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); } catch (e) { c.log("no focus emulation", e.message); }
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`window.__phone = { text: ${JSON.stringify(file(5000))}, at: Date.now() - 3600000 }; 0`);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3800);
+  c.log("OPENED", await held(), "//", await row());
+  // a day typed by hand: the phone's next file leaves it alone
+  await c.js(`document.querySelector('[data-card="activity"]').scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1600);
+  await c.js(`(() => { const el = document.querySelector('.hl-steps-in input'); el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '4321'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); return true; })()`);
+  await c.sleep(600);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(700);
+  c.log("SAME FILE", await say());
+  await c.sleep(4600);
+  await c.js(`window.__phone = { text: ${JSON.stringify(file(7000))}, at: Date.now() }; 0`);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(900);
+  c.log("NEWER FILE", await held(), "//", await say(), "//", await row());
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => /steps|set it up/.test(b.textContent)).click()`); await c.sleep(900);
+  c.log("HOW", await c.js(`[...document.querySelectorAll('.hl-how li')].map((e) => e.textContent.slice(0, 40)).join(' / ')`));
+  await c.js(`document.querySelector('.hl-apple').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(1200);
+  if (c.shots) await c.shot("phone", await c.js(`(() => { const r = document.querySelector('.hl-apple').getBoundingClientRect(); return { x: Math.round(r.left - 20), y: Math.max(0, Math.round(r.top - 20)), width: Math.round(r.width + 40), height: Math.round(Math.min(innerHeight - r.top + 20, r.height + 40)) }; })()`));
+  // no file at all
+  await c.js(`window.__phone = null; 0`);
+  await c.js(`[...document.querySelectorAll('.hl-phone .bk-btn')].find((b) => b.textContent.includes('Check now')).click()`); await c.sleep(700);
+  c.log("NO FILE", await say());
+};
+
+module.exports = { hphone, hbackup, health, fixes, polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

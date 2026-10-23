@@ -61,6 +61,26 @@ const freeName = (dir, name) => {
   return out;
 };
 const exportSide = (name) => { const m = new RegExp(`^(?:[a-z0-9]+-)?(${Object.keys(EXPORT_SIDES).join("|")})-`).exec(name); return m ? EXPORT_SIDES[m[1]] : null; };
+/* Health from the iPhone (23 October 2026: "is it possible to automatically import from my iphone"). Apple keeps Health
+   data on the iPhone and the watch only, so a Shortcut there saves the last days of steps and the weight as
+   flow-health.txt in iCloud Drive every day (its steps are HL_PHONE_STEPS in App.jsx), and iCloud brings the file to this
+   Mac. This only reads a file on the disk: no request is made. The newest of the places it can be in wins: the Shortcuts
+   folder (where the shortcut's Save File puts it), or iCloud Drive itself, or a Flow folder in it. */
+const PHONE_FILE = "flow-health.txt";
+const PHONE_DIRS = ["Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents", "Library/Mobile Documents/com~apple~CloudDocs/Shortcuts",
+                    "Library/Mobile Documents/com~apple~CloudDocs/Flow", "Library/Mobile Documents/com~apple~CloudDocs"];
+const phoneRead = async () => {
+  let best = null;
+  for (const dir of PHONE_DIRS) {
+    const file = path.join(os.homedir(), dir, PHONE_FILE);
+    try {
+      const st = await fs.promises.stat(file);
+      if (st.isFile() && st.size < 400000 && (!best || st.mtimeMs > best.at)) best = { file, at: Math.round(st.mtimeMs) };
+    } catch (e) { /* not there */ }
+  }
+  if (!best) return null;
+  try { return { text: await fs.promises.readFile(best.file, "utf8"), at: best.at }; } catch (e) { return null; }
+};
 const DATA_DIR = path.join(app.getPath("appData"), "flow");
 const OLD_DATA_DIR = path.join(app.getPath("appData"), "trace");
 const hasData = (dir) => fs.existsSync(path.join(dir, "Local Storage"));
@@ -397,6 +417,7 @@ app.whenReady().then(() => {
   ipcMain.handle("ai:pick", (e, kind, text, labels) => aiPick(kind, text, labels));
   ipcMain.handle("fx:rates", () => fetchRates());
   ipcMain.handle("fx:quote", (e, market, symbol) => fetchQuote(market, symbol));
+  ipcMain.handle("health:phone", () => phoneRead());
   ipcMain.handle("gfx:settle", () => aiReady);
   ipcMain.on("gfx:primed", gfxPrimed);
 

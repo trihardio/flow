@@ -1,6 +1,8 @@
 // Lag hunting (see run.cjs): the app's bridges, answering nothing, and a frame log that starts before the page's script.
 window.flowAI = { pick: () => Promise.resolve(null) };
 window.flowFX = { rates: () => Promise.resolve(null), quote: () => Promise.resolve(null) };
+// the iPhone's Health file: whatever a journey has put in window.__phone ({ text, at }), else none
+window.flowHealth = { phone: () => Promise.resolve(window.__phone || null) };
 const P = (window.__perf = { frames: [], marks: [], warmed: [] });
 // --cold: the app is told the system's cache of graphics programs is empty, as on the installed app's first launch
 if (process.argv.includes("--flow-gfx-cold")) window.flowGfx = { cold: true, settle: () => Promise.resolve(), primed: () => { P.primed = Math.round(performance.now()); } };

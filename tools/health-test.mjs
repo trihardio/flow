@@ -17,7 +17,7 @@ const rest = block("const HL_KEY = ", "/* ---------- Apple Health:");
 const apple = block("/* ---------- Apple Health:", "/* ---------- health: what the page shows");
 const shotIdOk = (id) => typeof id === "string" && /^(hl-|ph:)[\w-]{1,60}$/.test(id);
 const H = new Function("shotIdOk", `${maths}\n${rest}\n${apple}\nreturn { hlBmi, hlBand, hlHealthy, hlBmr, hlStepKcal, hlStepKm, hlPlan, hlPlanAt, hlAddMonths, hlAddDays, hlDays, hlDow,
-  hlOn, hlRun, hl1rm, hlVolume, cleanHealth, hlOwn, hlBlank, HL_EMPTY, hlAppleRead, HL_FLOOR };`)(shotIdOk);
+  hlOn, hlRun, hl1rm, hlVolume, cleanHealth, hlOwn, hlBlank, HL_EMPTY, hlAppleRead, HL_FLOOR, hlPhoneRead, hlNumText, hlPhoneDay, hlKey };`)(shotIdOk);
 
 let fails = 0, checks = 0;
 const quiet = process.argv.includes("--quiet");
@@ -167,6 +167,23 @@ const zip = (files) => {
 is("export.zip, packed", await H.hlAppleRead(zip([["apple_health_export/export_cda.xml", "<ClinicalDocument/>", true], ["apple_health_export/export.xml", xml, true]])), want);
 is("export.zip, stored", await H.hlAppleRead(zip([["apple_health_export/export.xml", xml, false]])), want);
 is("a zip without export.xml", await H.hlAppleRead(zip([["notes.txt", "hello", true]])), null);
+
+console.log("7. the file the iPhone's shortcut saves");
+is("steps as a phone may write them", ["6240", "6.240", "6,240", "6 240", "6240.0", "6,240.5", "6.240,5", "12.345.678", "6240 steps"].map((x) => H.hlNumText(x, true)),
+   [6240, 6240, 6240, 6240, 6240, 6240.5, 6240.5, 12345678, 6240]);
+is("a weight as a phone may write it", ["90,2", "90.2", "90", "198.4", "1.234,5"].map((x) => H.hlNumText(x, false)), [90.2, 90.2, 90, 198.4, 1234.5]);
+is("days: as written, or a moment with its zone on this Mac's calendar", ["2026-10-23", "  2026-10-23 ", "2026-02-30", "23/10/2026", "2026-10-22T23:30:00Z"].map(H.hlPhoneDay),
+   ["2026-10-23", "2026-10-23", null, null, H.hlKey(new Date("2026-10-22T23:30:00Z"))]);
+const file = ["flow-health", "2026-10-17;6240", "2026-10-18;9.120", "2026-10-19;11,034", "2026-10-20;0", "2026-10-21;7400", "2026-10-21;600", "rubbish", "2026-10-22;", "",
+              "weight;2026-10-23;90,2;kg"].join("\n");
+is("a week from the phone", H.hlPhoneRead(file),
+   { steps: { "2026-10-17": 6240, "2026-10-18": 9120, "2026-10-19": 11034, "2026-10-20": 0, "2026-10-21": 8000 }, weights: { "2026-10-23": 90.2 }, days: 5, from: "2026-10-17", to: "2026-10-21" });
+is("the weight in pounds, and in stone", [H.hlPhoneRead("weight;2026-10-23;198.4;lb").weights, H.hlPhoneRead("weight;2026-10-23;14.2;st").weights],
+   [{ "2026-10-23": 90 }, { "2026-10-23": 90.2 }]);
+is("written with Windows line ends", H.hlPhoneRead("flow-health\r\n2026-10-23;5000\r\n").steps, { "2026-10-23": 5000 });
+is("no weight found that day: the line is passed over", H.hlPhoneRead("flow-health\n2026-10-23;5000\nweight;;;").weights, {});
+is("nothing readable", [H.hlPhoneRead("flow-health\nweight;;;"), H.hlPhoneRead(""), H.hlPhoneRead(null), H.hlPhoneRead("23/10/2026;5000")], [null, null, null, null]);
+is("a step count out of range is passed over", H.hlPhoneRead("2026-10-23;-5\n2026-10-22;900000\n2026-10-21;12").steps, { "2026-10-21": 12 });
 
 console.log(`\n${checks - fails} of ${checks} checks pass${fails ? `, ${fails} FAIL` : ""}`);
 process.exit(fails ? 1 : 0);
