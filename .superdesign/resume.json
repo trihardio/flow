@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "finance-month-top": {
+      "targetKind": "existing-ui",
+      "projectId": "df8b2a06-c734-4f77-8248-97adef68662a",
+      "baselineDraftId": "6fdfa5fa-ca2f-40d9-9249-b560eabecefc",
+      "activeDraftId": "b71049df-6f5d-42b0-895b-7780bbc36c78",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [
+        "7cf88b5d-5442-4e9d-957e-8ae6c1e10332"
+      ],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/tmp/finance-month-top.jsx",
+        ".superdesign/tmp/finance-month.jsx",
+        ".superdesign/tmp/finance-month.css",
+        ".superdesign/tmp/finance-month-glass.css"
+      ],
+      "sourceOfContext": {
+        "src/App.jsx": "the four files in .superdesign/tmp are line ranges cut out of it (the service takes 50,000 characters a file): see .superdesign/init/pages.md",
+        "sha256": "7ec500ce592e1af48f198b6ef577327d21d338dea2ba67c27c7d8f6ad39d92a9"
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "00054ca32b27a27942560bc9e70f7de7af7d79615c83b072df95a5aeb2790b45",
+        ".superdesign/tmp/finance-month-top.jsx": "c687d684069d641bc5f87e6fb2fef0e91a039a0318e31661e37459c19562155b",
+        ".superdesign/tmp/finance-month.jsx": "fcfa6840e71763e9edccaf65547f67a6a4f5c448aa381b58272f977a9c929d4f",
+        ".superdesign/tmp/finance-month.css": "7f144fe9926e90cb048889d3c1670cecb26076c888062a0d6e2c94bd4d7102b8",
+        ".superdesign/tmp/finance-month-glass.css": "124f2d4bc02dd5e571386f0327a4473ab5cd327fb9a3e55cf4f977a6585aa012"
+      },
+      "components": [],
+      "drafts": {
+        "6fdfa5fa-ca2f-40d9-9249-b560eabecefc": {
+          "title": "Current finance month (faithful reproduction)",
+          "visualDirection": "as the app is",
+          "currentVersion": 1
+        },
+        "b71049df-6f5d-42b0-895b-7780bbc36c78": {
+          "title": "Calmer day tiles",
+          "visualDirection": "neutral tiles with a fill level, the difference to the limit as the one figure, the limit said once",
+          "parentDraftId": "6fdfa5fa-ca2f-40d9-9249-b560eabecefc",
+          "currentVersion": 1
+        },
+        "d70824d5-3824-4737-a1b3-0872cb77225b": {
+          "title": "One verdict in the hero",
+          "visualDirection": "one joining sentence under the figure, the four tiles as an unframed row",
+          "parentDraftId": "6fdfa5fa-ca2f-40d9-9249-b560eabecefc",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-10-13T06:27:47.018Z",
+      "chosen": {
+        "draftId": "b71049df-6f5d-42b0-895b-7780bbc36c78",
+        "on": "2026-10-13",
+        "builtInto": "src/App.jsx (the finance calendar day tiles)"
+      }
+    }
+  }
+}

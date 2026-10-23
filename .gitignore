@@ -11,3 +11,5 @@ dist/
 
 # the full on-device model, kept outside the shipped files (models/flow-ai.gguf is made from it by tools/ai/prune-vocab.mjs)
 tools/ai/models/*.gguf
+release/
+tools/ai/models/

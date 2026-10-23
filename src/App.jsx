@@ -12176,7 +12176,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
       )}
       {edit && (
         <div className={`dg-hint${leaving ? " leaving" : ""}`}>
-          <span className="msym" aria-hidden="true">open_with</span>Drag a widget to move it, its corner to resize it; the round button takes it off, the one at its top right stacks another widget in its box.
+          <span className="msym" aria-hidden="true">open_with</span>Drag a widget to move it, its corner to resize it; the round button takes it off, the one at the top of the widget under the pointer stacks another widget in its box.
           <span>{snap ? "Snapping to the grid in half cells." : "Free placement: widgets stay where you put them."}</span>
         </div>
       )}
@@ -24173,10 +24173,14 @@ export default function PnlCalendar() {
         .dg-rm .msym { font-size: 20px; }
         .dg-rm:hover { background: #ffffff; }
         /* stack another widget in this box: the − button's twin, in the middle of the top edge (a corner would meet the next
-           widget's − across the 16px gap) */
+           widget's − across the 16px gap). Only on the widget under the pointer (or reached with Tab), not on every widget at
+           once (23 October 2026, his words: "i only want the options for adding multiple widgets on a widget box when
+           hovered, dont show all the time"); it pops in and out as the − does when editing begins and ends */
         .dg-sk { position: absolute; top: -9px; left: calc(50% - 14px); z-index: 3; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
                  display: grid; place-items: center; color: #1f2226; background: light-dark(#e6e9ed, #f4f5f7); box-shadow: 0 4px 12px -2px rgba(0,0,0,0.5);
-                 animation: dgIn .32s var(--ease) backwards; }
+                 opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity .18s ease, transform .3s var(--ease), background-color .18s ease; }
+        .dg-cell:hover .dg-sk, .dg-cell:focus-visible .dg-sk, .dg-sk:focus-visible { opacity: 1; transform: none; pointer-events: auto; }
+        .dg-board.dragging .dg-sk, .dg-board.leaving .dg-sk { opacity: 0; transform: scale(0.4); pointer-events: none; }
         .dg-sk .msym { font-size: 17px; }
         .dg-sk:hover { background: #ffffff; }
         /* a stack (DgStack): its panes one under the other in a box of their own that scrolls, stopping on each */
@@ -24679,7 +24683,7 @@ export default function PnlCalendar() {
         @keyframes dgToastOut { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 10px); } }
         /* editing ends: its handles shrink away, the grid and the hint fade (HomeDash's endEdit, 0.2s); the toolbar's
            buttons come in afresh whenever they change over (edit ⇄ not) */
-        .dg-board.leaving .dg-rm, .dg-board.leaving .dg-rz, .dg-board.leaving .dg-sk { animation: dgOut .2s cubic-bezier(0.4, 0, 1, 1) both; pointer-events: none; }
+        .dg-board.leaving .dg-rm, .dg-board.leaving .dg-rz { animation: dgOut .2s cubic-bezier(0.4, 0, 1, 1) both; pointer-events: none; }
         .dg-board.leaving .dg-grid { animation: fadeOut .2s ease both; }
         .dg-hint.leaving { animation: dgHintOut .2s ease both; }
         @keyframes dgOut { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.4); } }
