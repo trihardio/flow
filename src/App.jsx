@@ -143,6 +143,20 @@ const EMPTY_BACKUP = (d) => !Object.keys(d.spending || {}).length && !Object.key
    hovering over them. not too big ui"): its name, and one short line. Always there, only shown; it takes the place of
    the system's own tooltip, so the button has no title. */
 const BkTip = ({ name, say }) => <span className="bk-tip"><b>{name}</b>{say}</span>;
+/* Something in the footer that comes and goes (a note such as "Backup restored", the Undo after an import): it slides in,
+   and when it is cleared it stays FOOT_OUT_MS longer to fade out where it stands instead of vanishing (22 October
+   2026). `show(leaving, last)` draws it; `last` is the value it had, for a note that is fading out. */
+const FOOT_OUT_MS = 260;
+const Linger = ({ on, show }) => {
+  const [last, setLast] = useState(on);
+  useEffect(() => {
+    if (on) { setLast(on); return; }
+    const t = setTimeout(() => setLast(null), FOOT_OUT_MS);
+    return () => clearTimeout(t);
+  }, [on]);
+  const v = on || last;
+  return v ? show(!on, v) : null;
+};
 
 /* ---------- warm-up: the screens he has opened before are drawn once more, all but invisibly, under the opening screen ----------
    The first time a screen is shown after a launch it pays for things its second showing doesn't: its text is shaped in
@@ -1928,6 +1942,87 @@ const AmountField = ({ value, setValue, onSubmit, accent, cur, ghost, width, all
   </span>
 );
 
+/* Every press is felt (22 October 2026: "make sure everything has animations, pressing a button, opening a ui"). A
+   button, and anything else drawn as pressable (a pointer cursor), sinks a little while it is held and springs back
+   when let go; a quick click still shows the whole dip, Enter or Space on a button too. It is the separate `scale`
+   property, animated from here (Web Animations): it adds to whatever `transform` the thing already has (its lift under
+   the pointer, a slide, its place) and needs no `transition` in the style sheet. The shared `button:active` scale that
+   was there before snapped on most buttons: a class's own `transition`, or an inline one, took the shared one's place.
+   How far: about PRESS_PX / 2 in at each edge, so a wide row moves as little as a small button; never below PRESS_MIN.
+   Left out: what is typed in, what is dragged (.row-grip, a grab cursor), marks in a chart, the 3D on the stage (the
+   wallets, cards, coin, globe and die have presses of their own), what has a press of its own in the style sheet
+   (PRESS_OWN), and anything marked data-nopress. Plain script, no React state: nothing on the page is drawn again. */
+const PRESS_PX = 5, PRESS_MIN = 0.94, PRESS_IN_MS = 110, PRESS_OUT_MS = 300, PRESS_TAP_MS = 380, PRESS_SLIP = 8;
+const PRESS_OWN = ".cell, .ycell, .calc-fab, .pc-go, .ynav-btn, .goal-io, .goal-save, .limit-label, .tcfg-go, .sd-act, .acc-go, .ql-chip, .jr-add";
+const PRESS_SKIP = "input, textarea, select, [contenteditable], .row-grip, [data-nopress], .warm-host";
+const PRESS_DOWN = "cubic-bezier(0.3, 0, 0.2, 1)", PRESS_UP = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+// a press that can't do anything yet because a box is empty (a goal's or a debt's + / − with no amount): the cursor goes
+// into that box and it gives a small shake, so the press is answered. The separate `translate`, like the press's `scale`
+const nudge = (box) => {
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  if (box.animate) box.animate([{ translate: "0 0" }, { translate: "-4px 0" }, { translate: "3px 0" }, { translate: "-2px 0" }, { translate: "1px 0" }, { translate: "0 0" }], { duration: 340, easing: "ease-out" });
+};
+const nudgeNear = (e) => nudge(e && e.currentTarget && e.currentTarget.parentElement && e.currentTarget.parentElement.querySelector("input"));
+const pressKit = (() => {
+  if (typeof window === "undefined" || typeof Element === "undefined" || !Element.prototype.animate) return null;
+  let held = null;
+  const cursor = (el) => getComputedStyle(el).cursor;
+  // what a press on `from` presses: the button it is in, else the outermost of the pointer-cursor boxes around it
+  // (the cursor is handed down, so the text inside a pressable row has it too)
+  const target = (from) => {
+    if (!(from instanceof Element) || from.closest(PRESS_SKIP)) return null;
+    const btn = from.closest('button, [role="button"]');
+    if (btn) return btn.disabled || btn.matches(PRESS_OWN) || btn.closest(".warm-host") ? null : btn;
+    let el = from;
+    while (el && el instanceof SVGElement) el = el.parentElement;
+    if (!el || el === document.body || cursor(el) !== "pointer") return null;
+    for (let n = 0; n < 12 && el.parentElement && el.parentElement !== document.body && cursor(el.parentElement) === "pointer"; n++) el = el.parentElement;
+    if (el.matches(PRESS_OWN) || el.closest(".launch-veil")) return null;
+    return el;
+  };
+  const now = (el) => { const v = getComputedStyle(el).scale; return v === "none" ? 1 : parseFloat(v) || 1; };
+  const depth = (el) => { const r = el.getBoundingClientRect(), big = Math.max(r.width, r.height); return big < 4 ? 0 : Math.max(PRESS_MIN, 1 - PRESS_PX / big); };
+  const play = (el, frames, ms, fill) => { if (el.__press) el.__press.cancel(); el.__press = el.animate(frames, { duration: ms, fill }); return el.__press; };
+  // let go: back to 1 from wherever it is; a press shorter than the sink still dips all the way first
+  const release = () => {
+    if (!held) return;
+    const { el, s, t0 } = held;
+    held = null;
+    window.removeEventListener("pointermove", slip, true);
+    const v = now(el);
+    if (performance.now() - t0 < PRESS_IN_MS) play(el, [{ scale: String(v), easing: PRESS_DOWN }, { scale: String(s), offset: 0.28, easing: PRESS_UP }, { scale: "1" }], PRESS_TAP_MS);
+    else play(el, [{ scale: String(v), easing: PRESS_UP }, { scale: "1" }], PRESS_OUT_MS);
+  };
+  // the pointer moved off while held (a drag, a scroll, marking text): spring back at once
+  const slip = (e) => { if (held && Math.hypot(e.clientX - held.x, e.clientY - held.y) > PRESS_SLIP) release(); };
+  const down = (e) => {
+    if (e.button !== 0 || !e.isPrimary) return;
+    release();
+    const el = target(e.target);
+    if (!el) return;
+    const s = depth(el);
+    if (!s) return;
+    play(el, [{ scale: String(now(el)), easing: PRESS_DOWN }, { scale: String(s) }], PRESS_IN_MS, "forwards");
+    held = { el, s, t0: performance.now(), x: e.clientX, y: e.clientY };
+    window.addEventListener("pointermove", slip, true);
+  };
+  const key = (e) => {
+    if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
+    const el = document.activeElement;
+    if (!el || !el.matches || !el.matches('button, [role="button"]') || el.disabled || el.matches(PRESS_OWN) || el.closest(PRESS_SKIP)) return;
+    const s = depth(el);
+    if (s) play(el, [{ scale: String(now(el)), easing: PRESS_DOWN }, { scale: String(s), offset: 0.28, easing: PRESS_UP }, { scale: "1" }], PRESS_TAP_MS);
+  };
+  window.addEventListener("pointerdown", down, { capture: true, passive: true });
+  window.addEventListener("pointerup", release, { capture: true, passive: true });
+  window.addEventListener("pointercancel", release, { capture: true, passive: true });
+  window.addEventListener("blur", release);
+  window.addEventListener("keydown", key, { capture: true, passive: true });
+  if (window.__perf) window.__perf.press = { target, depth };      // tools/perf journey `press` asks it what a press would sink
+  return { target, release };
+})();
+
 /* A logged row is moved to another day by its bar (11 October 2026: "drag and drop (mac style)", by "the gray bar
    inbetween expense rp text and description"; "all the transitions … very smooth and seamless. no lag"). Held and moved
    a few px, the row dims where it is and a small copy of it (amount, bar, name) comes out of the bar and stays under the
@@ -3096,9 +3191,9 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
     save([...debts, { id: uid(), name: who, amount, paid: 0, dir }]);
     setName(""); setAmt(""); setAdding(false);
   };
-  const pay = (id, sign) => {
+  const pay = (id, sign, e) => {
     const by = toIDR(payAmt);
-    if (!by) return;
+    if (!by) { nudgeNear(e); return; }
     save(debts.map((d) => (d.id === id ? { ...d, paid: Math.min(d.amount, Math.max(0, d.paid + sign * by)) } : d)));
     setPayAmt("");
   };
@@ -3167,8 +3262,8 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                         <AmountField value={open ? payAmt : ""} setValue={setPayAmt} accent="green" cur={cur} width={150}
                                      ghost={open && ghostOf(payAmt)} allowDecimal={isMYR} onSubmit={() => pay(d.id, 1)} />
-                        <button className="goal-io in" title={k.pay} onClick={() => pay(d.id, 1)}><span className="msym">download</span></button>
-                        <button className="goal-io out" title={k.unpay} onClick={() => pay(d.id, -1)}><span className="msym">upload</span></button>
+                        <button className="goal-io in" title={k.pay} onClick={(e) => pay(d.id, 1, e)}><span className="msym">download</span></button>
+                        <button className="goal-io out" title={k.unpay} onClick={(e) => pay(d.id, -1, e)}><span className="msym">upload</span></button>
                         <span style={S.goalNote}>{done ? "Settled" : `${fmt(d.amount - d.paid)} left`}</span>
                       </div>
                     </div>
@@ -4517,7 +4612,9 @@ const CurRoll = ({ idx, usd }) => {      // usd: what the dollar is called on th
    for the box to move, not to vanish and come back). Only transforms move: the box is two rounded pieces, each as
    wide as the whole switch, one clipping the other. The outer one slides to the choice's left edge; the inner one
    slides back inside it until its right end is on the choice's right edge. What shows is where the two overlap. */
-const SlideSeg = ({ options, value, onPick, style, cls = "" }) => {     // cls must never change: "go" is put on the element by hand, and a rewritten class name would take it off
+// washes: that many colour layers inside the sliding box (.seg-w), cross-faded by the caller's style (the journal's Win /
+// Breakeven / Loss); tab: the buttons' tabIndex
+const SlideSeg = ({ options, value, onPick, style, cls = "", washes = 0, tab }) => {     // cls must never change: "go" is put on the element by hand, and a rewritten class name would take it off
   const wrap = useRef(null), box = useRef(null), fill = useRef(null);
   useLayoutEffect(() => {
     const el = wrap.current, on = el.querySelector("button.on");
@@ -4529,8 +4626,8 @@ const SlideSeg = ({ options, value, onPick, style, cls = "" }) => {     // cls m
   }, [value]);
   return (
     <span className={`wr-seg slide ${cls}`} style={style} ref={wrap}>
-      <span className="seg-box" ref={box}><span className="seg-fill" ref={fill} /></span>
-      {options.map(([v, label, title]) => <button key={v} className={v === value ? "on" : ""} title={title} onClick={() => onPick(v)}>{label}</button>)}
+      <span className="seg-box" ref={box}><span className="seg-fill" ref={fill}>{washes > 0 && Array.from({ length: washes }, (_, i) => <i key={i} className="seg-w" />)}</span></span>
+      {options.map(([v, label, title]) => <button key={v} className={v === value ? "on" : ""} title={title} tabIndex={tab} onClick={() => onPick(v)}>{label}</button>)}
     </span>
   );
 };
@@ -6250,6 +6347,7 @@ const Reveal = ({ children }) => {
 // each card's own colour, muted: its title is a tag in it and a soft glow of it sits behind the title. The glow is a
 // band of a fixed height at the top (never sized from the card), so folding a card draws nothing again
 const CARD_TINT = { "weekly expenses": "#86bfe8", "money flow": "#7fd8b4", goals: "#e3c477", "PnL analysis": "#86bfe8", performance: "#7fd8b4", coins: "#e3c477", stocks: "#e3c477", pairs: "#e3c477", breakdown: "#8fa3b8" };
+const FOLD_SEEN = 0.12, FOLD_STEPS = [0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12, 0.14, 0.16, 0.18];
 const FoldCard = ({ title, sub, runKey, name, style, loose, parts, children }) => {
   const ref = useRef(null);
   const [seen, setSeen] = useState(false);
@@ -6259,9 +6357,13 @@ const FoldCard = ({ title, sub, runKey, name, style, loose, parts, children }) =
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // it pops in when 18% of it shows, or once it reaches FOLD_SEEN of the window's height into view, whichever comes
+    // first: a tall card (Money flow) waited for 18% of itself, and left a hole of up to 250px in the page meanwhile
     const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => { if (e.isIntersecting) { setSeen(true); io.disconnect(); } });
-    }, { threshold: 0.18 });
+      entries.forEach((e) => {
+        if (e.isIntersecting && e.intersectionRect.height >= Math.min(e.boundingClientRect.height * 0.18, innerHeight * FOLD_SEEN)) { setSeen(true); io.disconnect(); }
+      });
+    }, { threshold: FOLD_STEPS });
     io.observe(el);
     return () => io.disconnect();
   }, []);
@@ -6473,6 +6575,9 @@ const ShotView = ({ id, onClose }) => {
    the button); the one inside a logged trade saves itself, at once on a switch and on leaving a box otherwise.
    A logged trade's sheet also holds its pictures (see "pictures on a trade"). */
 const JR_RES = { win: ["Win", "emoji_events"], be: ["Breakeven", "drag_handle"], loss: ["Loss", "close"] };
+// the sliding switch's choices (22 October 2026: its box slides to the result pressed and takes its colour on the way,
+// as the debts' switch does; it was three boxes that cross-faded)
+const JR_RES_OPTS = Object.entries(JR_RES).map(([id, [label, icon]]) => [id, <><span className="msym">{icon}</span>{label}</>]);
 // a break-even trade is one at exactly $0, or one he marked break-even with the few dollars it closed at (be)
 const resOf = (t) => (t.be || !t.pnl ? "be" : t.pnl > 0 ? "win" : "loss");
 // (forex: the box on top holds MetaTrader's Profit, which is the trade's result less its swap and its commission)
@@ -6591,13 +6696,8 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
          onDragOver={(e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
          onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attach(e.dataTransfer.files); } }}>
       <div className="jr-top">
-        <div className="jr-res">
-          {Object.entries(JR_RES).map(([id, [label, icon]]) => (
-            <button key={id} tabIndex={-1} className={`jr-res-b${d.res === id ? " on" : ""}`} onClick={() => setRes(id)}>
-              <span className="msym">{icon}</span>{label}
-            </button>
-          ))}
-        </div>
+        <SlideSeg cls="jr-res" washes={3} tab={-1} value={d.res} onPick={setRes} options={JR_RES_OPTS}
+                  style={{ "--w0": d.res === "win" ? 1 : 0, "--w1": d.res === "be" ? 1 : 0, "--w2": d.res === "loss" ? 1 : 0 }} />
         <label className="jr-pnl" title={d.res === "be" ? "A break-even trade is neither won nor lost. Leave it at $0, or type what it closed at (with a minus if it cost a little)"
                                          : fx ? "The trade's Profit as MetaTrader shows it, in USD. Its swap and its commission go in their own boxes and are added to it" : "Realised PnL of the trade, in USDT"}>
           <span>{d.res === "win" ? `+${U}` : d.res === "loss" ? `−${U}` : U}</span>
@@ -9150,9 +9250,7 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
             <>
               <div className="set-row">
                 <span className="set-k"><b>Currency shown</b><small>Trades are always kept in {M.unit}</small></span>
-                <span className="wr-seg">
-                  {CUR_LIST.map((c) => <button key={c} className={cur === c ? "on" : ""} onClick={() => { setCur(c); savePrefs({ cur: c }); refreshFx(); }}>{c === "USDT" ? M.unit : c}</button>)}
-                </span>
+                <SlideSeg value={cur} onPick={(c) => { setCur(c); savePrefs({ cur: c }); refreshFx(); }} options={CUR_LIST.map((c) => [c, c === "USDT" ? M.unit : c])} />
               </div>
               {["IDR", "MYR"].map((c) => (
                 <div key={c} className="set-row">
@@ -9193,22 +9291,23 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
 
       <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
-          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="The trades could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
           <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves your trades to the exports folder" : "Downloads a backup of every trade"} /></button>
           <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings trades back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
-          {backupMsg && <span className="bk-msg">{backupMsg}</span>}
-          {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the trades you had before this import">Undo</button>}
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {SHOW_TEST_TOOLS && <>
             <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
             <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
             <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated trades only" /></button>
-            {testMsg && <span className="bk-msg" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
+          {/* what comes and goes stands after the buttons, so a note or "Saving…" never moves one under the pointer */}
+          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
+          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="The trades could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
+          <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+          <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the trades you had before this import">Undo</button>} />
+          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
         <button className="foot-logo" onClick={onHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
       </div>
@@ -9783,9 +9882,9 @@ export default function PnlCalendar() {
     if (year === now.getFullYear() && month === now.getMonth()) return keyOf(year, month, now.getDate());
     return keyOf(year, month, selected ?? new Date(year, month + 1, 0).getDate());
   };
-  const moveGoalFunds = (id, sign) => {
+  const moveGoalFunds = (id, sign, e) => {
     let amt = amtToIDR(fundAmt);
-    if (!amt) return;
+    if (!amt) { nudgeNear(e); return; }
     const next = goals.map((g) => {
       if (g.id !== id) return g;
       if (sign < 0) amt = Math.min(amt, goalSaved(g));
@@ -10726,12 +10825,13 @@ export default function PnlCalendar() {
         {/* axes */}
         <line x1={PL} y1={PT - 4} x2={PL} y2={PT + ih} stroke="#4a5055" strokeWidth="1.4" />
         <line x1={PL} y1={PT + ih} x2={W - PR} y2={PT + ih} stroke="#4a5055" strokeWidth="1.4" />
+        {/* a figure too close to the limit's own gives way to it: faded out, not taken off, so a compare that moves the
+            scale fades it in or out instead of popping it (22 October 2026) */}
         {yTicks.map((v, i) => (
-          Math.abs(Y(v) - Y(weekLimit)) < 13 ? null : (
-            <text key={i} x={PL - 12} y={Y(v) + 4} fill="#8a9299" fontSize="11" textAnchor="end">
-              {v === 0 ? "0" : <CountNum value={v} duration={CMP_MS} render={(n) => fmtCoarse(n)} still />}
-            </text>
-          )
+          <text key={i} className="wk-tick" x={PL - 12} y={Y(v) + 4} fill="#8a9299" fontSize="11" textAnchor="end"
+                style={{ opacity: Math.abs(Y(v) - Y(weekLimit)) < 13 ? 0 : 1 }}>
+            {v === 0 ? "0" : <CountNum value={v} duration={CMP_MS} render={(n) => fmtCoarse(n)} still />}
+          </text>
         ))}
         {weekData.days.map((d, i) => (
           <text key={i} x={X(i)} y={PT + ih + 22} fontSize="11" textAnchor="middle"
@@ -11739,10 +11839,7 @@ export default function PnlCalendar() {
             </button>
           ))}
           <span style={{ flex: 1 }} />
-          <span className="wr-seg">
-            <button className={!big ? "on" : ""} onClick={() => setRecapDetail(`cat:${c}`)}>By item</button>
-            <button className={big ? "on" : ""} onClick={() => setRecapDetail(`catbig:${c}`)}>Single purchases</button>
-          </span>
+          <SlideSeg value={big ? "big" : "item"} onPick={(v) => setRecapDetail(`${v === "big" ? "catbig" : "cat"}:${c}`)} options={[["item", "By item"], ["big", "Single purchases"]]} />
         </div>
       );
       if (big) {
@@ -12157,10 +12254,10 @@ export default function PnlCalendar() {
                   <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                     <AmountField value={open ? fundAmt : ""} setValue={setFundAmt} accent="green" cur={cur} width={150}
                                  ghost={needsGhost(fundAmt)} allowDecimal={isMYR} onSubmit={() => moveGoalFunds(g.id, 1)} />
-                    <button className="goal-io in" title="Add to goal" onClick={() => moveGoalFunds(g.id, 1)}>
+                    <button className="goal-io in" title="Add to goal" onClick={(e) => moveGoalFunds(g.id, 1, e)}>
                       <span className="msym">download</span>
                     </button>
-                    <button className="goal-io out" title="Withdraw from goal" onClick={() => moveGoalFunds(g.id, -1)}>
+                    <button className="goal-io out" title="Withdraw from goal" onClick={(e) => moveGoalFunds(g.id, -1, e)}>
                       <span className="msym">upload</span>
                     </button>
                     {!done && g.target > saved && <span style={S.goalNote}>{fmt(g.target - saved)} to go</span>}
@@ -13151,7 +13248,7 @@ export default function PnlCalendar() {
 
         /* buttons feel physical */
         button { transition: transform .22s var(--ease), background .22s ease, border-color .22s ease, color .22s ease; }
-        button:active { transform: scale(0.965); }
+        /* the press itself: pressKit, near the top of the file (a shared :active scale snapped wherever a class has a transition of its own) */
         * { -webkit-font-smoothing: antialiased; }
 
         .stage-bg {
@@ -13187,13 +13284,22 @@ export default function PnlCalendar() {
         .jr-sheet.loss, .jr-item.loss { --tone: #e2808c; --tone-bg: rgba(255,93,108,0.10); --tone-bd: rgba(255,93,108,0.34); }
         .jr-sheet.be, .jr-item.be { --tone: #d6c88f; --tone-bg: rgba(227,205,119,0.09); --tone-bd: rgba(227,205,119,0.30); }
         .jr-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-        .jr-res { display: inline-flex; gap: 3px; padding: 3px; border-radius: 12px; background: rgba(24,27,31,0.55); border: 1px solid rgba(255,255,255,0.08); }
-        .jr-res-b { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px 0 10px; border-radius: 9px; border: 1px solid transparent;
-                    background: none; color: #8a9299; font-size: 13px; font-weight: 600; cursor: pointer;
-                    transition: color .18s ease, background .18s ease, border-color .18s ease; }
-        .jr-res-b .msym { font-size: 17px; }
-        .jr-res-b:hover { color: #e8eaec; }
-        .jr-res-b.on { color: var(--tone); background: var(--tone-bg); border-color: var(--tone-bd); }
+        /* the same as a sliding switch (SlideSeg cls="jr-res"): the box is three washes, one per result, cross-faded by
+           --w0 / --w1 / --w2, as full as the debts' and the ring's. No edge: the box is two clipped pieces, and an edge
+           drawn on them would have no left side */
+        .wr-seg.jr-res { gap: 3px; padding: 3px; border-radius: 12px; background: rgba(24,27,31,0.55); border-color: rgba(255,255,255,0.08); }
+        .wr-seg.jr-res button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px 0 10px; border-radius: 9px;
+                                border: 1px solid transparent; color: #8a9299; font-size: 13px; font-weight: 600; transition: color .3s ease; }
+        .wr-seg.jr-res button .msym { font-size: 17px; }
+        .wr-seg.jr-res button:hover { color: #e8eaec; }
+        .wr-seg.jr-res button.on { color: var(--tone); }
+        .wr-seg.jr-res .seg-box { top: 3px; bottom: 3px; }
+        .wr-seg.jr-res .seg-box, .wr-seg.jr-res .seg-fill { border-radius: 9px; }
+        .wr-seg.jr-res .seg-fill { background: none; }
+        .seg-w { position: absolute; inset: 0; border-radius: inherit; opacity: 0; transition: opacity .34s ease; }
+        .jr-res .seg-w:nth-child(1) { background: rgba(61,220,151,0.15); opacity: var(--w0, 0); }
+        .jr-res .seg-w:nth-child(2) { background: rgba(227,205,119,0.14); opacity: var(--w1, 0); }
+        .jr-res .seg-w:nth-child(3) { background: rgba(255,93,108,0.15); opacity: var(--w2, 0); }
         .jr-pnl { display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; width: 190px; height: 40px; padding: 0 13px; border-radius: 11px; cursor: text;
                   background: rgba(24,27,31,0.62); border: 1px solid rgba(255,255,255,0.10); color: var(--tone); font-size: 16px; font-weight: 700;
                   transition: border-color .25s ease, box-shadow .25s ease, opacity .25s ease; }
@@ -15036,7 +15142,11 @@ export default function PnlCalendar() {
         .sb-add:hover:not(:disabled) { color: #ffffff; background: rgba(255,93,108,0.26); border-color: rgba(255,93,108,0.6); }
         .sb-add:disabled { opacity: 0.45; cursor: default; }
         .sb-add.done { opacity: 1; color: #a5efcd; background: rgba(61,220,151,0.10); border-color: rgba(61,220,151,0.34); }
-        .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease both; }
+        .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease backwards; }
+        .bk-pop { animation: fadeRight .3s ease backwards; }
+        .wk-tick { transition: opacity .3s ease; }
+        /* on its way out (Linger): it fades where it stands, and takes no press meanwhile */
+        .bk-msg.out, .bk-pop.out { animation: fadeOut ${FOOT_OUT_MS}ms ease forwards; pointer-events: none; }
         /* ---------- open app panel ---------- */
         .open-panel { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; }
         /* the grey backdrop is its own layer, so the outro can fade it while the logo and letters stay solid */
@@ -15270,6 +15380,9 @@ export default function PnlCalendar() {
         .hero-tile:not(:first-child) { background: transparent; }
         .hero-tile:not(:first-child) .ht-val { font-size: 18px; color: #c7cdd2; }
         .term .hero-tile:not(:first-child) { background: rgba(255,255,255,0.045); }
+        /* the trading hero's four tiles are equal (22 October 2026): the finance side's quieter figures above reached them
+           too, so Wins stood 4px taller than the other three and the tops did not line up */
+        .term .hero-tile:not(:first-child) .ht-val { font-size: 21px; color: #eef1f4; }
         .qadd { opacity: 0.7; transition: opacity .2s ease; }
         .qadd:hover, .qadd:focus-within { opacity: 1; }
         .cell > .cbar::after { transform-origin: 50% 100%; animation: cbarUp .55s var(--ease) var(--bd, 0ms) backwards; }
@@ -16945,9 +17058,7 @@ export default function PnlCalendar() {
         <SettingsPop onClose={() => setSettingsOpen(false)}>
           <div className="set-row">
             <span className="set-k"><b>Currency</b><small>What every amount is shown and typed in</small></span>
-            <span className="wr-seg">
-              {["IDR", "MYR"].map((c) => <button key={c} className={currency === c ? "on" : ""} onClick={() => pickCurrency(c)}>{c}</button>)}
-            </span>
+            <SlideSeg value={currency} onPick={pickCurrency} options={[["IDR", "IDR"], ["MYR", "MYR"]]} />
           </div>
           <div className="set-row">
             <span className="set-k"><b>Daily limit</b><small>For {MONTHS_FULL[month]} {year}</small></span>
@@ -16997,22 +17108,23 @@ export default function PnlCalendar() {
       {launched && view !== "trade" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
       {launched && view !== "trade" && <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
-         {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your browser refused to store the data (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
           <button className="bk-btn ico" onClick={exportData} aria-label="Export"><span className="msym">upload</span><BkTip name="Export" say={AI_OK ? "Saves a backup to the exports folder" : "Downloads a backup of everything"} /></button>
           <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings entries back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
                  onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
-          {backupMsg && <span className="bk-msg">{backupMsg}</span>}
-          {undoImport && <button className="bk-btn" onClick={revertImport} title="Put back the data you had before this import">Undo</button>}
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" /></button>
           {SHOW_TEST_TOOLS && <>
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
           <button className="bk-btn ico test" onClick={onTestDataClick} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Double-click to change its settings" /></button>
           <button className="bk-btn ico" onClick={clearTestData} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated entries only" /></button>
-          {testMsg && <span className="bk-msg" style={{ color: "#e3cd77" }}>{testMsg}</span>}
           </>}
+          {/* what comes and goes stands after the buttons, so a note or "Saving…" never moves one under the pointer */}
+          <span>{!loaded ? "Loading…" : saving ? "Saving…" : ""}</span>
+          {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your browser refused to store the data (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
+          <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
+          <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the data you had before this import">Undo</button>} />
+          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
         <button className="foot-logo" onClick={goHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
 

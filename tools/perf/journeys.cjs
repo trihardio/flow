@@ -1113,5 +1113,237 @@ const scoreinfo = async (c) => {
   c.log("PROJECTION HEAD", await c.js(`document.querySelector('.proj-main').innerText.replace(/\\n+/g, ' | ').slice(0, 200)`));
 };
 
-module.exports = { launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// Every panel and pop-up on all four sides (stills with --shots; run on a profile with test data on every side, e.g.
+// `seedprep --profile=look --fresh`, then `look --profile=look --shots`). After each press the log lists what is
+// moving 60ms and 300ms later (CSS animations by name, transitions by property, each with the class of what it moves),
+// so a pop-up or a button that changes without moving shows up as "nothing moving".
+const look = async (c) => {
+  const what = `(e) => e ? (e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "")) : "?"`;
+  const moving = () => c.js(`(() => { const d = ${what}; const n = {};
+    for (const a of document.getAnimations()) { if (a.playState !== "running") continue; const t = a.effect && a.effect.target;
+      if (t && t.closest && t.closest(".warm-host")) continue;
+      const k = (a.animationName || ("~" + a.transitionProperty)) + " @" + d(t); n[k] = (n[k] || 0) + 1; }
+    return Object.entries(n).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => v > 1 ? k + " ×" + v : k).join(" | ") || "nothing moving"; })()`);
+  const act = async (name, fn, wait = 1200, shoot = true) => {
+    c.log("LOOK", name);
+    await fn(); await c.sleep(60); c.log("  60ms", await moving()); await c.sleep(240); c.log("  300ms", await moving());
+    await c.sleep(Math.max(0, wait - 300)); if (shoot && c.shots) await c.shot(name);
+  };
+  const tap = (sel, nth = 0) => () => c.press(sel, nth);
+  const tapText = (sel, text) => () => c.js(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`).then((p) => p ? c.click(p[0], p[1]) : c.log("  NOT FOUND", text));
+  const esc = () => act("esc", async () => c.key("Escape"), 900, false);
+  const view = async (name, sel, block = "start") => { await c.js(`(() => { const e = ${sel}; if (e) e.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: 'instant' }); })()`); await c.sleep(2000); if (c.shots) await c.shot(name); };
+  const top = () => c.js(`scrollTo({ top: 0, behavior: 'instant' })`);
+  const goHome = async () => { await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(500); return c.press(".foot-logo"); };
+  const cmdN = async () => { c.wc.sendInputEvent({ type: "keyDown", keyCode: "N", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "char", keyCode: "n", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "N", modifiers: ["control"] }); };
+
+  await c.sleep(1100); if (c.shots) await c.shot("splash");
+  await c.sleep(SPLASH_MS - 1100); if (c.shots) await c.shot("pick");
+  if (!process.argv.includes("--trade-only")) await lookFinance();
+  async function lookFinance() {
+  await act("pick-coin", tap(".coin-unit"), 1100);
+  await act("markets", tap(".coin-unit"), 1700);
+  await act("markets-idx", tap(".idx-unit"), 1200);
+  await act("markets-fx", tap(".coin-unit.fx"), 1200);
+  await act("markets-back", async () => c.key("Escape"), 1300);
+  await act("pick-wallet", tap(".wallet-unit.active"), 1100);
+  await act("wallets", tap(".wallet-unit.active"), 1500);
+  await act("card", () => c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08), 1500);
+  await act("enter-finance", tap(".big-card"), 6500);
+  // finance, the year
+  await act("year-chart", tap(".chart-btn"), 2600); await esc();
+  await act("year-wrapped", tap(".year-big"), 2600); await esc();
+  await act("settings", tap('button[aria-label="Settings"]'), 1200); await esc();
+  await act("sidebar", tap(".snav-burger"), 1200); await esc();
+  await act("quicklog", cmdN, 1200); await esc();
+  await act("month", async () => c.press(".ycell", await monthBox(c)), 3600);
+  await act("month-chart", tap(".chart-btn"), 2600); await esc();
+  await act("month-wrapped", tap(".month-big"), 2600); await esc();
+  await act("day", tap(".cell", 9), 1600);
+  await view("day-panel", `document.querySelector('.cell.sel') || document.querySelectorAll('.cell')[9]`, "start");
+  for (const [i, n] of [[0, "card-weekly"], [1, "card-flow"], [2, "card-goals"]]) await view(n, `document.querySelectorAll('.flow-card')[${i}]`);
+  await view("flow-score", `document.querySelector('.score-hit')`, "center");
+  await view("flow-proj", `document.querySelector('.proj-tile')`, "center");
+  await view("flow-ins", `document.querySelector('.ins-box')`, "center");
+  await view("debts", `document.querySelector('.debt-sec')`, "center");
+  await view("page-end", `document.querySelector('.foot-logo')`, "end");
+  await view("flow-chart", `document.querySelector('.flow-label')`, "center");
+  await act("cat-pop", tap(".flow-label"), 1600); await esc();
+  await view("score-dial", `document.querySelector('.score-hit')`, "center");
+  await act("score-pop", tap(".score-hit"), 1600); await esc();
+  await c.js(`document.querySelectorAll('.flow-card')[1].scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1200);
+  await act("fold-flow", tap(".flow-card .chev", 1), 1000);
+  await act("unfold-flow", tap(".flow-card .chev", 1), 1800);
+  await top(); await c.sleep(800);
+  await act("sidebar-month", tap(".snav-burger"), 1200);
+  await act("split-bill", tapText(".snav button", "Split bill"), 1500); await esc();
+  await act("home", goHome, 5000);
+  }
+  // the three trading sides
+  for (const [side, sel] of [["crypto", null], ["idx", ".idx-unit"], ["fx", ".coin-unit.fx"]]) {
+    await act(`${side}-in`, async () => {
+      await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+      if (sel) { await c.press(sel); await c.sleep(1100); await c.press(sel); } else await c.press(".coin-unit");
+    }, 6000);
+    await act(`${side}-calc`, tap(".calc-fab"), 1800); await esc();
+    await act(`${side}-month`, async () => c.press(".ycell", await monthBox(c)), 3600);
+    await act(`${side}-calc-month`, tap(".calc-fab"), 1600);
+    await act(`${side}-calc-test`, tapText("button.pc-clear.test", "Test levels"), 1400); await esc();
+    await act(`${side}-day`, tap(".cell", 9), 1600);
+    await view(`${side}-day-panel`, `document.querySelectorAll('.cell')[9]`, "start");
+    await act(`${side}-trade`, tap(".jr-sum"), 1400);
+    for (const [i, n] of [[0, "card-1"], [1, "card-2"], [2, "card-3"]]) await view(`${side}-${n}`, `document.querySelectorAll('.flow-card')[${i}]`);
+    await top(); await c.sleep(600);
+    await act(`${side}-home`, goHome, 5000);
+  }
+};
+
+// Presses every safe pressable thing on a month panel, one after the other, and logs for each what came onto the page
+// and whether it moved in (run on a profile with test data, `sweep --profile=look`; `--side=crypto|idx|fx` for a trading
+// side). Skipped: what leaves the panel, files, test data, accounts, deleting. "STILL" lines are the ones to look at:
+// something new appeared with nothing moving.
+const sweep = async (c) => {
+  const side = (process.argv.find((a) => a.startsWith("--side=")) || "--side=finance").slice(7);
+  await c.sleep(SPLASH_MS);
+  if (side === "finance") {
+    await c.press(".wallet-unit.active"); await c.sleep(1400);
+    await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+    await c.press(".big-card"); await c.sleep(6500);
+  } else {
+    await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600);
+    const sel = side === "idx" ? ".idx-unit" : side === "fx" ? ".coin-unit.fx" : null;
+    if (sel) { await c.press(sel); await c.sleep(1100); await c.press(sel); } else await c.press(".coin-unit");
+    await c.sleep(6000);
+  }
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await c.press(".cell", 9); await c.sleep(1800);
+  // each pressable is kept as a selector and its place among the matches, and found again before its press: a press
+  // can put a whole part of the panel there afresh
+  const list = JSON.parse(await c.js(`(() => {
+    const SKIP = /delete|remove|clear|reset|restore|export|import|switch|test data|back to home|picture|file|account|trash|bin\\b|undo|previous month|next month/i;
+    const NAV = ".foot-logo, .month-btn, .snav-burger, .bk-btn, .who-btn, .pick-back, .snav, .warm-host, input, textarea, select, .row-grip, .nav-arrow, .chev";
+    const out = [];
+    for (const el of document.querySelectorAll("body *")) {
+      const isBtn = el.tagName === "BUTTON" || el.getAttribute("role") === "button";
+      if (!isBtn && getComputedStyle(el).cursor !== "pointer") continue;
+      if (!isBtn && el.parentElement && getComputedStyle(el.parentElement).cursor === "pointer") continue;
+      if (el.closest(NAV) || el instanceof SVGElement) continue;
+      const words = (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + el.textContent.slice(0, 40);
+      if (SKIP.test(words) || /delete|delete_sweep|close/.test(el.textContent.trim())) continue;
+      const sel = el.tagName.toLowerCase() + [...el.classList].filter((k) => /^[a-z][\\w-]*$/i.test(k)).map((k) => "." + k).join("");
+      out.push({ sel, nth: [...document.querySelectorAll(sel)].indexOf(el) });
+    }
+    return JSON.stringify(out); })()`));
+  const n = list.length;
+  for (let i = 0; i < n; i++) {
+    const r = await c.js(`(() => { window.__sw = window.__sw || {}; const el = document.querySelectorAll(${JSON.stringify(list[i].sel)})[${list[i].nth}]; if (!el) return null;
+      el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || getComputedStyle(el).visibility === "hidden") return null;
+      const d = (e) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+      window.__sw.desc = d(el) + " '" + ((el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent).trim().replace(/\\s+/g, " ").slice(0, 28)) + "'";
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!r) continue;
+    await c.sleep(350);
+    await c.js(`window.__sw.added = []; window.__sw.mo = new MutationObserver((ms) => { for (const m of ms) for (const a of m.addedNodes) if (a.nodeType === 1 && !a.closest(".warm-host")) window.__sw.added.push(a); });
+      window.__sw.mo.observe(document.body, { childList: true, subtree: true }); window.__sw.before = document.getAnimations().length;`);
+    await c.click(r.x, r.y);
+    await c.sleep(70);
+    const out = await c.js(`(() => { window.__sw.mo.disconnect();
+      const added = window.__sw.added.filter((a) => a.isConnected && !window.__sw.added.some((b) => b !== a && b.contains(a)));
+      const vis = added.filter((a) => { const r = a.getBoundingClientRect(); return r.width > 4 && r.height > 4; });
+      const moving = (a) => { for (let e = a; e && e !== document.body; e = e.parentElement) if (e.getAnimations().some((x) => x.playState === "running")) return true;
+        return a.getAnimations({ subtree: true }).some((x) => x.playState === "running"); };
+      const still = vis.filter((a) => !moving(a));
+      const d = (e) => e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\\s+/).slice(0, 2).join(".") : "");
+      return { desc: window.__sw.desc, added: vis.length, still: still.map(d).slice(0, 4), run: document.getAnimations().filter((x) => x.playState === "running").length }; })()`);
+    c.log(out.still.length ? "STILL" : out.added ? "MOVES" : out.run ? "CHANGE" : "NONE", out.desc, "added", out.added, "running", out.run, out.still.join(" "));
+    await c.sleep(600);
+    c.key("Escape"); await c.sleep(500);
+  }
+};
+
+// The press on every pressable (pressKit): each is held, then let go, and quick-clicked; the log says how far it sank
+// (its `scale`), whether its own `transform` was left as it was, and that it is back to 1 afterwards. A thing with a
+// press of its own (a day tile) must not sink.
+const press = async (c) => {
+  await c.sleep(SPLASH_MS);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  c.log("FRAMES in 1s", await c.js(`new Promise((done) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else done(n); }; requestAnimationFrame(f); })`));
+  const read = (sel, nth) => c.js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null;
+    const cs = getComputedStyle(el), a = el.__press; return { scale: cs.scale + (a ? " [" + a.playState + " " + Math.round(a.currentTime) + "ms]" : ""), transform: cs.transform }; })()`);
+  for (const [sel, nth] of [[".chart-btn", 0], [".nav-arrow", 1], [".month-big", 0], [".info-btn", 0], [".collapse-btn", 0], [".cell", 9],
+    [".flow-label", 1], [".score-hit", 0], [".ins-more", 0], [".goal-sym", 0], [".goal-new", 0], [".plain-arrow.chev", 0], [".split-btn", 0], [".snav-burger", 0]]) {
+    const at = await c.js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null;
+      el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2), Math.round(r.width), Math.round(r.height)]; })()`);
+    if (!at) { c.log("PRESS", sel, "not found"); continue; }
+    await c.sleep(500);
+    c.log("  aims at", await c.js(`(() => { const hit = document.elementFromPoint(${at[0]}, ${at[1]}), t = window.__perf.press.target(hit), el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}];
+      const d = (e) => e ? e.tagName.toLowerCase() + (typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).slice(0, 2).join(".") : "") : "nothing";
+      return d(hit) + " -> " + d(t) + (t === el ? " (itself)" : t ? "" : "") + " depth " + (t ? window.__perf.press.depth(t).toFixed(3) : "-"); })()`));
+    const rest = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseMove", x: at[0], y: at[1] }); await c.sleep(300);
+    const hover = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseDown", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(180);
+    const held = await read(sel, nth);
+    c.wc.sendInputEvent({ type: "mouseUp", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(120);
+    const mid = await read(sel, nth);
+    await c.sleep(400);
+    const after = await read(sel, nth);
+    c.log("PRESS", sel, `${at[2]}x${at[3]}`, "held", held && held.scale, "120ms after", mid && mid.scale, "after", after && after.scale,
+      held && hover && held.transform === hover.transform ? "transform kept" : `transform ${hover && hover.transform} -> ${held && held.transform}`, "rest", rest && rest.scale);
+    c.key("Escape"); await c.sleep(700);
+  }
+  // a quick click: down and up 20ms apart, read 60ms on
+  const at = await c.js(`(() => { const el = document.querySelector(".chart-btn"); el.scrollIntoView({ block: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)]; })()`);
+  await c.sleep(400);
+  c.wc.sendInputEvent({ type: "mouseDown", x: at[0], y: at[1], button: "left", clickCount: 1 }); await c.sleep(20);
+  c.wc.sendInputEvent({ type: "mouseUp", x: at[0], y: at[1], button: "left", clickCount: 1 });
+  const dip = [];
+  for (let i = 0; i < 8; i++) { await c.sleep(40); dip.push((await read(".chart-btn", 0)).scale); }
+  c.log("TAP", dip.join(" "));
+  c.key("Escape"); await c.sleep(700);
+};
+
+// Stills of the 22 October 2026 pass (run with --shots on a profile with test data, `polish --profile=look`): the
+// journal's Win / Breakeven / Loss sliding (mid-way and settled), the trading hero's four tiles, both sides' settings
+// switch, and Money flow coming into view while the page is scrolled (no hole before it pops in).
+const polish = async (c) => {
+  const box = (sel, pad = 12) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(r.width + ${pad} * 2), height: Math.round(r.height + ${pad} * 2) }; })()`);
+  const shotOf = async (name, sel, pad) => { const r = await box(sel, pad); if (r) await c.shot(name, r); else c.log("NO", sel); };
+  await c.sleep(SPLASH_MS);
+  // finance: Money flow scrolled into view a little at a time
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await c.js(`(() => { const e = document.querySelectorAll('.flow-card')[0]; scrollTo({ top: e.getBoundingClientRect().bottom + scrollY - innerHeight + 40, behavior: 'instant' }); })()`); await c.sleep(1200);
+  for (const n of [1, 2, 3]) { await c.js(`scrollBy({ top: 90, behavior: 'instant' })`); await c.sleep(700); await c.shot(`flow-scroll-${n}`); }
+  await c.js(`document.querySelector('.foot-logo').scrollIntoView({ block: 'end', behavior: 'instant' })`); await c.sleep(1500);
+  await shotOf("foot-finance", ".foot-logo", 0);
+  await c.press('button[aria-label="Settings"]'); await c.sleep(1000);
+  await shotOf("set-finance", ".set-modal");
+  await c.press(".set-modal .wr-seg button:last-of-type"); await c.sleep(170); await shotOf("set-finance-mid", ".set-modal .wr-seg", 6);
+  await c.sleep(600); await shotOf("set-finance-myr", ".set-modal .wr-seg", 6);
+  await c.press(".set-modal .wr-seg button:first-of-type"); await c.sleep(800);
+  c.key("Escape"); await c.sleep(800);
+  await c.press(".foot-logo"); await c.sleep(5000);
+  // crypto: the hero, then a day's journal
+  await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(6000);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3600);
+  await shotOf("crypto-tiles", ".hero-tiles");
+  await c.press(".cell", 9); await c.sleep(1800);
+  await c.js(`document.querySelector('.jr-res').scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(800);
+  await shotOf("res-win", ".jr-res", 8);
+  await c.press(".jr-res button", 2); await c.sleep(160); await shotOf("res-mid", ".jr-res", 8);
+  await c.sleep(700); await shotOf("res-loss", ".jr-res", 8);
+  await c.press(".jr-res button", 1); await c.sleep(800); await shotOf("res-be", ".jr-res", 8);
+  await c.press(".jr-res button", 0); await c.sleep(800); await shotOf("res-win-again", ".jr-res", 8);
+  await shotOf("crypto-sheet", ".jr-sheet", 8);
+};
+
+module.exports = { polish, press, sweep, look, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };
