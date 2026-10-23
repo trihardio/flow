@@ -28,4 +28,6 @@ contextBridge.exposeInMainWorld("flowHealth", {
   // The file the iPhone's shortcut saves in iCloud Drive (see phoneRead in main.cjs): { text, at (when it was saved) },
   // or null when there is none.
   phone: () => ipcRenderer.invoke("health:phone"),
+  // a timetable's picture (bytes, its file's extension) read by the Mac's own text recognition, offline: { lines } or { error }
+  ocr: (bytes, ext) => ipcRenderer.invoke("health:ocr", bytes, ext),
 });

@@ -9814,6 +9814,35 @@ const HL_HOUR = 46;            // px an hour
 const hlNewCls = (dow, from) => ({ name: "", room: "", dow, from, to: hlHm(Math.min(23 * 60 + 59, hlMin(from) + 100)), tint: 0 });
 const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
   const [form, setForm] = useState(null);     // { id?, name, room, dow, from, to, tint } while one is being added or edited
+  // a timetable read off a picture (HL_OCR_OK): { busy } while it is read, { err }, or { found } to be checked
+  const [scan, setScan] = useState(null);
+  const fileIn = useRef(null), over = useRef(false), sayT = useRef(0);
+  const scanFile = async (f) => {
+    if (!f) return;
+    if (!/^image\//.test(f.type || "") && !/\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || "")) { setScan({ err: "That isn't a picture" }); return; }
+    setForm(null); setScan({ busy: true });
+    let res = null;
+    try { res = await window.flowHealth.ocr(new Uint8Array(await f.arrayBuffer()), (f.name || "").split(".").pop() || (f.type || "").split("/")[1] || "png"); } catch (e) { res = null; }
+    if (!res || !Array.isArray(res.lines)) { setScan({ err: "The picture couldn't be read" }); return; }
+    const have = new Set(classes.map((c) => `${c.dow}|${c.from}|${c.name.trim().toLowerCase()}`));
+    const found = hlReadTimetable(res.lines, res.W, res.H).filter((c) => !have.has(`${c.dow}|${c.from}|${c.name.toLowerCase()}`)).map((c, i) => ({ ...c, key: i, on: true }));
+    if (!found.length) { setScan({ err: !res.lines.length ? "No words found in that picture" : hlReadTimetable(res.lines, res.W, res.H).length ? "Those classes are on the week already" : "No classes found in it: is it a timetable?" }); return; }
+    setScan({ found });
+  };
+  useEffect(() => { if (!scan || !scan.err) return; clearTimeout(sayT.current); sayT.current = setTimeout(() => setScan(null), 4200); return () => clearTimeout(sayT.current); }, [scan]);
+  // a picture pasted while the pointer is on the week (as on the vision board)
+  useEffect(() => {
+    if (!HL_OCR_OK) return;
+    const paste = (e) => {
+      if (!over.current) return;
+      const t = e.target, tag = (t && t.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const f = [...(e.clipboardData ? e.clipboardData.files : [])].find((q) => /^image\//.test(q.type));
+      if (f) { e.preventDefault(); scanFile(f); }
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, [classes]);
   const from = Math.min(8, ...classes.map((c) => Math.floor(hlMin(c.from) / 60)));
   const to = Math.max(18, ...classes.map((c) => Math.ceil(hlMin(c.to) / 60)));
   const hours = Array.from({ length: to - from }, (_, i) => from + i);
@@ -9821,7 +9850,23 @@ const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
   const ok = form && form.name.trim() && hlTimeOk(form.from) && hlTimeOk(form.to) && form.to > form.from;
   const save = () => { if (!ok) return; api.current.saveCls(form); setForm(null); };
   return (
-    <div className="hl-week">
+    <div className="hl-week" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
+         onDragOver={HL_OCR_OK ? (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); } : undefined}
+         onDrop={HL_OCR_OK ? (e) => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) { e.preventDefault(); scanFile(f); } } : undefined}>
+      {HL_OCR_OK && (
+        <div className="hl-scan-bar">
+          <button className="bk-btn hl-scan-btn" disabled={!!(scan && scan.busy)} onClick={() => fileIn.current?.click()}
+                  title="Read your timetable off a screenshot or a photo: the classes it finds are shown to check before they go in. You can also drop or paste a picture on the week.">
+            <span className="msym" aria-hidden="true">{scan && scan.busy ? "autorenew" : "document_scanner"}</span>{scan && scan.busy ? "Reading the picture…" : "From a picture"}
+          </button>
+          <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />
+          {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
+        </div>
+      )}
+      {scan && scan.found && (
+        <HlScanSheet found={scan.found} onCancel={() => setScan(null)}
+                     onAdd={(list) => { api.current.saveClsMany(list); setScan(null); }} />
+      )}
       {form && (
         <div className="hl-form" key={form.id || "new"}>
           <input className="jr-in" placeholder="What (Calculus II, futsal…)" value={form.name} maxLength={60} autoFocus onChange={(e) => set({ name: e.target.value })}
@@ -9874,6 +9919,317 @@ const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
     </div>
   );
 });
+
+/* ---------- health: reading a timetable off a picture (23 October 2026, his words: "is it possible for you to make an ai
+   that i can just input an image and it will automatically assign it on the timetable", then "okay, i want you to make
+   that"). The Mac's own text recognition reads the picture (window.flowHealth.ocr: Vision, on the Mac, offline) and hands
+   over every line of text with where it stands, 0 to 1 of the width and the height from the top left. What follows works
+   the classes out of that, for the shapes a week of classes comes in:
+   - a grid with the days across the top and the hours down the side, a block per class under its day;
+   - the same turned round: the days down the side, the hours across the top;
+   - a table, a row per class with its day and time in the row (a student portal's list: Hari, Jam, Mata Kuliah, Ruang,
+     Dosen), the day sometimes only on the first of its rows or in one cell beside several;
+   - a list under day headings ("Monday", then "08:00–09:40 Calculus II, Room 301").
+   A class's time is read from its own words when it has them (08:00–09:40, 8.00 - 9.40, 1:30 pm); in a grid without them,
+   from where its block stands against the hours. Its name is the first words that are not a time, a day, a room, a
+   teacher (Dr., S.Kom …) or a heading; its room the words that read like one. Day names in English, Indonesian and
+   Malay. It is a guess on purpose: everything found is shown to be checked before it goes in (HlScan) ---------- */
+const HL_DAYW = { monday: 0, mon: 0, senin: 0, isnin: 0, tuesday: 1, tue: 1, tues: 1, selasa: 1, wednesday: 2, wed: 2, rabu: 2,
+  thursday: 3, thu: 3, thur: 3, thurs: 3, kamis: 3, khamis: 3, friday: 4, fri: 4, jumat: 4, "jum'at": 4, jumaat: 4,
+  saturday: 5, sat: 5, sabtu: 5, sunday: 6, sun: 6, minggu: 6, ahad: 6 };
+// the day a piece of text names (-1: none); a short form (mon, sat …) only counts in a text of one or two words
+const hlOcrDay = (t) => {
+  const w = String(t).toLowerCase().replace(/[’`´]/g, "'").match(/[a-z']+/g) || [];
+  for (const x of w) { const d = HL_DAYW[x]; if (d !== undefined && (x.length > 4 || w.length <= 2)) return d; }
+  return -1;
+};
+// the times in a text, in minutes of the day, in the order written. 8.00 and 8:00 alike; am / pm; a time with no
+// am / pm from 1 to 6 o'clock is taken as the afternoon (a class at 2:00 is not at night). A date (21.10.2026) is not a time
+const HL_TIME_RE = /(^|[^\d:./])(\d{1,2})\s*[:.h]\s*(\d{2})(?![\d]|[.:/]\d)\s*(a\.?\s?m\.?|p\.?\s?m\.?)?/gi;
+const hlOcrTimes = (t) => {
+  const s = String(t).replace(/[–—−~]/g, "-"), out = [];
+  let m;
+  HL_TIME_RE.lastIndex = 0;
+  while ((m = HL_TIME_RE.exec(s))) {
+    let hh = +m[2];
+    const mm = +m[3], ap = (m[4] || "").toLowerCase().replace(/[.\s]/g, "");
+    if (hh > 23 || mm > 59) continue;
+    if (ap === "pm" && hh < 12) hh += 12; else if (ap === "am" && hh === 12) hh = 0; else if (!ap && hh >= 1 && hh <= 6) hh += 12;
+    out.push({ min: hh * 60 + mm, at: m.index + m[1].length });
+  }
+  const re2 = /(^|[^\d:.])(\d{1,2})\s*(am|pm)\b/gi;
+  while ((m = re2.exec(s))) {
+    let hh = +m[2];
+    if (hh < 1 || hh > 12) continue;
+    if (m[3].toLowerCase() === "pm" && hh < 12) hh += 12; else if (m[3].toLowerCase() === "am" && hh === 12) hh = 0;
+    out.push({ min: hh * 60, at: m.index + m[1].length });
+  }
+  return out.sort((a, b) => a.at - b.at);
+};
+const hlOcrRange = (ts) => {
+  if (!ts.length) return null;
+  const a = ts[0].min, b = ts.length > 1 && ts[1].min > a ? ts[1].min : null;
+  return { from: a, to: b };
+};
+const HL_HEADW = /^(no\.?|nomor|number|#|time|times|jam|waktu|pukul|hari|day|days|course|courses|subject|subjects|mata\s?kuliah|matkul|mk|class|kelas|room|ruang|ruangan|venue|location|lokasi|lecturer|lecturers|dosen|pengajar|teacher|sks|credits?|code|kode|kode\s?mk|section|seksi|group|schedule|jadwal|timetable|jadwal kuliah|week|start|end|mulai|selesai)$/i;
+// a room: a room word first ("Room 301", "Lab B2", "Ruang 2"; "Physics Lab" is a name), R.101, a building and a room
+// (GK1-301), or a bare number of three or four figures
+const HL_ROOMW = /^(room|rm|ruang(an)?|lab|laboratori(um|es)?|laboratory|gedung|gd|building|bldg|hall|aula|auditorium|online|zoom|teams|g-?meet|studio|kampus|campus)\b|^r\.?\s?\d|^[a-z]{1,4}\d{0,2}[\s.-]\d{2,4}[a-z]?$|^\d{3,4}[a-z]?$/i;
+const HL_TEACHW = /\b(dr|prof|ir|drs|dra|s\.\s?kom|m\.\s?kom|skom|mkom|s\.\s?t|m\.\s?t|m\.\s?sc|msc|ph\.\s?d|phd|s\.\s?pd|m\.\s?pd|s\.\s?si|m\.\s?si|m\.\s?eng|m\.\s?ba|mba|lecturer|dosen|teacher|bpk|bapak|ibu)\b/i;
+const HL_CODEW = /^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?$/i;
+// one line of the picture: its place, and what it reads as (a time, a day, a heading, a teacher, a room, a code, words)
+const hlOcrLine = (o) => {
+  const t = String(o.t || "").replace(/\s+/g, " ").trim(), times = hlOcrTimes(t), day = hlOcrDay(t);
+  const rest = t.replace(HL_TIME_RE, " ").replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined ? " " : w))
+    .replace(/^[\s\-–,·|:/()]+|[\s\-–,·|:/()]+$/g, "").replace(/\s{2,}/g, " ");
+  const letters = (rest.match(/[a-z]/gi) || []).length;
+  const kind = rest && HL_ROOMW.test(rest) ? "room" : letters < 2 ? (times.length ? "time" : day >= 0 ? "day" : "junk")
+    : HL_HEADW.test(rest) ? "head" : HL_TEACHW.test(rest) ? "teach" : HL_CODEW.test(rest) ? "code" : "text";
+  return { t, rest, times, day, kind, x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0, cx: (+o.x || 0) + (+o.w || 0) / 2, cy: (+o.y || 0) + (+o.h || 0) / 2 };
+};
+// a name from words: a course code in front of it ("IF2110 - Algoritma") is left out, and so is "(3 SKS)" after it; a
+// Roman numeral the reading took a stroke of for a mark ("Kalkulus I!") is put right
+const hlOcrName = (s0) => {
+  const s = String(s0).replace(/(^|\s)([Il|!1]{2,3})(?=\s|$)/g, (m, sp, r) => (/[I|l]/.test(r[0]) && r.length > 1 ? sp + "I".repeat(r.length) : m));
+  let n = String(s).replace(/^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?\s*[-–:·|]?\s+/i, "").replace(/\(?\b\d\s?(sks|credits?)\b\)?/gi, "").replace(/\s{2,}/g, " ").trim();
+  if ((n.match(/[a-z]/gi) || []).length < 2) n = String(s).trim();
+  return n.slice(0, 60);
+};
+// a class from the lines that belong to it: the name, the room, and the time when its words say it. In a grid's block
+// (wrap) a name may run on to the next line; in a table's row the cells are columns, and the name is the longest words
+const hlOcrClass = (ls, wrap = true) => {
+  let name = "", room = "", code = "";
+  const parts = [];
+  ls.forEach((l) => {
+    if (l.times.length && (l.rest.match(/[a-z]/gi) || []).length >= 2) {        // "08:00–09:40 Calculus II · Room 301" in one line: its pieces
+      l.rest.split(/\s[·|•–-]\s|,\s|\s{2,}/).forEach((q) => parts.push(hlOcrLine({ t: q, x: l.x, y: l.y, w: l.w, h: l.h })));
+    } else parts.push(l);
+  });
+  // a name wrapped onto a second line (a narrow grid cell) is joined back, when the line right before it was the name too
+  parts.forEach((l, i) => {
+    if (l.kind === "text") {
+      if (!name) name = l.rest;
+      else if (!wrap) { if ((l.rest.match(/[a-z]/gi) || []).length > (name.match(/[a-z]/gi) || []).length) name = l.rest; }
+      else if (!room && /\d/.test(l.rest) && l.rest.split(" ").length <= 3) room = l.rest;        // a room word misread ("Hoom 4")
+      else if (!room && parts[i - 1].kind === "text" && name.length + l.rest.length < 48) name = `${name} ${l.rest}`;
+    }
+    else if (l.kind === "room" && !room) room = l.rest;
+    else if (l.kind === "code") { if (name && !room) room = l.rest; else if (!code) code = l.rest; }
+  });
+  if (!name) name = code;
+  return { name: hlOcrName(name), room: room.slice(0, 40), range: hlOcrRange(ls.flatMap((l) => l.times)) };
+};
+const hlOcrRows = (lines) => {
+  const rows = [];
+  [...lines].sort((a, b) => a.cy - b.cy).forEach((l) => {
+    const r = rows.find((q) => Math.abs(q.cy - l.cy) < 0.55 * Math.max(q.h, l.h));
+    if (r) { r.ls.push(l); r.cy = (r.cy * (r.ls.length - 1) + l.cy) / r.ls.length; r.h = Math.max(r.h, l.h); } else rows.push({ cy: l.cy, h: l.h, ls: [l] });
+  });
+  rows.forEach((r) => r.ls.sort((a, b) => a.x - b.x));
+  return rows.sort((a, b) => a.cy - b.cy);
+};
+// a straight line through (position, minutes) pairs: the hours of a grid's side, read as positions
+const hlOcrFit1 = (pts) => {
+  if (pts.length < 2) return null;
+  const n = pts.length, sx = pts.reduce((a, p) => a + p[0], 0), sy = pts.reduce((a, p) => a + p[1], 0);
+  const sxx = pts.reduce((a, p) => a + p[0] * p[0], 0), sxy = pts.reduce((a, p) => a + p[0] * p[1], 0), d = n * sxx - sx * sx;
+  if (Math.abs(d) < 1e-12) return null;
+  const m = (n * sxy - sx * sy) / d, b = (sy - m * sx) / n;
+  return m > 0 ? (v) => m * v + b : null;
+};
+// (once more without the labels more than a quarter of an hour off it: a misread "08:00" for "09:00")
+const hlOcrFit = (pts) => {
+  const f = hlOcrFit1(pts);
+  if (!f || pts.length < 4) return f;
+  const keep = pts.filter((p) => Math.abs(f(p[0]) - p[1]) <= 15);
+  return keep.length >= 2 && keep.length < pts.length ? hlOcrFit1(keep) || f : f;
+};
+const hlR5 = (v) => Math.max(0, Math.min(23 * 60 + 55, Math.round(v / 5) * 5));
+// a grid (across: days across the top, the hours down the side; else turned round). A block of a class is the lines
+// under one day that stand together; its time is its own words', else where it stands against the hours
+const hlOcrGrid = (lines, heads, across) => {
+  const P = across ? (l) => l.cx : (l) => l.cy, Q = across ? (l) => l.cy : (l) => l.cx;
+  const Q0 = across ? (l) => l.y : (l) => l.x, Q1 = across ? (l) => l.y + l.h : (l) => l.x + l.w, QS = across ? (l) => l.h : (l) => l.w;
+  // a day heading the reading missed (Tuesday read as "Aepsont") is put back between the two it lies between, in step
+  const read = [...heads].sort((a, b) => P(a) - P(b)), cols = [];
+  read.forEach((h, i) => {
+    const n = read[i + 1];
+    cols.push(h);
+    if (n && n.day - h.day > 1) for (let d = h.day + 1; d < n.day; d++) cols.push({ ...h, day: d, cx: h.cx + ((n.cx - h.cx) * (d - h.day)) / (n.day - h.day), cy: h.cy + ((n.cy - h.cy) * (d - h.day)) / (n.day - h.day) });
+  });
+  const edge = (i, side) => (side < 0 ? (i > 0 ? (P(cols[i - 1]) + P(cols[i])) / 2 : P(cols[i]) - (cols.length > 1 ? (P(cols[1]) - P(cols[0])) / 2 : 0.1))
+    : i < cols.length - 1 ? (P(cols[i]) + P(cols[i + 1])) / 2 : P(cols[i]) + (cols.length > 1 ? (P(cols[i]) - P(cols[i - 1])) / 2 : 0.1));
+  const lo = edge(0, -1), hi = edge(cols.length - 1, 1), start = Math.max(...heads.map(Q1));
+  const axis = lines.filter((l) => l.kind === "time" && l.times.length === 1 && Q(l) > start - 0.01 && P(l) < lo);
+  const fit = hlOcrFit(axis.map((l) => [Q(l), l.times[0].min]));
+  const body = lines.filter((l) => !heads.includes(l) && !axis.includes(l) && Q(l) > start && P(l) >= lo && P(l) <= hi && l.kind !== "head" && l.kind !== "junk");
+  const sizes = body.map(QS).sort((a, b) => a - b), med = sizes[Math.floor(sizes.length / 2)] || 0.02, out = [];
+  cols.forEach((c, i) => {
+    const a = edge(i, -1), b = edge(i, 1);
+    const own = body.filter((l) => P(l) >= a && P(l) < b).sort((p, q) => Q0(p) - Q0(q));
+    const blocks = [];
+    own.forEach((l) => {
+      const blk = blocks[blocks.length - 1];
+      const gap = blk ? Q0(l) - Math.max(...blk.map(Q1)) : Infinity;
+      const twice = blk && l.times.length >= 2 && blk.some((q) => q.times.length >= 1);
+      if (!blk || gap > 0.85 * med || twice) blocks.push([l]); else blk.push(l);
+    });
+    blocks.forEach((blk) => {
+      const k = hlOcrClass(blk);
+      if (!k.name) return;
+      // no time in its words: it starts where its words begin against the hours, to the quarter hour at or before (the
+      // words sit a little inside the block); its end can't be read off words, so it gets the usual length, to be checked
+      let from = k.range ? k.range.from : null, to = k.range ? k.range.to : null;
+      if (from === null && fit) from = Math.max(0, Math.floor((fit(Math.min(...blk.map(Q0))) - 2) / 15) * 15);
+      if (from === null) return;
+      if (to === null || to - from < 20) to = Math.min(23 * 60 + 59, from + 100);
+      out.push({ dow: c.day, from, to, name: k.name, room: k.room });
+    });
+  });
+  return out;
+};
+// a table or a list: a class is a row with a time; its day the row's own, else the day label it belongs to (the one above
+// it under day headings, the nearest when the label stands beside its rows, as one cell beside several does)
+const hlOcrList = (lines) => {
+  const rows = hlOcrRows(lines).filter((r) => r.ls.filter((l) => l.kind === "head").length < 2);
+  const labels = [], out = [];
+  rows.forEach((r) => { if (r.ls.every((l) => l.kind === "day" || l.kind === "junk") && r.ls.some((l) => l.kind === "day")) labels.push({ cy: r.cy, day: r.ls.find((l) => l.kind === "day").day }); });
+  const cls = [];
+  rows.forEach((r, i) => {
+    const ls = r.ls.filter((l) => l.kind !== "day" || l.times.length);
+    const times = r.ls.flatMap((l) => l.times);
+    if (!times.length) return;
+    let k = hlOcrClass(ls.filter((l) => l.kind !== "teach"), false);
+    // the name a row down, when the row holds only the time (and the next row no time of its own)
+    if (!k.name && rows[i + 1] && !rows[i + 1].ls.some((l) => l.times.length)) k = { ...hlOcrClass(rows[i + 1].ls.filter((l) => l.kind !== "teach" && l.kind !== "day"), false), range: k.range };
+    if (!k.name || !k.range) return;
+    const own = r.ls.map((l) => l.day).find((d) => d >= 0);
+    cls.push({ cy: r.cy, day: own === undefined ? -1 : own, k });
+  });
+  // every day label, wherever it stands (one cell beside several rows may share a row with one of them); headings only
+  // when each label stands alone and no class comes before the first: then a class goes under the label above it
+  const dayAt = lines.filter((l) => l.kind === "day" && l.day >= 0).map((l) => ({ cy: l.cy, day: l.day })).sort((a, b) => a.cy - b.cy);
+  const ownDays = cls.some((c) => c.day >= 0), above = dayAt.length && cls.some((c) => c.day < 0 && c.cy < dayAt[0].cy);
+  const near = ownDays || above || dayAt.length > labels.length;
+  let last = -1;
+  cls.forEach((c) => {
+    let d = c.day;
+    if (d < 0 && dayAt.length) {
+      if (near) d = dayAt.reduce((b, q) => (Math.abs(q.cy - c.cy) < Math.abs(b.cy - c.cy) ? q : b)).day;
+      else { const up = labels.filter((q) => q.cy < c.cy); d = up.length ? up[up.length - 1].day : -1; }
+    }
+    if (d < 0) d = last;
+    if (d < 0) return;
+    last = d;
+    out.push({ dow: d, from: c.k.range.from, to: c.k.range.to !== null ? c.k.range.to : Math.min(23 * 60 + 59, c.k.range.from + 100), name: c.k.name, room: c.k.room });
+  });
+  return out;
+};
+// a picture taken at a slant, put straight (what is left once the shell has read it turned): the angle that lines the most
+// words up into rows, tried from −15° to 15° in quarter degrees, where each line's middle lies (the corners the reading
+// gives are no help: a short word's box often has no slope, or too much); every line's middle turned back by it about
+// the picture's middle. As ocrSkew in electron/main.cjs
+const hlOcrSkew = (pts, hgt) => {
+  if (pts.length < 4) return 0;
+  const bin = Math.max(3, hgt * 0.6);
+  let best = 0, top = -1, flat = 0, row = 0;
+  for (let d = -15; d <= 15.001; d += 0.25) {
+    const a = (d * Math.PI) / 180, sn = Math.sin(a), cs = Math.cos(a);
+    let score = 0, most = 0;
+    for (const ph of [0, 0.5]) {
+      const n = new Map();
+      for (const [x, y] of pts) { const k = Math.round((y * cs - x * sn) / bin + ph); n.set(k, (n.get(k) || 0) + 1); }
+      let s = 0, m = 0;
+      for (const v of n.values()) { s += v * v; m = Math.max(m, v); }
+      if (s > score) { score = s; most = m; }
+    }
+    if (Math.abs(d) < 0.01) flat = score;
+    if (score > top || (score === top && Math.abs(d) < Math.abs(best))) { top = score; best = d; row = most; }
+  }
+  // only a slant that lines clearly more up than none, with three words or more in one row (a few lines can pair up by
+  // chance at some angle)
+  return top >= flat * 1.25 && top - flat >= 6 && row >= 3 ? best : 0;
+};
+// (first the slope of the long lines, when they agree: the reading's corners are right for those, and a list, one line
+// a row, lines up the same at any angle)
+const hlOcrSkewLong = (lines) => {
+  const long = lines.filter((o) => Array.isArray(o.q) && o.q.length === 8 && o.q[2] - o.q[0] > 150);
+  const sl = long.map((o) => (Math.atan2(o.q[3] - o.q[1], o.q[2] - o.q[0]) * 180) / Math.PI).filter((v) => Math.abs(v) > 0.5).sort((a, b) => a - b);
+  return sl.length >= 2 && sl.length >= long.length * 0.5 && sl[sl.length - 1] - sl[0] < 2 ? sl[Math.floor(sl.length / 2)] : 0;
+};
+const hlOcrStraight = (raw, W, H) => {
+  const ok = raw.filter((o) => o.w > 0 && o.h > 0);
+  if (!(W > 0 && H > 0) || ok.length < 4) return raw;
+  const hs = ok.map((o) => o.h * H).sort((a, b) => a - b);
+  const d = hlOcrSkewLong(ok) || hlOcrSkew(ok.map((o) => [(o.x + o.w / 2) * W, (o.y + o.h / 2) * H]), hs[Math.floor(hs.length / 2)]);
+  if (Math.abs(d) < 0.3) return raw;
+  const a = (d * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a), mx = W / 2, my = H / 2;
+  return raw.map((o) => {
+    if (!ok.includes(o)) return o;
+    const dx = (o.x + o.w / 2) * W - mx, dy = (o.y + o.h / 2) * H - my;
+    const cx = mx + dx * cs + dy * sn, cy = my - dx * sn + dy * cs;
+    return { ...o, x: cx / W - o.w / 2, y: cy / H - o.h / 2 };
+  });
+};
+const hlReadTimetable = (raw, W, H) => {
+  const lines = hlOcrStraight((Array.isArray(raw) ? raw : []).filter((o) => o && typeof o.t === "string" && o.t.trim()), W, H).map(hlOcrLine);
+  const days = lines.filter((l) => l.kind === "day" && l.day >= 0);
+  // days across the top: three or more on one row; down the side: three or more under each other, with the hours across
+  const across = hlOcrRows(days).map((r) => r.ls).find((ls) => new Set(ls.map((l) => l.day)).size >= 3);
+  let found;
+  if (across) found = hlOcrGrid(lines, across, true);
+  else {
+    const timeRow = hlOcrRows(lines.filter((l) => l.kind === "time" && l.times.length === 1)).find((r) => r.ls.length >= 3);
+    const down = timeRow ? days.filter((l) => l.cx < Math.min(...timeRow.ls.map((q) => q.x))) : [];
+    found = down.length >= 3 && new Set(down.map((l) => l.day)).size >= 3 ? hlOcrGrid(lines, down, false) : hlOcrList(lines);
+  }
+  const seen = new Set();
+  return found.filter((c) => c.name && c.to > c.from && c.dow >= 0 && c.dow <= 6)
+    .map((c) => ({ dow: c.dow, from: hlHm(hlR5(c.from)), to: hlHm(Math.min(23 * 60 + 59, hlR5(c.to))), name: c.name, room: c.room || "" }))
+    .filter((c) => { const k = `${c.dow}|${c.from}|${c.name.toLowerCase()}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => a.dow - b.dow || (a.from < b.from ? -1 : 1));
+};
+/* ---------- health: reading a timetable end ---------- */
+// the Mac app reads pictures (a plain browser has no such thing, and offers none of it)
+const HL_OCR_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.ocr);
+/* What was read off the picture, to be checked before it goes in: a row a class, each with its day, times, name and
+   room to change, and a tick to leave it out. Classes that are on the week already are passed over. "Add to the week"
+   puts the ticked ones in, one colour per name */
+const HlScanSheet = ({ found, onAdd, onCancel }) => {
+  const [rows, setRows] = useState(found);
+  const set = (i, p) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const ok = (r) => r.on && r.name.trim() && hlTimeOk(r.from) && hlTimeOk(r.to) && r.to > r.from;
+  const n = rows.filter(ok).length;
+  return (
+    <div className="hl-sheet hl-scan">
+      <div className="hl-scan-head">
+        <span className="msym" aria-hidden="true">document_scanner</span>
+        <b>{found.length === 1 ? "1 class found" : `${found.length} classes found`} in the picture</b>
+        <small>Check them before they go in: the words and times were read off the picture.</small>
+      </div>
+      <div className="hl-scan-rows">
+        {rows.map((r, i) => (
+          <div key={r.key} className={`hl-scan-row${r.on ? "" : " off"}`} style={{ "--i": Math.min(i, 12) }}>
+            <button className={`hl-scan-tick${r.on ? " on" : ""}`} onClick={() => set(i, { on: !r.on })} aria-label={r.on ? "Leave this one out" : "Put this one in"}>
+              <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
+            </button>
+            <select className="jr-in hl-scan-day" value={r.dow} onChange={(e) => set(i, { dow: +e.target.value })} aria-label="Day">
+              {DOW_FULL.map((d, w) => <option key={d} value={w}>{d}</option>)}
+            </select>
+            <input className="jr-in hl-scan-t" type="time" value={r.from} onChange={(e) => set(i, { from: e.target.value })} aria-label="Starts" />
+            <input className="jr-in hl-scan-t" type="time" value={r.to} onChange={(e) => set(i, { to: e.target.value })} aria-label="Ends" />
+            <input className="jr-in hl-scan-n" value={r.name} maxLength={60} placeholder="What" onChange={(e) => set(i, { name: e.target.value })} aria-label="What" />
+            <input className="jr-in hl-scan-r" value={r.room} maxLength={40} placeholder="Where" onChange={(e) => set(i, { room: e.target.value })} aria-label="Where" />
+          </div>
+        ))}
+      </div>
+      <span className="hl-form-go">
+        <button className="bk-btn" onClick={onCancel}>Cancel</button>
+        <button className="hl-save" disabled={!n} onClick={() => onAdd(rows.filter(ok))}>{n === 1 ? "Add 1 to the week" : `Add ${n} to the week`}</button>
+      </span>
+    </div>
+  );
+};
 
 // the Mac app hands the iPhone's file over (a plain browser has no such thing, and shows none of it)
 const HL_PHONE_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.phone);
@@ -10592,6 +10948,17 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
       return { ...x, classes: f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...(o.test ? { test: true } : {}) } : o)) : [...x.classes, c] };
     }),
     delCls: (id) => up((x) => ({ ...x, classes: x.classes.filter((c) => c.id !== id) })),
+    // classes read off a picture: one save, and one colour per name (the next colours after those in use)
+    saveClsMany: (list) => up((x) => {
+      const tint = {};
+      let next = x.classes.length;
+      const add = list.map((f) => {
+        const k = f.name.trim().toLowerCase();
+        if (tint[k] === undefined) tint[k] = next++ % HL_CLS.length;
+        return { id: uid(), name: f.name.trim(), room: (f.room || "").trim(), dow: f.dow, from: f.from, to: f.to, tint: tint[k] };
+      });
+      return { ...x, classes: [...x.classes, ...add] };
+    }),
     // a day's steps typed: they are his from then on (an Apple Health import leaves them alone)
     setSteps: (k, n) => up((x) => {
       if (k > today) return x;
@@ -17887,6 +18254,28 @@ export default function PnlCalendar() {
         .hl-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 14px; padding: 12px; border-radius: 14px; background: rgba(255,255,255,0.04);
                    animation: hlFormIn .32s var(--ease) backwards; }
         @keyframes hlFormIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        /* a timetable read off a picture: the button over the week, what it says, and the sheet to check what was found */
+        .hl-scan-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+        .hl-scan-btn { display: inline-flex; align-items: center; gap: 6px; }
+        .hl-scan-btn .msym { font-size: 17px; }
+        .hl-scan-btn:disabled .msym { animation: hlSpin 1s linear infinite; }
+        @keyframes hlSpin { to { transform: rotate(360deg); } }
+        .hl-scan-say { font-size: 12.5px; color: #c7cdd2; animation: fadeRight .3s ease backwards; }
+        .hl-scan-head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; }
+        .hl-scan-head .msym { grid-row: span 2; font-size: 24px; color: #7fb6e0; }
+        .hl-scan-head b { font-size: 14px; color: #eef1f4; }
+        .hl-scan-head small { font-size: 12px; color: #8e969e; }
+        .hl-scan-rows { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+        .hl-scan-row { display: grid; grid-template-columns: 28px 74px 110px 110px minmax(0, 1.6fr) minmax(0, 1fr); gap: 6px; align-items: center;
+                       animation: fadeDown .25s ease backwards; animation-delay: calc(var(--i) * 35ms); transition: opacity .2s ease; }
+        .hl-scan-row.off { opacity: 0.45; }
+        .hl-scan-row .jr-in { height: 32px; width: 100%; min-width: 0; color-scheme: dark; }
+        .hl-scan-tick { width: 26px; height: 26px; padding: 0; border-radius: 8px; border: 1.5px solid rgba(255,255,255,0.22); background: none; cursor: pointer; display: grid; place-items: center;
+                        transition: background .2s ease, border-color .2s ease; }
+        .hl-scan-tick svg { width: 18px; height: 18px; fill: none; stroke: #0f1a14; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+        .hl-scan-tick path { stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .3s cubic-bezier(0.4,0,0.2,1); }
+        .hl-scan-tick.on { background: #2fd08a; border-color: #2fd08a; }
+        .hl-scan-tick.on path { stroke-dashoffset: 0; }
         .hl-form > .jr-in { flex: 1 1 200px; width: auto; height: 34px; }
         .hl-times { display: inline-flex; align-items: center; gap: 6px; }
         .hl-times .jr-in { width: 138px; height: 34px; color-scheme: dark; }

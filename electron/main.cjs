@@ -8,6 +8,7 @@ const { app, BrowserWindow, protocol, net, session, ipcMain, utilityProcess, nat
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { execFile } = require("node:child_process");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 
@@ -80,6 +81,104 @@ const phoneRead = async () => {
   }
   if (!best) return null;
   try { return { text: await fs.promises.readFile(best.file, "utf8"), at: best.at }; } catch (e) { return null; }
+};
+
+/* A timetable read off a picture (23 October 2026, his words: "an ai that i can just input an image and it will
+   automatically assign it on the timetable"). The Mac's own text recognition (Vision, as in Live Text), on the Mac:
+   nothing is sent anywhere and nothing is bundled. The picture is written to a folder of its own in the system's
+   temporary folder, read by the system's script runner (osascript, JavaScript reaching Vision through its bridge to the
+   system's frameworks), and the folder is removed. What comes back is every line of text with where it stands, 0 to 1 of
+   the picture's width and height from the top left, and its four corners in pixels (a photo taken at a slant is put
+   straight from them); the page works the classes out of it (hlReadTimetable). { W, H, lines } or { error } */
+const OCR_JS = `/* ocr-start */ObjC.import("Vision"); ObjC.import("Foundation"); ObjC.import("CoreImage"); ObjC.import("CoreGraphics");
+function run(argv) {
+  const a = Number(argv[1] || 0) * Math.PI / 180;        // turned back by the slant measured (Core Image turns the other way round)
+  let ci = $.CIImage.imageWithContentsOfURL($.NSURL.fileURLWithPath(argv[0]));
+  if (ci.isNil()) return JSON.stringify({ error: "read" });
+  if (a) ci = ci.imageByApplyingTransform({ a: Math.cos(a), b: Math.sin(a), c: -Math.sin(a), d: Math.cos(a), tx: 0, ty: 0 });
+  const W = Number(ci.extent.size.width), H = Number(ci.extent.size.height);
+  const handler = $.VNImageRequestHandler.alloc.initWithCIImageOptions(ci, $({}));
+  const req = $.VNRecognizeTextRequest.alloc.init;
+  req.recognitionLevel = 0;
+  req.usesLanguageCorrection = false;
+  if (!handler.performRequestsError($([req]), $())) return JSON.stringify({ error: "read" });
+  const res = req.results, out = [];
+  for (let i = 0; i < res.count; i++) {
+    const o = res.objectAtIndex(i), c = o.topCandidates(1).objectAtIndex(0), b = o.boundingBox;
+    const q = [o.topLeft, o.topRight, o.bottomRight, o.bottomLeft].flatMap((p) => [p.x * W, (1 - p.y) * H]).map((v) => Math.round(v * 10) / 10);
+    out.push({ t: c.string.js, c: c.confidence, x: b.origin.x, y: 1 - b.origin.y - b.size.height, w: b.size.width, h: b.size.height, q: q });
+  }
+  return JSON.stringify({ W: W, H: H, lines: out });
+}/* ocr-end */`;
+/* ocr-loop-start */
+// A photo taken at a slant: the reading misses words of a picture more than a little turned (7 of 18 lines of a table at
+// 4°). Its slant is measured (ocrSkew), and when it is more than 0.8° the picture is read again turned straight, up to
+// twice, keeping the reading that found the most
+// (the slant: the angle that lines the most words up into rows, tried from −15° to 15° in quarter degrees, where each line's
+// middle lies; the corners the reading gives are no help, a short word's box often has no slope or too much. As
+// hlOcrSkew in src/App.jsx)
+const ocrSkewOf = (pts, hgt) => {
+  if (pts.length < 4) return 0;
+  const bin = Math.max(3, hgt * 0.6);
+  let best = 0, top = -1, flat = 0, row = 0;
+  for (let d = -15; d <= 15.001; d += 0.25) {
+    const a = (d * Math.PI) / 180, sn = Math.sin(a), cs = Math.cos(a);
+    let score = 0, most = 0;
+    for (const ph of [0, 0.5]) {
+      const n = new Map();
+      for (const [x, y] of pts) { const k = Math.round((y * cs - x * sn) / bin + ph); n.set(k, (n.get(k) || 0) + 1); }
+      let s = 0, m = 0;
+      for (const v of n.values()) { s += v * v; m = Math.max(m, v); }
+      if (s > score) { score = s; most = m; }
+    }
+    if (Math.abs(d) < 0.01) flat = score;
+    if (score > top || (score === top && Math.abs(d) < Math.abs(best))) { top = score; best = d; row = most; }
+  }
+  // only a slant that lines clearly more up than none, with three words or more in one row (a few lines can pair up by
+  // chance at some angle)
+  return top >= flat * 1.25 && top - flat >= 6 && row >= 3 ? best : 0;
+};
+// (first the slope of the long lines, when they agree: the reading's corners are right for those, and a list, one line
+// a row, lines up the same at any angle)
+const ocrSkewLong = (lines) => {
+  const long = lines.filter((o) => Array.isArray(o.q) && o.q.length === 8 && o.q[2] - o.q[0] > 150);
+  const sl = long.map((o) => (Math.atan2(o.q[3] - o.q[1], o.q[2] - o.q[0]) * 180) / Math.PI).filter((v) => Math.abs(v) > 0.5).sort((a, b) => a - b);
+  return sl.length >= 2 && sl.length >= long.length * 0.5 && sl[sl.length - 1] - sl[0] < 2 ? sl[Math.floor(sl.length / 2)] : 0;
+};
+const ocrSkew = (g) => {
+  const W = +g.W, H = +g.H, ls = g.lines.filter((o) => o.w > 0 && o.h > 0);
+  if (!(W > 0 && H > 0) || ls.length < 4) return 0;
+  const hs = ls.map((o) => o.h * H).sort((a, b) => a - b);
+  return ocrSkewLong(ls) || ocrSkewOf(ls.map((o) => [(o.x + o.w / 2) * W, (o.y + o.h / 2) * H]), hs[Math.floor(hs.length / 2)]);
+};
+const ocrStraight = async (pass) => {
+  let deg = 0, best = await pass(0);
+  for (let k = 0, cur = best; k < 2 && cur; k++) {
+    const s = ocrSkew(cur);
+    if (Math.abs(s) < 0.8 || Math.abs(deg + s) > 20) break;
+    deg += s;
+    cur = await pass(deg);
+    if (cur && cur.lines.length >= best.lines.length) best = cur;
+  }
+  return best;
+};
+/* ocr-loop-end */
+const OCR_EXT = new Set(["png", "jpg", "jpeg", "heic", "heif", "gif", "bmp", "tif", "tiff", "webp"]);
+const ocrRead = async (bytes, ext) => {
+  if (process.platform !== "darwin" || !bytes || !bytes.length || bytes.length > 40e6) return { error: "size" };
+  let dir = null;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "flow-ocr-"));
+    const img = path.join(dir, `in.${OCR_EXT.has(String(ext).toLowerCase()) ? String(ext).toLowerCase() : "png"}`), js = path.join(dir, "read.js");
+    fs.writeFileSync(img, Buffer.from(bytes));
+    fs.writeFileSync(js, OCR_JS);
+    const pass = (deg) => new Promise((res) => execFile("/usr/bin/osascript", ["-l", "JavaScript", js, img, String(deg)], { timeout: 45000, maxBuffer: 32 * 1024 * 1024 },
+      (err, so) => { let g = null; try { g = err ? null : JSON.parse(so); } catch (e) { g = null; } res(g && Array.isArray(g.lines) ? g : null); }));
+    const got = await ocrStraight(pass);
+    return got ? { W: +got.W || 0, H: +got.H || 0, lines: got.lines.filter((o) => o && typeof o.t === "string").slice(0, 4000) } : { error: "read" };
+  } catch (err) { return { error: "read" }; } finally {
+    if (dir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch (err) { /* the system clears its temporary folder */ }
+  }
 };
 const DATA_DIR = path.join(app.getPath("appData"), "flow");
 const OLD_DATA_DIR = path.join(app.getPath("appData"), "trace");
@@ -418,6 +517,7 @@ app.whenReady().then(() => {
   ipcMain.handle("fx:rates", () => fetchRates());
   ipcMain.handle("fx:quote", (e, market, symbol) => fetchQuote(market, symbol));
   ipcMain.handle("health:phone", () => phoneRead());
+  ipcMain.handle("health:ocr", (e, bytes, ext) => ocrRead(bytes, ext));
   ipcMain.handle("gfx:settle", () => aiReady);
   ipcMain.on("gfx:primed", gfxPrimed);
 
