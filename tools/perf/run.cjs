@@ -9,7 +9,7 @@
      node tools/perf/report.cjs finance
    Journeys: launch, finance, trade, stocks, cards, pull (see journeys.cjs).
    Flags: --trace (what each hitch is made of, and the graphics programs built), --shots (stills on, frame timing off),
-          --fresh (an empty data folder), --dist=<folder>, --name=<output name>, --sw=<chromium switch>[=value],
+          --fresh (an empty data folder), --light (the light look: see "Light mode" in src/App.jsx), --dist=<folder>, --name=<output name>, --sw=<chromium switch>[=value],
           --no-rest (nothing is drawn in quiet moments after the opening, to compare with),
           --profile=<name> (a data folder of its own, kept between runs, empty to begin with; with --fresh it is emptied first), --cold (the app is told the system's cache of
           graphics programs is empty and builds them before its opening: the journey starts once that is over. To
@@ -74,7 +74,7 @@ app.whenReady().then(async () => {
     width: 1440, height: 900, show: false, useContentSize: true, backgroundColor: "#0e1012",
     webPreferences: { offscreen: shots ? { deviceScaleFactor: 2 } : { useSharedTexture: true, deviceScaleFactor: 2 }, preload: path.join(__dirname, "preload.cjs"),
                       contextIsolation: false, sandbox: false, nodeIntegration: false, spellcheck: false, backgroundThrottling: false,
-                      additionalArguments: [...(flag("cold") ? ["--flow-gfx-cold"] : []), ...(flag("no-rest") ? ["--flow-no-rest"] : [])] },
+                      additionalArguments: [...(flag("light") ? ["--flow-light"] : []), ...(flag("fx-rates") ? ["--flow-fx-rates"] : []), ...(flag("cold") ? ["--flow-gfx-cold"] : []), ...(flag("no-rest") ? ["--flow-no-rest"] : []), ...(flag("backup") ? ["--flow-backup"] : []), ...(flag("backup-fails") ? ["--flow-backup", "--flow-backup-fails"] : [])] },
   });
   const wc = win.webContents;
   wc.setFrameRate(120);
@@ -116,7 +116,15 @@ app.whenReady().then(async () => {
       // (since 23 October 2026 the rings stand between the wallet and the coin: a press meant for the coin while the wallet
       // is in the middle brings the rings in first, as a hand would have to, so the journeys written before still go in)
       if ((sel === ".coin-unit" || sel === ".coin-unit:not(.fx)") && (await js(`!!document.querySelector('.launch-wrap.pick:not(.pick-coin):not(.pick-rings)')`))) { await c.press(".ring-unit"); await sleep(900); }
-      const r = await js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null; const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
+      const find = () => js(`(() => { const el = document.querySelectorAll(${JSON.stringify(sel)})[${nth}]; if (!el) return null; const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height }; })()`);
+      let r = await find();
+      // since 20 October 2026 a trading side opens on Home (the dashboard): a journey written for the yearly panel
+      // reaches it through Home's Calendar button
+      if (!r && /\.(ycell|month-btn|month-big|chart-btn|cur-btn|cell)\b/.test(sel) && await js(`!!document.querySelector(".dash")`)) {
+        log("HOME", "to the yearly panel, for", sel);
+        await c.press(".dash-tools .dg-btn", 0); await sleep(1600);
+        r = await find();
+      }
       if (!r) { log("NOT FOUND", sel, nth); return false; }
       await c.click(r.l + r.w * fx, r.t + r.h * fy);
       return true;

@@ -1,0 +1,114 @@
+# Save points: what each one holds
+
+Named snapshots of `src/App.jsx`. How one is loaded and how a new one is made is in the project's `CLAUDE.md`. `claude-md_before_split.md` in this folder is not a save point of the app: it is the project's `CLAUDE.md` as it was before it was split into files (13 October 2026).
+
+- `croc_color.jsx`: colour croc logo on the cards.
+- `croc_engraved.jsx`: engraved metal-tone logos on the cards, saved before the opening screen was added.
+- `before_offline.jsx`: last version that used Google Fonts and the Claude-hosted AI (before the offline Mac app).
+- `before_pixel_wordmark.jsx`: last version with the bold Inter "TRACE" on the opening screen.
+- `before_selection_panel.jsx`: last version that opened straight onto the wallets (no selections panel, no coin, no trading page).
+- `before_coin_carousel.jsx`: the first selections panel: wallet and coin side by side at equal size, and the detailed coin (bead ring, circuit traces, ridged edge).
+- `before_month_flicker.jsx`: before the month title's flicker and the year borders on month stepping.
+- `before_idx_globe.jsx`: before the trading selection (coin and IDX globe), the old-month → new-month title animation and the "t" fix. The coin went straight to one Trading page.
+- `before_3d_globe.jsx`: the IDX globe as a flat logo that rotated in 2D, and the month switch that went through the normal font.
+- `before_yearly_fill.jsx`: the yearly panel with fixed-size month boxes and the footer in the middle of the window.
+- `before_flow.jsx`: the last version named TRACE, with the coin opening a placeholder (no crypto tracker).
+- `before_calculator.jsx`: the crypto tracker in US dollars only, without the position calculator.
+- `before_calc_checks.jsx`: the calculator before its error checks, target ordering and long / short lock.
+- `before_idx_panel.jsx`: crypto only (`CryptoTracker`), with the globe still opening a placeholder page.
+- `before_pnl_analysis.jsx`: the trading side with the Weekly PnL bars, no ring on the Coins card, and the old timed scroll lock.
+- `before_risk_currency.jsx`: the calculator with its risk always in dollars (the analysis card and the test-data settings are already in).
+- `before_axis_fix.jsx`: everything renamed to flow, with the charts' x-axis still crossed by a grid line and the dashed zero line.
+- `before_live_prices.jsx`: the calculators without live prices, and the stock calculator sized from a risk amount and a budget (no lots box).
+- `before_detail_pass.jsx`: before the small-animation pass (year arrows cut to grey, day tiles and month boxes jumped up under the pointer, calculator results appeared at once and the pop-up jumped to its new size).
+- `before_quick_add.jsx`: the finance side without the quick-add box on the yearly panel and without the Projection card in Money flow.
+- `before_debts.jsx`: before the 4 October 2026 batch: no Debts section, Goals above Money flow, quick add switching without animation, chart lines starting from zero, the selections panel always on the current year's wallet, a second swipe dead while the first one's glide ran, and the calculators named "Position calculator" / "Stock calculator".
+- `before_compare.jsx`: the chart pop-ups without Compare.
+- `before_steady_numbers.jsx`: counting numbers still written in their resting form every frame (flickering between one decimal and two).
+- `before_compare_motion.jsx`: Compare in its first form (violet ghost, the chart's line replaying on every press, no weekly compare).
+- `before_scroll_reveal.jsx`: the cards' fold and seen state inside `PnlCalendar`, Money flow opening all at once, the backdrop as six CSS gradients on `body`, and the Money flow labels lying on each other when categories are small.
+- `before_dev_options.jsx`: the old test-data settings (income "how often", five style cards) with the generator inside `PnlCalendar`.
+- `before_projection_rework.jsx`: the projection with its bar, reading big buys from 12 weeks only.
+- `before_card_pull.jsx`: the card fading out of the wallet and the big card fading in.
+- `before_one_move.jsx`: the card leaving the wallet in stages (rise, stop, glide; presses ignored meanwhile), and the coin in its turned-aside pose on the trading panel.
+- `before_warmup.jsx`: before the first-time-lag pass (the opening waits for its fonts, the warm-up, the wallet's standing blur), with MYR on a double click and the cards' fold cutting off what reached past their sides.
+- `before_journal.jsx`: the crypto day panel with the Profit / Loss rows, before the trading journal.
+- `before_trade_pictures.jsx`: before the 5 October 2026 journal batch: no pictures or deposits, two decimals in Full TP % and Risk %, one blue for every time frame, Breakeven always $0, the balance kept as a bare offset in a small typing box, and the day panel narrower than the calendar.
+- `before_life_pass.jsx`: before the 6 October 2026 look refresh (grey card titles, the 38px PnL figure, goals without their status). The Left over tab, the score pop-up, the three main insights, the side titles and the leaning coin toss are already in.
+- `before_personalities.jsx`: the first look refresh (hero card, goal rings, card tags) and the two animation speeds, before each area got a look of its own (poster year, sparklines, the big score dial, terminal trading).
+- `before_trade_views.jsx`: before the 6 October 2026 trading rework: a logged trade opening straight into its form with a red bin on its row, "Pre notes" / "Description", the Deposits line always open, day tiles green whenever the day was not below zero, test trades with empty journal boxes.
+- `before_idx_journal.jsx`: the stocks day panel with its Profit / Loss rows, before the IDX journal, its tags and the Breakdown card.
+- `before_design_rework.jsx`: before the 7 October 2026 design rework (no sidebar, the month's arrows hidden until the pointer was on them, "Oct 2026" beside the pixel "October", no ⌘N quick log, debts that could not be edited).
+- `before_side_drawer.jsx`: the rework's first navigation: the sidebar standing open at the left edge with the page pushed over, and the month header as a year button, two arrows and the month name.
+- `before_accounts.jsx`: before accounts: no login, no select acc panel, "Rassam" / "RASSAM MAWARDI" written into the cards, one set of saved entries for everybody.
+- `before_pixel_avatars.jsx`: accounts with the first set of profile pictures (sixteen drawn figures on dark discs, after Bybit's) and no picture of one's own.
+- `before_avatar_backgrounds.jsx`: seven pixel profile pictures, the 8-ball among them, always on the grey disc (no moustache, star, flower or teddy, nothing to choose behind the person).
+- `before_three_spins.jsx`: the coin toss as one spin about a single axis rolled per toss (2 to 4 turns of it).
+- `before_forex.jsx`: before the 8 October 2026 batch: no forex side (the trading panel a coin and a globe), and the trading sides without the finance side's year poster, month-box lines, day-tile bars, quick add row and ⌘N quick log.
+- `before_first_run.jsx`: before the 8 October 2026 first-launch fix: no preparation before the opening on an empty graphics cache, and the trading side's pop-ups not filed for the warm-up.
+- `before_tile_corners.jsx`: the first-launch preparation is in, but the day tiles' bars still carried their own round corners (a low bar showed past the tile's corners), there was no account button on the panels before an app, and the preparation left its rubbish to be cleared during the first presses.
+- `before_rest_warmup.jsx`: before the 9 October 2026 lag pass (nothing drawn in quiet moments after the opening, the month's entrance keyed on `> *`, the trading totals not rounded to the cent).
+- `before_item_lists.jsx`: before 11 October 2026: an expense was one amount and one name (no items button on the Expenses row, no `parts`).
+- `before_split_bill.jsx`: the items list is in, before the split-bill calculator (no people button on the Expenses row, one button on top of the finance sidebar).
+- `before_im_keeps_leverage.jsx`: the split-bill calculator is in; a typed IM still changed the leverage so the stop lost the risk, and the Risk box never followed it.
+- `before_limit_bars.jsx`: the day tiles' bars full at twice the daily limit (before they were measured against the limit itself, and the red ones against the month).
+- `before_cat_words.jsx`: the keyword lists counting a word wherever its letters turned up ("sweatpants" was food).
+- `before_bill_items.jsx`: the split bill with one typed amount per person, and the score dial's figure as plain text (a 1 standing two pixels off).
+- `before_setup_pictures.jsx`: before pictures on a trade's setup, and with the three forex coins (before the forex die).
+- `before_plans_projected.jsx`: before the projection counted the planned expenses and before the information symbol under the score.
+- `before_drag_move.jsx`: before a logged row could be dragged onto another day (and before the four last backgrounds, importing a file of another side, and planned expenses in Weekly expenses).
+- `before_first_tour.jsx`: before the evening of 11 October 2026: the first launch's preparation drew the filed screens only (the 3D of the panels before an app was first built under his pointer), no introduction after the login, and Reset account only asked for the name again.
+- `before_glass_redesign.jsx`: before the 12 October 2026 liquid-glass pass (see Style): solid dark day tiles and month boxes, the square menu button, flat grey controls, grey backdrop glows, and every box's focus outline green.
+- `before_section_heads.jsx`: the evening of 12 October 2026, before the projection's tiles lost their frames and the four section headers became one kind. That day's earlier changes are in it (the pixel figure's comma, empty day tiles without a dot, the bar's labels, the weekly chart's axis, the Log capsule, the projection's headline, the two glows behind the calendar).
+- `before_polish_pass.jsx`: before the 12 October 2026 polish pass (see Style): the window's scroll bar in a dark lane of its own, the engine's own focus ring on buttons, and the faint unselected chart and category buttons.
+- `before_other_symbols.jsx`: before 13 October 2026: the picker under Other with the symbols of the four named categories, no symbol picked by itself, the test tools always on show, and the split bill with service and tax in % only and nothing shared by some.
+- `before_audit_fixes.jsx`: before the 13 October 2026 audit fixes (see "Audit fixes" under Style): no colour tokens, no reduced-motion rules, pop-ups not named as dialogs.
+- `before_year_labels.jsx`: before the 13 October 2026 yearly panel fixes (the audit fixes are in it): month boxes with two bare figures, the lower with a minus, each month's line stretched to its own highest day, a centred dot in an empty month, no note under the pointer, and the quick-add row's hint in a placeholder's grey, and the year in the header at 48px with no sparkle.
+- `before_safety_net.jsx`: before the 13 October 2026 critique batch: no Undo after a delete, no copy a day, the score's rating by the number alone, ⌘N only once the finance app is entered, no "I paid" in the split bill.
+- `before_trading_polish.jsx`: the safety net batch is in it, before the 13 October 2026 polish of the trading sides (no name under the one in the middle of the trading panel, the analysis tabs and the worked-out hints fainter, test trades whose setup could contradict their side).
+- `before_full_test_data.jsx`: the trading polish is in it, before the 13 October 2026 test-data batch (no items inside a test expense, nothing in Other, no test plans; no test deposits, withdrawals or break-even trades).
+- `before_dev_account.jsx`: the full test data is in it, before the Dev account (13 October 2026).
+- `before_shortcut_cleanup.jsx`: the Dev account is in it, before the 13 October 2026 clean-up of that day's own code (see "Developer-mode test and clean-up").
+- `before_calm_tiles.jsx`: the clean-up is in it, before the calmer day tiles on the finance calendar (13 October 2026): every tile washed and edged in its colour, the amount spent as the bold figure with "/50Rb" beside it and the difference small in brackets, a dot per expense.
+- `before_light_mode.jsx`: the calmer day tiles are in it, before light mode (13 October 2026): React's own `jsx` for every element, no `flowEl`, no Appearance row in the settings, and the four switches whose grey box did not slide.
+- `before_income_split.jsx`: before an income's split across months replaced the equal months (23 October 2026).
+- `before_tools_anim.jsx`: before Home's toolbar changed over in two beats (23 October 2026).
+- `before_calc_beside_fx.jsx`: before the calculator beside the exchanger (23 October 2026).
+- `before_no_scrollbars.jsx`: before the in-page scroll bars were hidden (23 October 2026).
+- `before_time_plan.jsx`: before the time plan (22 October 2026): no ⌘T, no Time plan widget.
+- `before_motion_pass.jsx`: before the motion pass of 20 October 2026 (buttons whose own transition left out transform, the test data switches, the day / night switch without a fade, settings lines swapped in one frame).
+- `before_glass_slider.jsx`: light mode is in it, before the second liquid-glass pass and the Liquid glass slider in the settings (14 October 2026): no `--lg-k`, the glass at one fixed opacity.
+- `before_year_64.jsx`: the liquid glass slider is in it, before the yearly header's year went from 40px to 64px (14 October 2026).
+- `before_year_bar_full.jsx`: the 64px year and the wallets' year line are in it, before the yearly header became a grid with the bar under both the year and the figure (14 October 2026).
+- `before_no_qadd.jsx`: the yearly header grid is in it, before the quick-add row left the yearly panels (14 October 2026): `QuickAdd`, its styles, `QADD_H`, the `add` of both quick APIs, a digit typed on the yearly panel landing in its amount box.
+- `before_part_tests.jsx`: the quick-add row is gone in it, before test data per card and per period (14 October 2026): the footer flask still fills the range picked in its settings and its Replace wipes every year, goals, debts and plans come with it, no split bills, no flask on the cards.
+- `before_week_fixes.jsx`: test data per card is in it, before the weekly card's fixes (14 October 2026): the planned list from today on whatever week the chart shows, the card flask keeping focus after a press, "Over the limit" test plans across two weeks.
+- `before_tile_audit.jsx`: the weekly card's fixes are in it, before the uneven-tile fixes of 14 October 2026 (the trading hero's first tile 3.5px taller than the other three).
+- `before_cat_fixes.jsx`: the uneven-tile fixes are in it, before the category lists' fixes of 14 October 2026 (a thing or a service with a food word, prefixes like nasi in nasional, no list for other).
+- `before_spending_rule.jsx`: the category lists' fixes are in it, before the monthly spending rule (15 October 2026): the daily limit only as typed, no rule section in Money flow.
+- `before_rule_test_data.jsx`: the monthly spending rule is in it, before the test data made rules too (18 October 2026): no Spending rule section in Money flow's flask, the footer's flask left `ruleByMonth` alone.
+- `before_review_fixes.jsx`: the test data's rules are in it, before the code review fixes of 19 October 2026 (Same limit all year copied a rule's figure, the projection ignored a rule's limit, test deposits not saved, a Custom test section ran the first preset, two accounts with one first name shared file names).
+- `before_seg_clip.jsx`: the code review fixes are in it, before the sliding switches were clipped (20 October 2026): the settings, the spending rule and the split bill grew a sideways scroll bar on a switch's right-hand choice.
+- `before_soft_light.jsx`: the switches' clip is in it, before the softer light look (20 October 2026): white panes on #f4f6fa, the look he called a flashbang.
+- `before_spend_presets.jsx`: the softer light look is in it, before the test data's spending ladder and presets (20 October 2026): one row Balanced / Frugal / Erratic / Big spender / Weekend splurger, no presets for income or for when spending happens.
+- `before_dashboard.jsx`: the spending presets are in it, before Home, the trading dashboard (20 October 2026): the three trading sides opened on the yearly panel.
+- `before_home_everywhere.jsx`: Home on the three trading sides is in it, before Home on finance, the layouts, the Classic switch, half-cell snapping, square shortcut buttons and Home's button under the menu (20 October 2026).
+- `before_widget_fit.jsx`: layouts, the Classic switch and half-cell snapping are in it, before the widgets fitted their room, the pixel type on Home and the slider's fade (20 October 2026).
+- `before_period_anim.jsx`: the widgets fitting their room are in it, before the period switch's animation, the lag fixes on Home, the rows' whole highlight and the pixel-type header (20 October 2026).
+- `before_settings_tidy.jsx`: Home's motion and lag fixes are in it, before the settings were put in groups (20 October 2026).
+- `before_prime_kit.jsx`: the settings in groups are in it, before the preparation drew its sample screen (`PRIME_KIT`) and played the entrances while filing (20 October 2026).
+- `before_exchanger.jsx`: the sample screen of the preparation is in it, before the money exchanger, its ⌘E and its Exchange shortcut on Home (20 October 2026).
+- `before_details.jsx`: the money exchanger is in it, before the details box under an expense's or an income's name (20 October 2026).
+- `before_fx_widget.jsx`: the details box is in it, before the exchanger's fast double click, its Home widget and its sheet sized to its rows (20 October 2026).
+- `before_gallery_motion.jsx`: the exchanger's Home widget is in it, before the Add widget sheet's motion (the flight to the board, the sliding highlight, the preview's cross-fade; 20 October 2026).
+- `after_bug_hunt.jsx`: the Add widget motion is in it, and MYR with one decimal in the exchanger (20 October 2026, the bug and lag check, stopped half way).
+- `before_motion_gaps.jsx`: before the motion gaps of 21 October 2026 (Home's edit mode left in one frame, its toast gone in one frame, the toolbar swapped in one frame).
+- `before_rule_ui.jsx`: before the spending rule's pop-up was made for beginners (21 October 2026: cards with plain words, what it means for the month first, the shares folded away).
+- `before_options_ui.jsx`: before the option pop-ups were tidied (the cards' test data, the calculators' panels) and the spending rule's pocket money (22 October 2026).
+- `before_no_window_bar.jsx`: before the window's own scroll bar was hidden too (23 October 2026).
+- `before_glass_range.jsx`: before the Liquid glass slider reached further (0.05 … 2), moved blur and saturation, and the dark day tiles followed it (23 October 2026).
+- `before_income_months.jsx`: before an income could count over several months (23 October 2026).
+- `before_widget_stacks.jsx`: before widget stacks, the Shortcuts buttons filling their box and the size caps on small widgets (23 October 2026); the caret fix in money boxes is in it.
+- `before_stack_presets.jsx`: before the layouts with widget stacks in them (23 October 2026).
+- `before_declutter.jsx`: before the declutter pass (empty states on Home, clearer wording, round chart axes, no dots on trading tiles; 23 October 2026).
+- `before_timetable_scan.jsx`: before the timetable read off a picture and the Health animation pass (23 October 2026).

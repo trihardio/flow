@@ -34,7 +34,7 @@ export const appRules = () => {
   const src = fs.readFileSync(path.join(ROOT, "src", "App.jsx"), "utf8");
   const cut = (from, to) => { const a = src.indexOf(from); const b = src.indexOf(to, a); return src.slice(a, b); };
   const code = cut("const GOAL_ICON_RULES", "/* goal progress bar") + cut("const CAT_RULES", "const HamburgerIcon");
-  return new Function(`${code}; return { inferCat, inferGoalIcon };`)();
+  return new Function(`${code}; return { inferCat, inferGoalIcon, inferSym };`)();
 };
 
 /* ---- softmax classifier on top of sentence embeddings ---- */
