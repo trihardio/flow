@@ -10,7 +10,8 @@
     "app": "vite build && (env -u ELECTRON_RUN_AS_NODE electron . 2>&1 | grep -v -e sandbox_extension_issue_file -e \"Window move completed without beginning\"; true)",
     "dmg": "vite build && electron-builder --mac dmg --arm64",
     "train-ai": "node tools/ai/train.mjs",
-    "build-due-ai": "node tools/due-ai/make.cjs"
+    "build-due-ai": "node tools/due-ai/make.cjs",
+    "win": "vite build && electron-builder --win nsis --x64"
   },
   "dependencies": {
     "node-llama-cpp": "^3.22.1"
@@ -30,7 +31,9 @@
     "appId": "com.rassam.flow",
     "productName": "Flow",
     "asar": false,
-    "electronLanguages": ["en"],
+    "electronLanguages": [
+      "en"
+    ],
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -72,11 +75,43 @@
       "background": "build/background.png",
       "iconSize": 96,
       "iconTextSize": 13,
-      "window": { "width": 660, "height": 405 },
+      "window": {
+        "width": 660,
+        "height": 405
+      },
       "contents": [
-        { "x": 165, "y": 240, "type": "file" },
-        { "x": 495, "y": 240, "type": "link", "path": "/Applications" }
+        {
+          "x": 165,
+          "y": 240,
+          "type": "file"
+        },
+        {
+          "x": 495,
+          "y": 240,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
-    }
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Flow-Setup-${version}.exe",
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "Flow",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "afterPack": "build/after-pack.cjs"
   }
 }

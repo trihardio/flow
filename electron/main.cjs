@@ -48,8 +48,11 @@ protocol.registerSchemesAsPrivileged([
    The page keeps its app://trace address, because what it has saved is filed under that address inside the folder.
    Changing the address would hide all of it. */
 // where Export puts a backup: Rassam's own folder beside the project, not Downloads, in a folder per side that is
-// picked from how the file's name begins
-const EXPORT_DIR = path.join(app.getPath("home"), "Documents", "misc", "react app", "Financial Tracker", "exports");
+// picked from how the file's name begins. Anybody else (the installer on GitHub, 3 November 2026: "add a flow file on
+// their documents for the autosave and export saves") gets a folder "Flow" in their Documents, made on launch; it is
+// his only where that project folder is found on the Mac.
+const OWN_DIR = path.join(app.getPath("home"), "Documents", "misc", "react app", "Financial Tracker");
+const EXPORT_DIR = fs.existsSync(OWN_DIR) ? path.join(OWN_DIR, "exports") : path.join(app.getPath("documents"), "Flow");
 const EXPORT_SIDES = { "pnl-export": "financial exports", "crypto-export": "crypto exports", "idx-export": "idx exports", "fx-export": "forex exports", "health-export": "health exports" };
 // A file's name begins with the account's first name since 11 October 2026 ("rassam-pnl-export-11-10-2026.json": letters
 // and digits, then the side); one named the old way, with the side first, still finds its folder.
@@ -231,7 +234,7 @@ const DUE_AI = path.join(__dirname, "due-ai");
 let dueOff = null;
 const dueAI = (text) => new Promise((res) => {
   if (dueOff) return res({ error: dueOff });
-  if (!fs.existsSync(DUE_AI)) return res({ error: "none" });
+  if (process.platform !== "darwin" || !fs.existsSync(DUE_AI)) return res({ error: "none" });
   const p = execFile(DUE_AI, [], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, out) => {
     let o = null;
     try { o = JSON.parse(out); } catch (e) { o = null; }
@@ -730,6 +733,7 @@ const createWindow = () => {
     backgroundColor: "#0e1012",
     show: false,
     title: "Flow",
+    autoHideMenuBar: true,        // Windows: no File / Edit / View bar across the top (Alt shows it); nothing on a Mac
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -752,6 +756,8 @@ app.on("second-instance", () => {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = "dark";
+  if (process.platform === "win32") app.setAppUserModelId("com.rassam.flow");   // Windows shows a notification only under the installer's id
+  if (!EXPORT_DIR.startsWith(OWN_DIR)) fs.promises.mkdir(path.join(EXPORT_DIR, "automatic backups"), { recursive: true }).catch(() => {});
   app.configureHostResolver({ secureDnsMode: "off" });
 
   protocol.handle("app", async (req) => {

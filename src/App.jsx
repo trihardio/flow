@@ -11,7 +11,7 @@ if (typeof document !== "undefined") {
 }
 // RELEASE SWITCH: what the developer options start on (false: an official build starts with them off). They are
 // turned on and off in Settings: see devOpt
-const SHOW_TEST_TOOLS = true;
+const SHOW_TEST_TOOLS = false;
 /* Developer options (12 October 2026: "make it so i am able to enable and disable developer options, which is just the
    add/clear test data and everything developer mode wise"): one switch in Settings, on every side, for all that is a
    test tool: Add / Clear test data in the footers (the test-data settings with them), Test levels in the calculators,
@@ -271,8 +271,18 @@ const ltStyle = (st) => {
 const LT_ATTRS = ["fill", "stroke", "stopColor", "floodColor"];
 /* The JSX factory (the pragma in the first lines of this file; a name nothing else in the file uses, because a
    local "h" somewhere would have been called in its place): React's own createElement, after the colours of an
-   element's inline style and of its SVG colour attributes are rewritten. Nothing else about an element is touched. */
+   element's inline style and of its SVG colour attributes are rewritten. Nothing else about an element is touched.
+   Off a Mac (the Windows installer, 3 November 2026) the shortcuts are held with Ctrl (every handler takes metaKey or
+   ctrlKey), so a label's ⌘ is shown as Ctrl and ⌥ as Alt: its text children, title, aria-label and placeholder. */
+const KEY_MAC = typeof navigator === "undefined" || /Mac/.test(navigator.userAgent);
+const KEY_PROPS = ["title", "aria-label", "placeholder"];
+const keyText = (s) => (s.indexOf("⌘") < 0 && s.indexOf("⌥") < 0 ? s
+  : s.replace(/⌘(?=\S|$)/g, "Ctrl+").replace(/⌘/g, "Ctrl").replace(/⌥(?=\S|$)/g, "Alt+").replace(/⌥/g, "Alt"));
 function flowEl(type, props) {
+  if (!KEY_MAC) {
+    for (let i = 2; i < arguments.length; i++) if (typeof arguments[i] === "string") arguments[i] = keyText(arguments[i]);
+    if (props && typeof type === "string") for (const k of KEY_PROPS) if (typeof props[k] === "string") { const w = keyText(props[k]); if (w !== props[k]) arguments[1] = props = { ...props, [k]: w }; }
+  }
   if (props && typeof type === "string") {
     let p = props;
     const st = props.style;
@@ -2573,7 +2583,7 @@ if (typeof document !== "undefined") {
   }, true);
   document.addEventListener("keydown", (e) => {
     const el = e.target;
-    if ((e.key !== "Backspace" && e.key !== "Delete") || !box(el) || el.inputMode !== "numeric" || e.metaKey || e.altKey) return;
+    if ((e.key !== "Backspace" && e.key !== "Delete") || !box(el) || el.inputMode !== "numeric" || e.metaKey || e.ctrlKey || e.altKey) return;
     const p = el.selectionStart;
     if (p == null || p !== el.selectionEnd || !/^[-−]?\d{1,3}(\.\d{3})+$/.test(el.value)) return;
     if (e.key === "Backspace" && el.value[p - 1] === ".") el.setSelectionRange(p - 1, p - 1);
@@ -3845,7 +3855,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
     if (e.key === "Escape") { if (calOn) setCalOn(false); else shut.current(); return; }
     if (e.key === "Tab") { e.preventDefault(); setIncOn((v) => !v); return; }
     if (e.key === "ArrowDown") { e.preventDefault(); if (noteOn) boxRef.current?.querySelector(".note-area")?.focus(); else setNoteOn(true); return; }
-    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) put("exp", o.amount, o.desc, back); return; }
+    if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) put("exp", o.amount, o.desc, back); return; }
     if (e.key !== "Enter") return;
     if (!text.trim()) { shut.current(); return; }
     if (idr) put(inc ? "inc" : "exp", idr, p.desc, back, true);
@@ -3984,7 +3994,7 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
     e.stopPropagation();
     if (e.key === "Escape") { if (calOn) setCalOn(false); else shut.current(); return; }
     if (e.key === "Tab") { e.preventDefault(); setFlip((v) => !v); return; }
-    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) pick(o.name); return; }
+    if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) pick(o.name); return; }
     if (e.key !== "Enter") return;
     if (!text.trim()) { shut.current(); return; }
     if (ok) put(p.name);
