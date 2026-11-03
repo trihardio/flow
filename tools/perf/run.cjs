@@ -51,6 +51,7 @@ if (app.dock) app.dock.hide();
 powerSaveBlocker.start("prevent-app-suspension");
 for (const a of args) { const m = /^--sw=([^=]+)(?:=(.*))?$/.exec(a); if (m) app.commandLine.appendSwitch(m[1], m[2]); }
 if (!args.some((a) => a.startsWith("--sw=js-flags"))) app.commandLine.appendSwitch("js-flags", "--expose-gc");      // as the app's own shell does
+if (!args.some((a) => a.startsWith("--sw=disable-blink-features"))) app.commandLine.appendSwitch("disable-blink-features", "CompositeClipPathAnimation");      // as the app's own shell does (since 25 October 2026)
 
 const CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob:", "font-src 'self' data:",
   "connect-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'none'"].join("; ");
@@ -125,8 +126,21 @@ app.whenReady().then(async () => {
         await c.press(".dash-tools .dg-btn", 0); await sleep(1600);
         r = await find();
       }
+      // since 25 October 2026 Health opens on Home too: a journey written for its day page reaches it through Home's Today
+      if (!r && /\.(hl-|flow-card|nav-arrow|month-btn)/.test(sel) && await js(`!!document.querySelector(".hlt .dash")`)) {
+        log("HOME", "to Health's day page, for", sel);
+        await c.hlDay();
+        r = await find();
+      }
       if (!r) { log("NOT FOUND", sel, nth); return false; }
       await c.click(r.l + r.w * fx, r.t + r.h * fy);
+      return true;
+    },
+    // Health's day page from its Home, when Home is what shows (journeys written before 25 October 2026 expect the day page)
+    async hlDay() {
+      if (!(await js(`!!document.querySelector(".hlt .dash")`))) return false;
+      await js(`(() => { const b = document.querySelector('.hlt .dash-tools .dg-btn[aria-label="Today"]'); if (b) b.click(); return !!b; })()`);
+      await sleep(1400);
       return true;
     },
     // a trackpad-like scroll: many small wheel events

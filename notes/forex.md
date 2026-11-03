@@ -1,6 +1,6 @@
 # Forex
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. This is a part of the trading tracker (`TradeTracker`): read `notes/trading.md` with it.
+One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. This is a part of the trading tracker (`TradeTracker`): read [[notes/trading]] with it.
 
 - **Forex** (8 October 2026: "make a forex app beside the idx on the very right. just copy all of the crypto apps but change it to forex terms, change logged trades input boxes to match the metatrader 5 app"). `MARKETS.fx`, told to the tracker as `market="fx"`:
   - It is the crypto side in a dollar account. `base` stays `"USDT"` (the dollar every amount and rate is worked in, so nothing in the currency code had to change) and `unit: "USD"` is what it is called on screen: the pill, the settings, the calculator, the tooltips. USD ⇄ IDR ⇄ MYR works as on crypto, with the same rates.

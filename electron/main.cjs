@@ -4,7 +4,7 @@
    - Two exceptions, made here and never by the page, both asked for by Rassam: the latest USDT exchange rates, and
      the latest price of the coin or stock typed in a calculator.
    - Runs the on-device AI helper in its own process and remembers its answers. */
-const { app, BrowserWindow, protocol, net, session, ipcMain, utilityProcess, nativeTheme, shell } = require("electron");
+const { app, BrowserWindow, protocol, net, session, ipcMain, utilityProcess, nativeTheme, shell, Notification } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -90,6 +90,49 @@ const keepBackup = async (name, text) => {
 };
 // where the copies go and how many days are kept, for the page's settings to say (this file owns both)
 const backupInfo = () => ({ days: AUTO_KEEP, folder: path.basename(AUTO_DIR) });
+/* Old exports (28 October 2026, his words: "add automatically delete any export data longer than 30 days ago, to save
+   space (have user able to toggle on or off …)", "this applies to all export files"). The one other removal besides
+   AUTO_KEEP's, and as narrow: only a file whose whole name is one Flow writes for an export (EXPORT_FILE: the account's
+   name, the side, the day, "(n)" when several were made that day), in EXPORT_DIR itself, a side's folder or "automatic
+   backups", a plain file (no folder, no link). Its age is the day in its name. The page decides when (it tells him first
+   and waits 48 hours: xcleanRun in App.jsx); exportClean checks every name and its age again before removing it */
+const EXPORT_FILE = new RegExp(`^(?:[a-z0-9]+-)?(?:${Object.keys(EXPORT_SIDES).join("|")})-(\\d{2})-(\\d{2})-(\\d{4})(?: \\(\\d{1,3}\\))?\\.json$`);
+const EXPORT_OLD_DAYS = 30, EXPORT_LIST_DAYS = 28;
+const exportDirs = () => [EXPORT_DIR, AUTO_DIR, ...Object.values(EXPORT_SIDES).map((d) => path.join(EXPORT_DIR, d))].map((d) => path.resolve(d));
+const exportAge = (name) => {
+  const m = EXPORT_FILE.exec(String(name));
+  if (!m) return null;
+  const t = new Date(+m[3], +m[2] - 1, +m[1]);
+  return Number.isNaN(+t) || t.getDate() !== +m[1] || t.getMonth() !== +m[2] - 1 ? null : Math.floor((Date.now() - t) / 864e5);
+};
+// the export files two days short of the age or past it: { name (from EXPORT_DIR), days }
+const exportOlds = async () => {
+  const out = [];
+  for (const dir of exportDirs()) {
+    let names = [];
+    try { names = await fs.promises.readdir(dir); } catch (e) { continue; }
+    for (const n of names) {
+      const days = exportAge(n);
+      if (days === null || days < EXPORT_LIST_DAYS) continue;
+      try { if (!(await fs.promises.lstat(path.join(dir, n))).isFile()) continue; } catch (e) { continue; }
+      out.push({ name: path.relative(EXPORT_DIR, path.join(dir, n)), days });
+    }
+  }
+  return out;
+};
+const exportClean = async (names) => {
+  let n = 0;
+  const dirs = exportDirs();
+  for (const rel of Array.isArray(names) ? names.slice(0, 2000) : []) {
+    if (typeof rel !== "string") continue;
+    const full = path.resolve(EXPORT_DIR, rel);
+    if (!dirs.includes(path.dirname(full))) continue;
+    const days = exportAge(path.basename(full));
+    if (days === null || days < EXPORT_OLD_DAYS) continue;
+    try { if (!(await fs.promises.lstat(full)).isFile()) continue; await fs.promises.unlink(full); n++; } catch (e) { /* stays */ }
+  }
+  return n;
+};
 
 /* Health from the iPhone (23 October 2026: "is it possible to automatically import from my iphone"). Apple keeps Health
    data on the iPhone and the watch only, so a Shortcut there saves the last days of steps and the weight as
@@ -99,6 +142,105 @@ const backupInfo = () => ({ days: AUTO_KEEP, folder: path.basename(AUTO_DIR) });
 const PHONE_FILE = "flow-health.txt";
 const PHONE_DIRS = ["Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents", "Library/Mobile Documents/com~apple~CloudDocs/Shortcuts",
                     "Library/Mobile Documents/com~apple~CloudDocs/Flow", "Library/Mobile Documents/com~apple~CloudDocs"];
+/* A link or a file kept in a class's notes, opened (29 October 2026: "mark an important powerpoint … or links to crucial
+   books"): a link is handed to his own browser (macOS opens it; Flow itself asks nothing of the internet, the page still
+   can't), a file to the app macOS opens it with. Only web links, and only files that are documents: never a program or a
+   script, whatever the page hands over. { ok } or { gone } (the file isn't there any more) or { error } */
+const NOTE_RUN = /\.(app|command|sh|bash|zsh|csh|tool|terminal|workflow|action|pkg|mpkg|dmg|scpt|scptd|applescript|osascript|jar|py|rb|pl|php|js|mjs|cjs|bin|exe|so|dylib|kext|plugin|prefpane|saver|webloc|inetloc|fileloc)$/i;
+/* A kept file that was moved (30 October 2026, his words: "if i move a folder from its original position to somewhere in
+   'documents' then on the app automatically scan its directory … without manually changing its directory"): looked for
+   by its name, with Spotlight (the Mac's own index, instant), else by a short walk of Documents, Desktop, Downloads and
+   iCloud Drive. Of the files with that name, the one whose folders match the old path's from the end wins (a moved folder
+   keeps what is inside it); two equally good are not guessed between. Never the Trash or the rest of Library. */
+const FIND_SKIP = /\/(?:\.Trash|Library\/(?!Mobile Documents\/))|\/node_modules\/|\/\.[^/]+\//;
+const fileFind = async (old) => {
+  const home = os.homedir(), name = path.basename(old).toLowerCase();
+  if (!name) return null;
+  let found = await new Promise((res) => execFile("/usr/bin/mdfind", ["-onlyin", home, "-name", path.basename(old)], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
+    (err, out) => res(err ? [] : String(out).split("\n").filter(Boolean))));
+  found = found.filter((p) => path.basename(p).toLowerCase() === name && !FIND_SKIP.test(p) && p !== old);
+  if (!found.length) {
+    const t0 = Date.now(), stack = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents/com~apple~CloudDocs"].map((d) => path.join(home, d));
+    let n = 0;
+    while (stack.length && n < 60000 && Date.now() - t0 < 3000) {
+      const dir = stack.pop();
+      let list = [];
+      try { list = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { continue; }
+      for (const e of list) {
+        n++;
+        if (e.name.startsWith(".")) continue;
+        const p = path.join(dir, e.name);
+        if (e.name.toLowerCase() === name) found.push(p);
+        else if (e.isDirectory() && !/\.(app|key|pages|numbers|rtfd|photoslibrary)$/i.test(e.name) && e.name !== "node_modules") stack.push(p);
+      }
+    }
+  }
+  const a = old.split("/").reverse();
+  const score = (p) => { const b = p.split("/").reverse(); let i = 0; while (i < a.length && i < b.length && a[i].toLowerCase() === b[i].toLowerCase()) i++; return i; };
+  const ranked = [...new Set(found)].filter((p) => fs.existsSync(p)).map((p) => [score(p), p]).sort((x, y) => y[0] - x[0]);
+  if (!ranked.length || (ranked[1] && ranked[1][0] === ranked[0][0])) return null;
+  return ranked[0][1];
+};
+const noteOpen = async (target) => {
+  if (typeof target !== "string" || target.length > 2000) return { error: "bad" };
+  if (/^https?:\/\//i.test(target)) {
+    let u = null;
+    try { u = new URL(target); } catch (e) { return { error: "bad" }; }
+    if (!/^https?:$/.test(u.protocol) || !u.host) return { error: "bad" };
+    try { await shell.openExternal(u.href); return { ok: true }; } catch (e) { return { error: "open" }; }
+  }
+  if (!target.startsWith("/") || target.includes("\0") || NOTE_RUN.test(target.replace(/\/+$/, ""))) return { error: "bad" };
+  let st = null, moved = null;
+  try { st = await fs.promises.stat(target); } catch (e) {
+    moved = await fileFind(target);
+    if (!moved || NOTE_RUN.test(moved)) return { gone: true };
+    try { st = await fs.promises.stat(moved); } catch (e2) { return { gone: true }; }
+    target = moved;
+  }
+  // (a Keynote, Pages or Numbers document is a folder to the disk)
+  if (st.isDirectory() && !/\.(key|pages|numbers|rtfd)$/i.test(target.replace(/\/+$/, ""))) return { error: "bad" };
+  // (a file with no kind to its name that may be run would be run by Terminal: refused; a .pdf or .pptx is only ever opened)
+  if (!st.isDirectory() && (st.mode & 0o111) && !/\.[a-z0-9]{1,8}$/i.test(target)) return { error: "bad" };
+  const err = await shell.openPath(target);
+  return err ? { error: "open" } : { ok: true, ...(moved ? { moved } : {}) };
+};
+/* A deadline's heads-up (29 October 2026: "when due date is near it will give a warning/heads up to me"): the Mac's own
+   notification, made by this process; nothing is asked of the internet. Pressed, it brings the window forward and tells
+   the page which assignment it was about. Each is kept until it is closed, or its press would be lost with it */
+const dueShown = new Set();
+const dueNotify = (title, body, id) => {
+  if (!Notification.isSupported()) return false;
+  const n = new Notification({ title: String(title || "").slice(0, 120), body: String(body || "").slice(0, 300) });
+  n.on("click", () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show(); win.focus();
+    win.webContents.send("health:due", String(id || "").slice(0, 60));
+  });
+  n.on("close", () => dueShown.delete(n));
+  dueShown.add(n);
+  n.show();
+  return true;
+};
+/* An assignment's due details read by the Mac's own on-device model (30 October 2026, his words: "for the due date, make an
+   ai"): electron/due-ai (tools/due-ai/due.swift) asks Apple Intelligence which words of the text say the day, time,
+   week, weight and where to hand it in. A process of this Mac, offline; nothing goes to the internet. Resolves to
+   { day, time, week, weight, submit } or { error }; once the model says it isn't there (Apple Intelligence off, macOS
+   before 26), it isn't asked again until Flow is opened again */
+const DUE_AI = path.join(__dirname, "due-ai");
+let dueOff = null;
+const dueAI = (text) => new Promise((res) => {
+  if (dueOff) return res({ error: dueOff });
+  if (!fs.existsSync(DUE_AI)) return res({ error: "none" });
+  const p = execFile(DUE_AI, [], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, out) => {
+    let o = null;
+    try { o = JSON.parse(out); } catch (e) { o = null; }
+    if (!o) { if (err && err.code !== null && !err.killed) dueOff = "start"; return res({ error: err && err.killed ? "slow" : "start" }); }
+    if (o.error === "unavailable") dueOff = "unavailable";
+    res(o);
+  });
+  p.stdin.end(JSON.stringify({ text: String(text || "").slice(0, 6000) }));
+});
 const phoneRead = async () => {
   let best = null;
   for (const dir of PHONE_DIRS) {
@@ -126,6 +268,13 @@ function run(argv) {
   if (ci.isNil()) return JSON.stringify({ error: "read" });
   if (a) ci = ci.imageByApplyingTransform({ a: Math.cos(a), b: Math.sin(a), c: -Math.sin(a), d: Math.cos(a), tx: 0, ty: 0 });
   const W = Number(ci.extent.size.width), H = Number(ci.extent.size.height);
+  // (asked with "px": the picture as read, turned the same, made at most 800 across, as a BMP, for the colours of its cells)
+  if (argv[2] === "px") {
+    ObjC.import("AppKit");
+    const k = Math.min(1, 800 / Math.max(W, H)), rep = $.NSBitmapImageRep.alloc.initWithCIImage(ci.imageByApplyingTransform({ a: k, b: 0, c: 0, d: k, tx: 0, ty: 0 }));
+    const bmp = rep.isNil() ? null : rep.representationUsingTypeProperties($.NSBitmapImageFileTypeBMP, $());
+    return JSON.stringify(bmp && !bmp.isNil() ? { bmp: bmp.base64EncodedStringWithOptions(0).js } : { error: "px" });
+  }
   const handler = $.VNImageRequestHandler.alloc.initWithCIImageOptions(ci, $({}));
   const req = $.VNRecognizeTextRequest.alloc.init;
   req.recognitionLevel = 0;
@@ -182,14 +331,35 @@ const ocrSkew = (g) => {
 };
 const ocrStraight = async (pass) => {
   let deg = 0, best = await pass(0);
+  if (best) best.deg = 0;
   for (let k = 0, cur = best; k < 2 && cur; k++) {
     const s = ocrSkew(cur);
     if (Math.abs(s) < 0.8 || Math.abs(deg + s) > 20) break;
     deg += s;
     cur = await pass(deg);
-    if (cur && cur.lines.length >= best.lines.length) best = cur;
+    if (cur && cur.lines.length >= best.lines.length) { best = cur; best.deg = deg; }
   }
   return best;
+};
+// the picture's colours (the "px" reading, a BMP of 24 or 32 bits a pixel, rows either way up) as 3 bytes a pixel, top row
+// first: where a timetable's cells begin and end, for a class whose words don't say its time (hlOcrSpan in src/App.jsx)
+const ocrBmp = (b64) => {
+  try {
+    const b = Buffer.from(String(b64 || ""), "base64");
+    if (b.length < 54 || b[0] !== 0x42 || b[1] !== 0x4d) return null;
+    const off = b.readUInt32LE(10), hs = b.readUInt32LE(14), w = b.readInt32LE(18), h0 = b.readInt32LE(22), bpp = b.readUInt16LE(28), comp = b.readUInt32LE(30);
+    const h = Math.abs(h0), by = bpp / 8, stride = Math.ceil((w * bpp) / 32) * 4;
+    if (!(w > 0 && h > 0 && w * h <= 4e6) || (bpp !== 24 && bpp !== 32) || off + stride * (h - 1) + w * by > b.length) return null;
+    // where red, green and blue sit in a pixel: the masks after the header when given (32 bits), else blue, green, red
+    // (inside a long header, or right after a short one: at 54 either way)
+    const mask = (comp === 3 || comp === 6) && hs >= 40 ? [b.readUInt32LE(54), b.readUInt32LE(58), b.readUInt32LE(62)] : [0xff0000, 0xff00, 0xff];
+    const at = mask.map((m) => [0, 1, 2, 3].find((i) => (m >>> (8 * i)) & 0xff) ?? 0), rgb = new Uint8Array(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      const row = off + stride * (h0 > 0 ? h - 1 - y : y);
+      for (let x = 0, p = row, q = y * w * 3; x < w; x++, p += by, q += 3) { rgb[q] = b[p + at[0]]; rgb[q + 1] = b[p + at[1]]; rgb[q + 2] = b[p + at[2]]; }
+    }
+    return { w, h, rgb };
+  } catch (e) { return null; }
 };
 /* ocr-loop-end */
 const OCR_EXT = new Set(["png", "jpg", "jpeg", "heic", "heif", "gif", "bmp", "tif", "tiff", "webp"]);
@@ -201,10 +371,16 @@ const ocrRead = async (bytes, ext) => {
     const img = path.join(dir, `in.${OCR_EXT.has(String(ext).toLowerCase()) ? String(ext).toLowerCase() : "png"}`), js = path.join(dir, "read.js");
     fs.writeFileSync(img, Buffer.from(bytes));
     fs.writeFileSync(js, OCR_JS);
-    const pass = (deg) => new Promise((res) => execFile("/usr/bin/osascript", ["-l", "JavaScript", js, img, String(deg)], { timeout: 45000, maxBuffer: 32 * 1024 * 1024 },
-      (err, so) => { let g = null; try { g = err ? null : JSON.parse(so); } catch (e) { g = null; } res(g && Array.isArray(g.lines) ? g : null); }));
+    const run = (deg, px) => new Promise((res) => execFile("/usr/bin/osascript", ["-l", "JavaScript", js, img, String(deg), ...(px ? ["px"] : [])], { timeout: 45000, maxBuffer: 32 * 1024 * 1024 },
+      (err, so) => { let g = null; try { g = err ? null : JSON.parse(so); } catch (e) { g = null; } res(g); }));
+    const pass = (deg) => run(deg).then((g) => (g && Array.isArray(g.lines) ? g : null));
+    // the picture's pixels, read beside the first reading (24 October 2026, the review: they were a second run after it,
+    // on every scan): most pictures need no turning, so that one is the one used; a turned one is read again turned
+    const px0 = run(0, true);
     const got = await ocrStraight(pass);
-    return got ? { W: +got.W || 0, H: +got.H || 0, lines: got.lines.filter((o) => o && typeof o.t === "string").slice(0, 4000) } : { error: "read" };
+    if (!got) return { error: "read" };
+    const px = await (got.deg ? run(got.deg, true) : px0).then((g) => (g && g.bmp ? ocrBmp(g.bmp) : null));
+    return { W: +got.W || 0, H: +got.H || 0, lines: got.lines.filter((o) => o && typeof o.t === "string").slice(0, 4000), ...(px ? { px } : {}) };
   } catch (err) { return { error: "read" }; } finally {
     if (dir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch (err) { /* the system clears its temporary folder */ }
   }
@@ -258,6 +434,13 @@ let aiReady = Promise.resolve();      // on such a launch: the AI helper's own o
 // launch's preparation), so that the clearing does not happen in the middle of the first presses. Since 9 October 2026
 // on every launch: left to the engine it took 17ms as the wallet was first pressed and 33ms as the first month opened.
 app.commandLine.appendSwitch("js-flags", "--expose-gc");
+// The engine's own way of playing a clip-path animation off the page's thread is off (25 October 2026, his frames of
+// Home's Done: the pill froze as an oval, then cut to the pencil's circle). On this 2x screen it drew the clip at half
+// its size, so Done shrank only half-way and stood there until the pencil took its place, and the buttons beside it
+// kept their square corners; it took over in about half of the turns. Played by the page as before this switch, every
+// frame on screen matches the page (the tools/perf journey doneshots: 4 of 8 turns stuck as it was, 0 of 8 with it off,
+// the screen never more than 0.8px behind). Leave it off while anything animates a clip-path
+app.commandLine.appendSwitch("disable-blink-features", "CompositeClipPathAnimation");
 
 // a second launch hands over to the first and leaves at once: app.quit() here still let it get ready, open a window
 // and write the AI cache over the first one's on the way out
@@ -612,9 +795,14 @@ app.whenReady().then(() => {
   ipcMain.handle("fx:live", (e, codes) => fetchFxLive(codes));
   ipcMain.handle("health:phone", () => phoneRead());
   ipcMain.handle("health:ocr", (e, bytes, ext) => ocrRead(bytes, ext));
+  ipcMain.handle("health:open", (e, target) => noteOpen(target));
+  ipcMain.handle("health:notify", (e, title, body, id) => dueNotify(title, body, id));
+  ipcMain.handle("health:due-ai", (e, text) => dueAI(text));
   ipcMain.handle("gfx:settle", () => aiReady);
   ipcMain.handle("backup:keep", (e, name, text) => keepBackup(name, text));
   ipcMain.handle("backup:info", () => backupInfo());
+  ipcMain.handle("backup:olds", () => exportOlds());
+  ipcMain.handle("backup:clean", (e, names) => exportClean(names));
   ipcMain.on("gfx:primed", gfxPrimed);
 
   createWindow();

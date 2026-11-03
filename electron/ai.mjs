@@ -3,7 +3,6 @@
    The model turns a note into numbers (an embedding); ai-head.json (built by tools/ai/train.mjs)
    holds what was learned from thousands of labelled notes and turns those numbers into a category
    or a goal icon. */
-import fs from "node:fs";
 import { getLlama } from "node-llama-cpp";
 import { classify, unpack, norm, loadHeads } from "./ai-classify.mjs";
 

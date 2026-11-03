@@ -1,6 +1,6 @@
 /* The only bridges between the app and the desktop shell: the on-device AI helper, the latest rates and prices, and the
    iPhone's Health file. */
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("flowAI", {
   // kind: "cat" (expense category), "goal" (goal icon) or "sym" (the symbol of an expense in Other). Resolves to one
@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld("flowGfx", {
 contextBridge.exposeInMainWorld("flowBackup", {
   keep: (name, text) => ipcRenderer.invoke("backup:keep", name, text),
   info: () => ipcRenderer.invoke("backup:info"),
+  // old exports (28 October 2026): olds() lists Flow's own export files 28 days old or more ({ name, days }); clean(names)
+  // removes those of them 30 days old or more, each checked again by the shell
+  olds: () => ipcRenderer.invoke("backup:olds"),
+  clean: (names) => ipcRenderer.invoke("backup:clean", names),
 });
 
 contextBridge.exposeInMainWorld("flowFX", {
@@ -42,4 +46,15 @@ contextBridge.exposeInMainWorld("flowHealth", {
   phone: () => ipcRenderer.invoke("health:phone"),
   // a timetable's picture (bytes, its file's extension) read by the Mac's own text recognition, offline: { lines } or { error }
   ocr: (bytes, ext) => ipcRenderer.invoke("health:ocr", bytes, ext),
+  // a class's notes: a link opened in his browser, or a kept file in its own app (noteOpen in main.cjs: { ok } / { gone } / { error });
+  // where a file dropped or picked lives on the disk ("" when it has no place there)
+  open: (target) => ipcRenderer.invoke("health:open", target),
+  // a deadline's heads-up, as the Mac's own notification (made by main.cjs; nothing goes to the internet); and, when one is
+  // pressed, the assignment it was about (onDue gives back how to stop listening)
+  notify: (title, body, id) => ipcRenderer.invoke("health:notify", title, body, id),
+  onDue: (fn) => { const on = (e, id) => fn(id); ipcRenderer.on("health:due", on); return () => ipcRenderer.removeListener("health:due", on); },
+  // an assignment's due details read by the Mac's own on-device model (dueAI in main.cjs): the words that give the day,
+  // time, week, weight and where to hand it in, or { error }
+  dueAI: (text) => ipcRenderer.invoke("health:due-ai", text),
+  where: (file) => { try { return webUtils.getPathForFile(file) || ""; } catch (e) { return ""; } },
 });

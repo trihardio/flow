@@ -16,8 +16,8 @@ const maths = block("/* ---------- health: the maths", "/* ---------- health: th
 const rest = block("const HL_KEY = ", "/* ---------- Apple Health:");
 const apple = block("/* ---------- Apple Health:", "/* ---------- health: what the page shows");
 const shotIdOk = (id) => typeof id === "string" && /^(hl-|ph:)[\w-]{1,60}$/.test(id);
-const H = new Function("shotIdOk", `${maths}\n${rest}\n${apple}\nreturn { hlBmi, hlBand, hlHealthy, hlBmr, hlStepKcal, hlStepKm, hlPlan, hlPlanAt, hlAddMonths, hlAddDays, hlDays, hlDow,
-  hlOn, hlRun, hl1rm, hlVolume, cleanHealth, hlOwn, hlBlank, HL_EMPTY, hlAppleRead, HL_FLOOR, hlPhoneRead, hlNumText, hlPhoneDay, hlKey };`)(shotIdOk);
+const H = new Function("shotIdOk", "rtClean", `${maths}\n${rest}\n${apple}\nreturn { hlBmi, hlBand, hlHealthy, hlBmr, hlStepKcal, hlStepKm, hlPlan, hlPlanAt, hlAddMonths, hlAddDays, hlDays, hlDow,
+  hlOn, hlRun, hl1rm, hlVolume, cleanHealth, hlOwn, hlBlank, HL_EMPTY, hlAppleRead, HL_FLOOR, hlPhoneRead, hlNumText, hlPhoneDay, hlKey };`)(shotIdOk, (h) => (typeof h === "string" ? h : ""));   // (rtClean needs a page: here what is kept is passed through)
 
 let fails = 0, checks = 0;
 const quiet = process.argv.includes("--quiet");
@@ -119,7 +119,8 @@ const read = H.cleanHealth({
 is("profile: age and sex and activity put right, the rest kept", read.profile, { cm: 168, kg: 90, age: 21, sex: "m", act: 1.375, steps: 9000, move: 500 });
 is("steps and weights out of range are dropped", [read.steps, read.weights], [{ "2026-10-23": 9500 }, { "2026-10-23": 90.2 }]);
 is("an empty to-do is dropped, a strange repeat is once", read.todos.map((t) => [t.id, t.rep, t.len, Object.keys(t.done)]), [["a", "once", 0, ["2026-10-02"]]]);
-is("a class that ends before it starts, or on no day, is dropped", read.classes.map((c) => c.id), ["c"]);
+// (since 28 October 2026 a class that ends before it starts runs overnight into the next day, at his request: "Backwards" is kept)
+is("a class on no day is dropped; one that ends before it starts runs overnight and is kept", read.classes.map((c) => c.id), ["c", "d"]);
 is("a picture that is not Health's is dropped", read.board.map((c) => c.id), ["n", "q"]);
 is("a goal that ends before it began is dropped", read.goal, null);
 const own = H.hlOwn({ ...H.hlBlank(), steps: { "2026-10-22": 100, "2026-10-23": 200 }, todos: [{ id: "x", test: true }, { id: "y" }], goal: { target: 75, test: true },
@@ -177,7 +178,30 @@ is("days: as written, or a moment with its zone on this Mac's calendar", ["2026-
 const file = ["flow-health", "2026-10-17;6240", "2026-10-18;9.120", "2026-10-19;11,034", "2026-10-20;0", "2026-10-21;7400", "2026-10-21;600", "rubbish", "2026-10-22;", "",
               "weight;2026-10-23;90,2;kg"].join("\n");
 is("a week from the phone", H.hlPhoneRead(file),
-   { steps: { "2026-10-17": 6240, "2026-10-18": 9120, "2026-10-19": 11034, "2026-10-20": 0, "2026-10-21": 8000 }, weights: { "2026-10-23": 90.2 }, days: 5, from: "2026-10-17", to: "2026-10-21" });
+   { steps: { "2026-10-17": 6240, "2026-10-18": 9120, "2026-10-19": 11034, "2026-10-20": 0, "2026-10-21": 8000 }, weights: { "2026-10-23": 90.2 }, sleep: {}, days: 5, nights: 0, from: "2026-10-17", to: "2026-10-21" });
+// sleep (29 October 2026): a watch's night in stages across midnight, the awake pieces left out, a nap that is no night, a
+// phone's In Bed with Asleep inside it, HealthKit's numbers, a moment with its zone
+const watch = ["sleep;2026-10-27 23:20;2026-10-27 23:41;Awake", "sleep;2026-10-27 23:41;2026-10-28 01:10;Core", "sleep;2026-10-28 01:10;2026-10-28 02:00;Deep",
+  "sleep;2026-10-28 02:00;2026-10-28 02:12;Awake", "sleep;2026-10-28 02:12;2026-10-28 06:58;REM", "sleep;2026-10-28 06:58;2026-10-28 07:30;Awake",
+  "sleep;2026-10-28 14:00;2026-10-28 14:40;Core"].join("\n");
+is("a watch's night: first piece asleep to last, the nap left out", H.hlPhoneRead(watch).sleep, { "2026-10-28": { bed: "23:41", wake: "06:58" } });
+is("a phone alone: Asleep inside In Bed", H.hlPhoneRead("sleep;2026-10-26 22:50;2026-10-27 07:05;In Bed\nsleep;2026-10-26 23:15;2026-10-27 06:40;Asleep").sleep,
+   { "2026-10-27": { bed: "23:15", wake: "06:40" } });
+is("only In Bed: that is the night", H.hlPhoneRead("sleep;2026-10-26 22:50;2026-10-27 07:05;In Bed").sleep, { "2026-10-27": { bed: "22:50", wake: "07:05" } });
+is("HealthKit's numbers (0 in bed, 2 awake) and pieces under 3 hours apart joined", H.hlPhoneRead("sleep;2026-10-26 22:50;2026-10-27 07:05;0\nsleep;2026-10-27 00:10;2026-10-27 03:00;3\nsleep;2026-10-27 03:00;2026-10-27 03:30;2\nsleep;2026-10-27 05:00;2026-10-27 06:30;4").sleep,
+   { "2026-10-27": { bed: "00:10", wake: "06:30" } });
+is("two nights, and a moment with its zone", Object.keys(H.hlPhoneRead("sleep;2026-10-25T15:00:00Z;2026-10-25T22:30:00Z;Core\nsleep;2026-10-26 23:00;2026-10-27 06:00;Core").sleep).length, 2);
+is("sleep alone is enough to read", H.hlPhoneRead("flow-health\nsleep;2026-10-26 23:00;2026-10-27 06:00;Core").nights, 1);
+is("a short sleep is no night", H.hlPhoneRead("sleep;2026-10-27 13:00;2026-10-27 14:20;Asleep"), null);
+{
+  const c = H.cleanHealth({ sleep: { "2026-10-27": { bed: "23:00", wake: "07:00", feel: 4, ph: 1 }, "2026-10-26": { feel: 9 }, "2026-10-25": { feel: 2 } },
+    typedKg: { "2026-10-20": 1, bad: 1 }, clsNotes: { "BTW1042 Tutorial": { about: "Dr Lim", items: [{ id: "a", t: "Week 5 slides", url: "https://x.edu/w5.pptx", star: 1, k: "2026-10-27", at: 5 },
+      { id: "b", t: "", url: "javascript:alert(1)" }, { id: "c", t: "Deck", file: "relative/path.pdf" }, { id: "d", t: "Read ch. 3" }] }, empty: { about: "", items: [] } } });
+  is("sleep keeps his rating and the phone's mark; a bad rating alone is no night", c.sleep, { "2026-10-27": { bed: "23:00", wake: "07:00", feel: 4, ph: 1 }, "2026-10-25": { feel: 2 } });
+  is("weights he typed", c.typedKg, { "2026-10-20": 1 });
+  is("class notes: by name, only web links and whole paths", c.clsNotes, { "btw1042 tutorial": { about: "Dr Lim", items: [
+    { id: "a", t: "Week 5 slides", url: "https://x.edu/w5.pptx", star: 1, k: "2026-10-27", at: 5 }, { id: "c", t: "Deck", at: 0 }, { id: "d", t: "Read ch. 3", at: 0 }] } });
+}
 is("the weight in pounds, and in stone", [H.hlPhoneRead("weight;2026-10-23;198.4;lb").weights, H.hlPhoneRead("weight;2026-10-23;14.2;st").weights],
    [{ "2026-10-23": 90 }, { "2026-10-23": 90.2 }]);
 is("written with Windows line ends", H.hlPhoneRead("flow-health\r\n2026-10-23;5000\r\n").steps, { "2026-10-23": 5000 });

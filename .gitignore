@@ -13,3 +13,7 @@ dist/
 tools/ai/models/*.gguf
 release/
 tools/ai/models/
+
+# Obsidian (the second brain): its settings and plugins are this Mac's, and the layout file changes all the time
+.obsidian/
+.claudian/

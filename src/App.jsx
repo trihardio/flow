@@ -32,6 +32,71 @@ const useDevOpt = () => {
   return on;
 };
 
+/* The clock (28 October 2026: "have option to toggle AM/PM and 24h time in settings"): how a time of day is written across
+   the app (Settings, Look). The app's and no account's (CLOCK_KEY), as Developer options. Times are kept as "HH:MM" either
+   way; only what is shown changes. A component that shows times calls useClock12, so it is drawn again on a change */
+const CLOCK_KEY = "flow-clock";
+const clockOpt = { h12: false, subs: new Set() };
+try { clockOpt.h12 = localStorage.getItem(CLOCK_KEY) === "12"; } catch (e) { /* no storage: the 24-hour clock */ }
+const setClock12 = (on) => {
+  clockOpt.h12 = on;
+  try { localStorage.setItem(CLOCK_KEY, on ? "12" : "24"); } catch (e) { /* for this session only */ }
+  clockOpt.subs.forEach((f) => f(on));
+};
+const useClock12 = () => {
+  const [on, setOn] = useState(clockOpt.h12);
+  useEffect(() => { clockOpt.subs.add(setOn); setOn(clockOpt.h12); return () => { clockOpt.subs.delete(setOn); }; }, []);
+  return on;
+};
+// "13:30" as he reads times: "1:30 PM" on the 12-hour clock, as it is on the 24-hour one; an hour's mark "1 PM" / "13:00"
+const clk = (t) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t));
+  if (!clockOpt.h12 || !m) return t;
+  const h = +m[1] % 24;
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+};
+const clkHour = (h) => (clockOpt.h12 ? `${h % 12 || 12} ${h % 24 < 12 ? "AM" : "PM"}` : `${String(h).padStart(2, "0")}:00`);
+
+/* Old exports deleted (28 October 2026, his words: "add automatically delete any export data longer than 30 days ago, to
+   save space (have user able to toggle on or off and add a small popup notice that ... items will be automatically deleted
+   before 48 hours in yellow text). this applies to all export files"). The shell lists Flow's own export files 28 days old
+   or more (flowBackup.olds: only names Flow writes, only in its export folders, automatic backups too). Each is told about
+   the first time it is seen (XcleanNote, in yellow at the foot of the window), and deleted once it is 30 days old and was
+   told about 48 hours before or more (flowBackup.clean, which checks each name and its age again). On by default; Settings
+   turns it off, and turning it off forgets what was told (on again, each file is told about afresh). The app's (XCLEAN_KEY) */
+const XCLEAN_KEY = "flow-export-clean";
+const XCLEAN_DAYS = 30, XCLEAN_WARN_MS = 48 * 3600e3;
+const xclean = { on: true, seen: {}, subs: new Set() };
+try {
+  const v = JSON.parse(localStorage.getItem(XCLEAN_KEY) || "null");
+  if (v && typeof v === "object") { xclean.on = v.on !== false; xclean.seen = v.seen && typeof v.seen === "object" && !Array.isArray(v.seen) ? v.seen : {}; }
+} catch (e) { /* as it comes */ }
+const xcleanPut = () => { try { localStorage.setItem(XCLEAN_KEY, JSON.stringify({ on: xclean.on, seen: xclean.seen })); } catch (e) { /* asked again later */ } };
+const setXclean = (on) => { xclean.on = on; if (!on) xclean.seen = {}; xcleanPut(); xclean.subs.forEach((f) => f(on)); };
+const useXclean = () => {
+  const [on, setOn] = useState(xclean.on);
+  useEffect(() => { xclean.subs.add(setOn); setOn(xclean.on); return () => { xclean.subs.delete(setOn); }; }, []);
+  return on;
+};
+// one round: what is due goes, what is new is told about. { soon: files to go within 48 hours, gone: files just removed }
+const xcleanRun = async () => {
+  const fb = typeof window !== "undefined" ? window.flowBackup : null;
+  if (!xclean.on || !fb || !fb.olds || !fb.clean) return null;
+  let list = null;
+  try { list = await fb.olds(); } catch (e) { list = null; }
+  if (!Array.isArray(list)) return null;
+  const now = Date.now(), here = new Set(list.map((f) => f.name)), due = [];
+  for (const k of Object.keys(xclean.seen)) if (!here.has(k)) delete xclean.seen[k];        // gone some other way: forgotten
+  for (const f of list) {
+    if (!xclean.seen[f.name]) xclean.seen[f.name] = now;
+    else if (f.days >= XCLEAN_DAYS && now - xclean.seen[f.name] >= XCLEAN_WARN_MS) due.push(f.name);
+  }
+  let gone = 0;
+  if (due.length) { try { gone = await fb.clean(due); } catch (e) { gone = 0; } due.forEach((n) => { delete xclean.seen[n]; }); }
+  xcleanPut();
+  return { soon: list.length - due.length, gone };
+};
+
 /* ---------- Light mode (13 October 2026: "make light mode version, can be toggled on and off in settings") ----------
    The apps (finance and the three trading sides, with their pop-ups) have a light look; the panels before an app
    stay dark. It is the app's, not an account's (THEME_KEY: nobody's data, in no backup), and it acts at once.
@@ -389,7 +454,7 @@ const userBack = async (id) => {
 const ownEntries = (byKey) => Object.fromEntries(Object.entries(byKey).map(([k, list]) => [k, list.filter((it) => !it.test)]).filter(([, list]) => list.length));
 const BACKUP_DONE = AI_OK ? "Saved to exports" : "Backup downloaded";
 // a finance backup with no entry, income, goal or debt in it (limits and the currency alone are not worth a file)
-const EMPTY_BACKUP = (d) => !Object.keys(d.spending || {}).length && !Object.keys(d.incomes || {}).length && !(d.goals || []).length && !(d.debts || []).length && !(d.plans || []).length;
+const EMPTY_BACKUP = (d) => !Object.keys(d.spending || {}).length && !Object.keys(d.incomes || {}).length && !(d.goals || []).length && !(d.debts || []).length && !(d.plans || []).length && !(d.subs || []).length;
 // what a finance backup holds: his own entries (test data left out), the limits and the currency. null with nothing of his own
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 // an export's file: <first name>-<side>-export-DD-MM-YYYY.json. One place for it: the shell finds the side's folder from
@@ -404,14 +469,14 @@ const tradeBackup = (M, trades, deps) => {
   if (!Object.keys(own).length && !Object.keys(cash).length) return null;
   return { app: M.app, version: 1, exportedAt: new Date().toISOString(), trades: own, ...(Object.keys(cash).length ? { deposits: cash } : {}) };
 };
-const financeBackup = ({ spending, incomes, limits, currency, goals, debts, plans: allPlans, rule, ruleByMonth: allRules }) => {
+const financeBackup = ({ spending, incomes, limits, currency, goals, debts, plans: allPlans, subs = [], rule, ruleByMonth: allRules }) => {
   const plans = allPlans.filter((p) => !p.test);      // a made-up plan is test data like any other
   const ruleByMonth = Object.fromEntries(Object.entries(allRules || {}).filter(([, r]) => !(r && r.test)));    // and so is a month's test rule
-  const own = { spending: ownEntries(spending), incomes: ownEntries(incomes), plans,
+  const own = { spending: ownEntries(spending), incomes: ownEntries(incomes), plans, subs,
                 goals: goals.filter((g) => !g.test).map((g) => ({ ...g, deposits: (g.deposits || []).filter((d) => !d.test) })), debts: debts.filter((x) => !x.test) };
   if (EMPTY_BACKUP(own)) return null;
   return { version: 1, exportedAt: new Date().toISOString(), spending: own.spending, incomes: own.incomes, limits, currency, goals: own.goals, debts: own.debts,
-           ...(plans.length ? { plans } : {}), ...(rule ? { rule } : {}), ...(ruleByMonth && Object.keys(ruleByMonth).length ? { ruleByMonth } : {}) };
+           ...(plans.length ? { plans } : {}), ...(subs.length ? { subs } : {}), ...(rule ? { rule } : {}), ...(ruleByMonth && Object.keys(ruleByMonth).length ? { ruleByMonth } : {}) };
 };
 /* ---------- a copy a day (13 October 2026) ----------
    The first time the Mac app is opened on a day, what the account has entered is written into "automatic backups" in
@@ -1168,16 +1233,6 @@ const DOTS_PER_ROW = 12;
 // A chart line's first stretch runs from the y-axis to its first point. It sets off at this share of that point's
 // value, so it comes in with a slight rise. From zero it was a wall from the corner up to January, which he found weird.
 const CHART_LEAD = 0.9;
-/* A round top for a scale of three steps over 0 (22 October 2026: the weekly chart read 194Rb, 388Rb, 588Rb, thirds of
-   1.15 × its highest point). The step is the smallest of NICE_STEPS × a power of ten that holds `v` in three, worked out
-   in the units shown (`unit`: 1 for rupiah, the rate for ringgit), so the lines read 150Rb / 300Rb / 450Rb or 40k / 80k /
-   120k. At most a third of the height goes spare. */
-const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
-const niceTop = (v, unit = 1, steps = 3) => {
-  const need = Math.max(v / unit / steps, 1);
-  const mag = 10 ** Math.floor(Math.log10(need));
-  return (NICE_STEPS.find((k) => k * mag >= need - 1e-9) || 10) * mag * steps * unit;
-};
 // the card leaving its wallet and going back in (see the styles): how long each way takes, and its speed curve
 const CARD_OUT_MS = 500, CARD_IN_MS = 420;
 const CARD_OUT_EASE = "cubic-bezier(0.3,0,0.15,1)", CARD_IN_EASE = "cubic-bezier(0.4,0,0.2,1)";
@@ -1262,10 +1317,9 @@ const LIGHT_EXTRA = `
                         linear-gradient(180deg, rgba(239,242,245,calc(0.6 * var(--lg-k))), rgba(239,242,245,calc(0.42 * var(--lg-k))) 60%), rgba(239,242,245,calc(0.36 * var(--lg-k))); }
     .cal-wrap { background: linear-gradient(180deg, rgba(239,242,245,calc(0.46 * var(--lg-k))) 0%, rgba(239,242,245,calc(0.3 * var(--lg-k))) 40%, rgba(239,242,245,calc(0.24 * var(--lg-k))) 100%), rgba(239,242,245,calc(0.16 * var(--lg-k))); border-color: rgba(255,255,255,0.45); }
     .cal-wrap::before { background: linear-gradient(112deg, transparent 18%, rgba(255,255,255,0.28) 34%, rgba(255,255,255,0.08) 44%, transparent 58%), radial-gradient(70% 50% at 8% -12%, rgba(255,255,255,0.4), transparent 62%); }
-    .snav { background: linear-gradient(180deg, #e3e6eb 0%, #dee2e6 55%, #d9dde2 100%); }
     .wr-tile { background: radial-gradient(130% 120% at 0% 0%, color-mix(in srgb, var(--acc) 12%, transparent), transparent 62%), rgba(239,242,245,0.5); border-color: rgba(255,255,255,0.5); }
-    .wdg { background: radial-gradient(130% 95% at 0% 0%, color-mix(in srgb, var(--wc) 20%, transparent), transparent 62%),
-                       radial-gradient(90% 80% at 100% 110%, color-mix(in srgb, var(--wc) 10%, transparent), transparent 70%),
+    .wdg { background: radial-gradient(110% 80% at 0% 0%, color-mix(in srgb, var(--wc) 12%, transparent), transparent 62%),
+                       radial-gradient(90% 80% at 100% 110%, color-mix(in srgb, var(--wc) 5%, transparent), transparent 70%),
                        linear-gradient(180deg, rgba(239,242,245,calc(0.6 * var(--lg-k))), rgba(239,242,245,calc(0.42 * var(--lg-k))) 60%), rgba(239,242,245,calc(0.36 * var(--lg-k))); }
     .wdg::before { background: rgba(236,239,243,0.94); }
     /* the tiles' sheen holds calc() inside its colours, which the rewriting leaves alone: its dark corner was a grey smudge on white glass */
@@ -1370,7 +1424,8 @@ const uid = () => Date.now() + "-" + Math.random().toString(36).slice(2, 7);
    import, call offerUndo(null): no `back` outlives the entries it was made for. */
 const UNDO_MS = 10000;
 const undoHub = { say: null };
-const offerUndo = (what, back) => { if (undoHub.say) undoHub.say(what ? { what, back } : null); };
+// (verb: what happened to it, "Deleted" unless said; "Moved" for a row dragged to another day, 31 October 2026)
+const offerUndo = (what, back, verb = "Deleted") => { if (undoHub.say) undoHub.say(what ? { what, back, verb } : null); };
 // a removed entry back into its list at the place it had (not twice, should it be there again)
 const backInto = (list, it, at) => { if (list.some((x) => x.id === it.id)) return list; const c = list.slice(); c.splice(Math.min(at, c.length), 0, it); return c; };
 const UndoNote = memo(function UndoNote() {
@@ -1388,7 +1443,7 @@ const UndoNote = memo(function UndoNote() {
   const undo = () => { if (!on || !it) return; setOn(false); it.back(); };
   return (
     <div className={"undo-note" + (on ? " on" : "")} role="status">
-      <span className="un-t">Deleted <b>{it ? it.what : ""}</b></span>
+      <span className="un-t">{it ? it.verb : "Deleted"} <b>{it ? it.what : ""}</b></span>
       <button className="un-b" tabIndex={on ? 0 : -1} onClick={undo}>Undo</button>
     </div>
   );
@@ -2570,8 +2625,8 @@ const AmountField = ({ value, setValue, onSubmit, accent, cur, ghost, width, all
    wallets, cards, coin, globe and die have presses of their own), what has a press of its own in the style sheet
    (PRESS_OWN), and anything marked data-nopress. Plain script, no React state: nothing on the page is drawn again. */
 const PRESS_PX = 5, PRESS_MIN = 0.94, PRESS_IN_MS = 110, PRESS_OUT_MS = 300, PRESS_TAP_MS = 380, PRESS_SLIP = 8;
-const PRESS_OWN = ".cell, .ycell, .calc-fab, .pc-go, .ynav-btn, .goal-io, .goal-save, .limit-label, .tcfg-go, .sd-act, .acc-go, .ql-chip, .jr-add, .log-pill, .dg-btn, .dg-snap, .wd-act, .fx-cur, .fx-swap, .dg-pre-it, .calc-k, .sp-h, .pc-x";
-const PRESS_SKIP = "input, textarea, select, [contenteditable], .row-grip, [data-nopress], .warm-host";
+const PRESS_OWN = ".cell, .ycell, .calc-fab, .pc-go, .ynav-btn, .goal-io, .goal-save, .limit-label, .tcfg-go, .sd-act, .sd-tool, .acc-go, .ql-chip, .jr-add, .log-pill, .dg-btn, .dg-snap, .wd-act, .fx-cur, .fx-swap, .dg-pre-it, .calc-k, .sp-h, .pc-x";
+const PRESS_SKIP = "input, textarea, select, [contenteditable], .row-grip, .row-grab, [data-nopress], .warm-host";
 const PRESS_DOWN = "cubic-bezier(0.3, 0, 0.2, 1)", PRESS_UP = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 // a press that can't do anything yet because a box is empty (a goal's or a debt's + / − with no amount): the cursor goes
 // into that box and it gives a small shake, so the press is answered. The separate `translate`, like the press's `scale`
@@ -2581,6 +2636,12 @@ const nudge = (box) => {
   if (box.animate) box.animate([{ translate: "0 0" }, { translate: "-4px 0" }, { translate: "3px 0" }, { translate: "-2px 0" }, { translate: "1px 0" }, { translate: "0 0" }], { duration: 340, easing: "ease-out" });
 };
 const nudgeNear = (e) => nudge(e && e.currentTarget && e.currentTarget.parentElement && e.currentTarget.parentElement.querySelector("input"));
+// focus rings only while he moves with Tab (27 October 2026, his picture of a ring left round the footer's Settings: focus
+// handed back to it as a pop-up closed counted as the keyboard's); the next press of the pointer takes them off
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (e) => { if (e.key === "Tab") document.documentElement.classList.add("kb"); }, true);
+  window.addEventListener("pointerdown", () => document.documentElement.classList.remove("kb"), true);
+}
 const pressKit = (() => {
   if (typeof window === "undefined" || typeof Element === "undefined" || !Element.prototype.animate) return null;
   let held = null;
@@ -2648,12 +2709,15 @@ const pressKit = (() => {
    None of it is React state: the copy and the ring move by transform, written once a frame at most, and the row's and
    the bar's looks are classes put on by hand. The days' places are read once, as the drag begins, and kept as places
    on the page, so scrolling needs no reading; near the top or the bottom edge of the window the page scrolls by itself.
-   o: { grid: the calendar's grid, kind: "exp" | "inc", day: the day the row is on, drop(day) } */
+   o: { grid: the calendar's grid, kind: "exp" | "inc", day: the day the row is on, drop(day), order(index) }
+   Up and down its own list (31 October 2026, his words: "rearrange the expenses income list like if i want this or that
+   to be on top or bottom"): over the list a white line shows where it goes; let go there and the page is told the new
+   place among the others (o.order(index)). */
 const DND_START = 4, DND_EDGE = 70, DND_SCROLL = 900, DND_FLY_MS = 280;
 const stopDown = (e) => e.preventDefault();          // a press on the bar starts no marking of text and takes no cursor away
 const rowDrag = (e, o) => {
   if (e.button !== 0 || rowDrag.on || !o.grid) return;
-  const grip = e.currentTarget, row = grip.closest(".row-wrap"), ring = o.grid.querySelector(".cal-ring");
+  const grip = e.currentTarget, row = grip.closest(".row-wrap"), ring = o.grid.querySelector(".cal-ring"), list = row && row.parentElement;
   if (!row || !ring) return;
   const pid = e.pointerId, x0 = e.clientX, y0 = e.clientY;
   try { grip.setPointerCapture(pid); } catch (err) { /* it still works: the events are heard at the window */ }
@@ -2663,6 +2727,23 @@ const rowDrag = (e, o) => {
   // the day under the pointer: the one it is in, or within half a gap of; never the row's own
   const aim = () => {
     const x = px + window.scrollX, y = py + window.scrollY;
+    // over its own list: the place among the others, shown by the line; the calendar's ring stands down
+    const L = st.list;
+    if (L && x >= L.l && x <= L.r && y >= L.t - 14 && y <= L.b + 14) {
+      const k = L.rows.filter((q) => (q.t + q.b) / 2 < y).length;
+      if (st.over) { st.over = null; ring.classList.remove("on"); }
+      if (k !== st.slot) {
+        st.slot = k;
+        const ly = k === 0 ? (L.rows[0] ? L.rows[0].t - 4 : L.t) : L.rows[k - 1].b + 4;
+        const first = !st.line.classList.contains("on");
+        if (first) st.line.style.transition = "none";            // it comes in where it is; between places it glides
+        st.line.style.transform = `translate3d(${L.l - window.scrollX}px, ${ly - window.scrollY - 1.5}px, 0)`;
+        if (first) { void st.line.offsetWidth; st.line.style.transition = ""; }
+        st.line.classList.add("on");
+      }
+      return;
+    }
+    if (st.slot != null) { st.slot = null; st.line.classList.remove("on"); }
     let best = null, near = 6;
     for (const d of st.days) { const far = Math.max(d.l - x, x - d.r, d.t - y, y - d.b, 0); if (far < near) { near = far; best = d; } }
     if (best && best.day === o.day) best = null;
@@ -2699,7 +2780,16 @@ const rowDrag = (e, o) => {
     body.append(amt, bar, name); chip.append(body); document.body.append(chip);
     const ax = bar.offsetLeft + bar.offsetWidth / 2, ay = body.offsetHeight / 2;
     body.style.transformOrigin = `${ax}px 50%`;                // it grows out of the bar
-    st = { days, gx: g.left + sx, gy: g.top + sy, chip, body, ax, ay, w: body.offsetWidth, over: null };
+    // the other rows of its list, as places on the page (its own left out), and the line that shows the new place
+    let lst = null, line = null;
+    if (o.order && list) {
+      const others = [...list.children].filter((el) => el.classList.contains("row-wrap") && el !== row);
+      const lr = list.getBoundingClientRect();
+      lst = { l: lr.left + sx, r: lr.right + sx, t: lr.top + sy, b: lr.bottom + sy, rows: others.map((el) => { const r = el.getBoundingClientRect(); return { t: r.top + sy, b: r.bottom + sy }; }),
+              was: [...list.children].filter((el) => el.classList.contains("row-wrap")).indexOf(row) };
+      line = document.createElement("div"); line.className = "dnd-line"; line.style.width = `${lr.width}px`; document.body.append(line);
+    }
+    st = { days, gx: g.left + sx, gy: g.top + sy, chip, body, ax, ay, w: body.offsetWidth, over: null, list: lst, line, slot: null };
     row.classList.add("dnd-src"); grip.classList.add("held"); o.grid.classList.add("cal-dnd");
     place();
     chip.classList.add("on");
@@ -2713,8 +2803,17 @@ const rowDrag = (e, o) => {
     grip.removeEventListener("lostpointercapture", cancel);
     try { grip.releasePointerCapture(pid); } catch (err) { /* already let go */ }
     if (!st) return;
-    const to = ok ? st.over : null, { chip, body } = st;
+    const to = ok ? st.over : null, { chip, body, line } = st, slot = ok && st.list && st.slot != null && st.slot !== st.list.was ? st.slot : null;
     grip.classList.remove("held"); o.grid.classList.remove("cal-dnd"); ring.classList.remove("on");
+    if (line) { line.classList.remove("on"); setTimeout(() => line.remove(), 200); }
+    if (slot != null) {
+      // into its new place: the copy fades where the line was, the row comes back there as the page redraws
+      chip.style.transition = "opacity .16s ease"; chip.style.opacity = "0";
+      row.classList.remove("dnd-src");
+      o.order(slot);
+      setTimeout(() => chip.remove(), 220);
+      return;
+    }
     chip.style.transition = `transform ${DND_FLY_MS}ms cubic-bezier(0.3, 0.7, 0.2, 1)`;
     if (to) {
       // into the middle of its day, shrinking; the page hears of it two frames on, so its own work can't hold up the take-off
@@ -2988,6 +3087,35 @@ const pxSeps = (text) => {
   const t = String(text);
   if (!/[.,]/.test(t)) return t;
   return t.split(/([.,])/).map((p, i) => (i % 2 ? <span key={i} className={p === "," ? "pxs c" : "pxs"}>{p}</span> : p));
+};
+
+/* The wrapped's big figure (29 October 2026: "make this a pixelated text on the wrapped, and have all the animations for
+   it"). Pixel type in whole font pixels like the month's figure (capitals, `pxSeps`), the biggest of the sizes that fits
+   the tile for the figure it counts to, so the size never changes mid-count. It keeps the count and takes the header
+   digits' flicker: opening, it shows in the normal face and cross-fades to the pixel one several times before settling
+   (opacity only, the header's own ybN1 / ybP1). Each layer carries the gradient itself: a child with its own opacity
+   animation is painted apart from its parent, so a gradient clipped to the parent's text would not reach it. */
+const WR_PX_SIZES = [56, 48, 40, 32, 24, 16];
+const WrHeroNum = ({ value, render, grad, duration = 900 }) => {
+  const box = useRef(null);
+  const [w, setW] = useState(418);
+  useLayoutEffect(() => {
+    const read = () => { const el = box.current; if (el && el.clientWidth) setW(el.clientWidth); };
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+  const end = String(render(value, false, null));
+  const seps = (end.match(/[.,]/g) || []).length;
+  const size = WR_PX_SIZES.find((s) => (end.length - 0.7 * seps) * s <= w) || 16;
+  return (
+    <div ref={box} className="wr-hero-num" style={{ fontSize: size }}>
+      <CountNum value={value} duration={duration} render={(n, b, sp) => {
+        const t = render(n, b, sp);
+        return <><span className="wr-px" style={grad}>{pxSeps(t)}</span><span className="wr-nm" style={grad} aria-hidden="true">{t}</span></>;
+      }} />
+    </div>
+  );
 };
 
 /* Split bill (11 October 2026: "a calculator for calculating split bill with people", then "an option for my bill to be
@@ -3447,7 +3575,7 @@ const AccountGate = memo(({ api, state, first, shown, leaving }) => {
                   <span className={`in-mark${c.logo ? " logo" : ""}`}>{c.logo ? <CrocLogo /> : <span className="msym">{c.icon}</span>}</span>
                   <h1 className="acc-hello">{c.title}</h1>
                   <p className="acc-sub">{c.sub}</p>
-                  <ul className="in-list">{c.rows.map(([icon, text]) => <li key={text}><span className="msym">{icon}</span><span>{text}</span></li>)}</ul>
+                  <ul className="in-list">{c.rows.map(([icon, text]) => <li key={text}><span className="msym">{icon}</span><span>{kbTx(text)}</span></li>)}</ul>
                 </section>
               ))}
             </div>
@@ -3561,6 +3689,117 @@ const parseQuick = (text, isMYR) => {
 // wallet, the coin or the die floats behind it. It stands over the stage (.launch-veil is 200) and under the login's
 // cover and the opening (250, 300): at 80, the pop-ups' own layer, it opened behind the stage, unseen, and took the keys
 const QL_PLAIN = { background: "rgba(0,0,0,0.62)", backdropFilter: "none", WebkitBackdropFilter: "none", zIndex: 220 };
+/* The day a quick log files to (24 October 2026, his words: "make me be able to select dates in the logged expense ui";
+   on both quick logs, the four sides being one shape): a chip on the line, Today until another day is picked; pressed,
+   a small month to pick from, no day after today (what is logged has happened), with Today and Yesterday under it. The
+   day picked stays for the lines that follow and for the Often chips until the log is closed; "kemarin" / "yesterday"
+   in a line still works when no day is picked */
+/* Keyboard shortcuts (25 October 2026, his words: "make me be able to see all the shortcut in settings in a collapsed
+   view ui, and make me be able to change the shortcuts"). The five that open something are his to change (KB_LIST, in
+   Settings under Keyboard): ⌘ and a letter, ⇧ and ⌥ allowed, kept in this Mac's storage beside the look (flow-keys), as
+   the theme is. Every handler asks kbIs, and every place that writes a shortcut writes its default (⌘N, ⌘E …) through
+   kbTx, or shows it with <Kb>, so a change shows everywhere at once. The keys that stay as they are: KB_FIXED */
+const KB_KEY = "flow-keys";
+const KB_LIST = [
+  { id: "quick", def: "n", name: "Quick log", say: "Log for today · a to-do on Health" },
+  { id: "worth", def: "b", name: "Worth it?", say: "Check a purchase · finance" },
+  { id: "weekend", def: "j", name: "Weekend fund", say: "What weekdays may take for the weekend · finance" },
+  { id: "fx", def: "e", name: "Exchange money", say: "The exchanger and its calculator" },
+  { id: "plan", def: "t", name: "Time plan", say: "When you will be done or arrive" },
+  { id: "cur", def: "k", name: "Next currency", say: "Works with a pop-up open too" },
+];
+const KB_FIXED = [
+  ["Close a pop-up", "", ["Esc"]], ["Log it, work it out", "Quick log, calculators", ["↵"]],
+  ["Add an often thing", "Quick log", ["⌘1", "–", "⌘6"]], ["Undo, redo", "Calculators", ["⌘Z", "⇧⌘Z"]],
+  ["Step months, days, periods", "Month, Health's day, a chart", ["←", "→"]], ["Quick log with a number", "Yearly panel", ["0", "–", "9"]],
+  ["Move or remove a widget", "Editing Home, a widget picked", ["↑↓←→", "⌫"]], ["Clear the week", "Health's week, pointer on it", ["⌘⌫"]],
+];
+const KB_BY_DEF = Object.fromEntries(KB_LIST.map((k) => [k.def.toUpperCase(), k.id]));
+// what a shortcut can't be: macOS's own (quit, close, hide, minimise) and the editing keys every box needs
+const KB_TAKEN = { q: "quits the app", w: "closes the window", h: "hides the app", m: "minimises the window", r: "reloads the app", a: "selects all", c: "copies", v: "pastes", x: "cuts", z: "undoes" };
+const kbOpt = { map: {}, subs: new Set() };
+try {
+  const kept = JSON.parse(localStorage.getItem(KB_KEY) || "{}");
+  for (const k of KB_LIST) { const c = kept[k.id]; if (c && /^[a-z]$/.test(c.k)) kbOpt.map[k.id] = { k: c.k, shift: !!c.shift, alt: !!c.alt }; }
+} catch (e) { /* nothing kept: the defaults */ }
+const kbDef = (id) => ({ k: KB_LIST.find((x) => x.id === id).def, shift: false, alt: false });
+const kbNow = (id) => kbOpt.map[id] || kbDef(id);
+const kbLabel = (c) => `${c.alt ? "⌥" : ""}${c.shift ? "⇧" : ""}⌘${c.k.toUpperCase()}`;
+const kbL = (id) => kbLabel(kbNow(id));
+const kbTx = (s) => (typeof s === "string" ? s.replace(/⌘([NBETK])/g, (m, c) => kbL(KB_BY_DEF[c])) : s);
+const kbSame = (a, b) => a.k === b.k && a.shift === b.shift && a.alt === b.alt;
+// the letter pressed: with ⌥ held the character is another (⌥N is ˜), so then it is the key's place that counts
+const kbChar = (e) => { if (e.altKey) { const m = /^Key([A-Z])$/.exec(e.code || ""); if (m) return m[1].toLowerCase(); } return (e.key || "").toLowerCase(); };
+const kbIs = (e, id) => { const c = kbNow(id); return (e.metaKey || e.ctrlKey) && !!e.shiftKey === c.shift && !!e.altKey === c.alt && kbChar(e) === c.k; };
+const setKb = (id, c) => {          // null: the default again
+  if (!c || kbSame(c, kbDef(id))) delete kbOpt.map[id]; else kbOpt.map[id] = c;
+  try { localStorage.setItem(KB_KEY, JSON.stringify(kbOpt.map)); } catch (e) { /* for this session only */ }
+  kbOpt.subs.forEach((f) => f((n) => n + 1));
+};
+// drawn again when a shortcut changes (a part kept from drawing again by memo, too)
+const useKbs = () => { const [, bump] = useState(0); useEffect(() => { kbOpt.subs.add(bump); return () => { kbOpt.subs.delete(bump); }; }, []); };
+const Kb = ({ id }) => { useKbs(); return kbL(id); };
+// while a shortcut is being typed in the settings, every key is its (the settings' own listener hands them over)
+const kbRec = { on: null };
+/* A ⌘ shortcut heard first: on the window while it captures, set up before any pop-up sets up its own, and kept from
+   them, so it works with a pop-up open (⌘K). A held key fires once (24 October 2026, the review: held, ⌘K flipped the
+   currency on every repeat and saved each time). run is a ref to the latest render's action */
+const useCmdKey = (id, run, on) => useEffect(() => {
+  if (!on) return;
+  const onKey = (e) => {
+    if (kbRec.on || !kbIs(e, id)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (!e.repeat) run.current();
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
+}, [on]);
+const QL_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const qlDayOf = (back) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - back); return d; };
+const qlDayWord = (back) => {
+  if (!back) return "Today";
+  if (back === 1) return "Yesterday";
+  const d = qlDayOf(back);
+  return `${QL_DOW[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? ` ${d.getFullYear()}` : ""}`;
+};
+const QlDate = ({ back, open, onOpen, onPick }) => {
+  const sel = qlDayOf(back), today = qlDayOf(0);
+  const [at, setAt] = useState({ y: sel.getFullYear(), m: sel.getMonth() });
+  useEffect(() => { if (open) setAt({ y: sel.getFullYear(), m: sel.getMonth() }); }, [open]);
+  const lead = (new Date(at.y, at.m, 1).getDay() + 6) % 7, dim = new Date(at.y, at.m + 1, 0).getDate();
+  const backOf = (d) => Math.round((today - new Date(at.y, at.m, d, 12)) / 864e5);
+  const atNow = at.y === today.getFullYear() && at.m === today.getMonth();
+  const step = (k) => setAt((v) => { const d = new Date(v.y, v.m + k, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+  return (
+    <span className="ql-day-w">
+      <button className={`ql-day${back ? " set" : ""}${open ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => onOpen(!open)}
+              title="The day this is logged to" aria-label={`Day: ${qlDayWord(back)}`} aria-expanded={open}>
+        <span className="msym" aria-hidden="true">calendar_today</span><span key={back} className="ql-day-t">{qlDayWord(back)}</span>
+      </button>
+      {open && (
+        <div className="ql-cal glass lg-float" role="dialog" aria-label="Pick a day" onMouseDown={(e) => e.preventDefault()}>
+          <div className="ql-cal-h">
+            <button aria-label="Previous month" onClick={() => step(-1)}><span className="msym" aria-hidden="true">chevron_left</span></button>
+            <b key={`${at.y}-${at.m}`}>{MONTHS_FULL[at.m]} {at.y}</b>
+            <button aria-label="Next month" disabled={atNow} onClick={() => step(1)}><span className="msym" aria-hidden="true">chevron_right</span></button>
+          </div>
+          <div key={`${at.y}-${at.m}`} className="ql-cal-g">
+            {["M", "T", "W", "T", "F", "S", "S"].map((w, i) => <i key={`w${i}`}>{w}</i>)}
+            {Array.from({ length: lead }, (_, i) => <span key={`e${i}`} />)}
+            {Array.from({ length: dim }, (_, i) => {
+              const d = i + 1, b = backOf(d);
+              return <button key={d} disabled={b < 0} className={`${b === back ? "on" : ""}${b === 0 ? " now" : ""}`} onClick={() => onPick(b)}>{d}</button>;
+            })}
+          </div>
+          <div className="ql-cal-q">
+            <button className={back === 0 ? "on" : ""} onClick={() => onPick(0)}>Today</button>
+            <button className={back === 1 ? "on" : ""} onClick={() => onPick(1)}>Yesterday</button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+};
 const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
   const [text, setText] = useState(seed);
   const [incOn, setIncOn] = useState(false);          // Tab: income, whatever the line says
@@ -3568,6 +3807,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
   const [closing, setClosing] = useState(false);
   const [noteOn, setNoteOn] = useState(false);        // the details box under the line (↓, or its button)
   const [noteRun, setNoteRun] = useState(0);
+  const [when, setWhen] = useState(null), [calOn, setCalOn] = useState(false);      // the day picked (days back), its month open
   const note = useRef("");
   const boxRef = useRef(null), inRef = useRef(null), shut = useRef(null);
   useLayoutEffect(() => { if (seed) inRef.current?.setSelectionRange(seed.length, seed.length); }, []);      // opened by a digit: the caret after it
@@ -3586,6 +3826,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
   const { fmt, toIDR } = api.current;
   const often = useMemo(() => api.current.often(), [done]);      // counted again after each add
   const p = parseQuick(text, isMYR);
+  const back = when ?? p.back;
   const inc = incOn || p.inc, idr = p.amount ? toIDR(String(p.amount)) : 0;
   const cat = !inc && p.desc ? inferCat(p.desc) : null;
   const day = api.current.today(), left = day.limit - day.spent;
@@ -3596,17 +3837,18 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
     if (!shown) return;
     setText(""); setIncOn(false);
     if (withNote) { if (note.current) { note.current = ""; setNoteRun((n) => n + 1); } setNoteOn(false); }
-    setDone({ id: Date.now(), inc: kind === "inc", text: `${kind === "inc" ? "+" : "−"}${shown}${desc ? ` ${desc}` : ""}${back ? " · yesterday" : ""}` });
+    setDone({ id: Date.now(), inc: kind === "inc", text: `${kind === "inc" ? "+" : "−"}${shown}${desc ? ` ${desc}` : ""}${back ? ` · ${back === 1 ? "yesterday" : qlDayWord(back)}` : ""}` });
   };
+  const pickDay = (b) => { setWhen(b); setCalOn(false); inRef.current?.focus(); };
   const onKey = (e) => {
     e.stopPropagation();
-    if (e.key === "Escape") { shut.current(); return; }
+    if (e.key === "Escape") { if (calOn) setCalOn(false); else shut.current(); return; }
     if (e.key === "Tab") { e.preventDefault(); setIncOn((v) => !v); return; }
     if (e.key === "ArrowDown") { e.preventDefault(); if (noteOn) boxRef.current?.querySelector(".note-area")?.focus(); else setNoteOn(true); return; }
-    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) put("exp", o.amount, o.desc, 0); return; }
+    if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) put("exp", o.amount, o.desc, back); return; }
     if (e.key !== "Enter") return;
     if (!text.trim()) { shut.current(); return; }
-    if (idr) put(inc ? "inc" : "exp", idr, p.desc, p.back, true);
+    if (idr) put(inc ? "inc" : "exp", idr, p.desc, back, true);
   };
   // in the details box: Enter files the line, Esc closes, ↑ on its first line goes back up to the line
   const noteKey = (e) => {
@@ -3625,6 +3867,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
           <input ref={inRef} autoFocus className="ql-in" value={text} spellCheck={false} aria-label="What to add to today"
                  placeholder={isMYR ? "coffee 12.5 · +3k salary" : "kopi 25 · 1,5jt sewa · +5jt gaji"}
                  onChange={(e) => setText(e.target.value.slice(0, 120))} onKeyDown={onKey} />
+          <QlDate back={back} open={calOn} onOpen={setCalOn} onPick={pickDay} />
           <button className={`ql-note${noteOn ? " on" : ""}${inc ? " inc" : ""}`} onMouseDown={(e) => e.preventDefault()} title="Details: a longer note, kept under the name (↓)"
                   aria-label="Details" aria-expanded={noteOn} onClick={() => { if (noteOn) inRef.current?.focus(); setNoteOn((v) => !v); }}>
             <span className="msym" aria-hidden="true">edit_note</span>
@@ -3632,7 +3875,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
         </div>
         <NoteFold key={noteRun} open={noteOn} tone={inc ? "inc" : null} label="Details" placeholder={inc ? "Details — e.g. October pay, overtime included" : "Details — e.g. ayam, french fries, ice cream"}
                   onType={(v) => { note.current = v; }} onKey={noteKey}
-                  onEnter={() => { if (idr) put(inc ? "inc" : "exp", idr, p.desc, p.back, true); else inRef.current?.focus(); }} />
+                  onEnter={() => { if (idr) put(inc ? "inc" : "exp", idr, p.desc, back, true); else inRef.current?.focus(); }} />
         <div className="ql-read">
           {!text.trim() ? <span>Type what it was and how much, then Enter.{isMYR ? "" : " A bare number is thousands: 25 is 25Rb."}</span>
             : !idr ? <span>No amount yet{p.desc ? <> · <b>{p.desc}</b></> : ""}</span>
@@ -3640,7 +3883,7 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
                 <b style={{ color: inc ? "#3ddc97" : "#ff8d97" }}>{inc ? "+" : "−"}{fmt(idr)}</b>
                 {p.desc && <><i>·</i><b>{p.desc}</b></>}
                 {cat && <><i>·</i><span className="ql-cat"><span className="msym">{CATS[cat].icon}</span>{CATS[cat].label}</span></>}
-                <i>·</i><span>{p.back ? "Yesterday" : "Today"}</span>
+                <i>·</i><span>{qlDayWord(back)}</span>
                 <kbd>Enter</kbd>
               </>}
         </div>
@@ -3648,8 +3891,8 @@ const QuickLog = memo(({ api, cur, isMYR, seed = "", onClose, plain }) => {
           <div className="ql-often">
             <span>Often</span>
             {often.map((o, i) => (
-              <button key={o.desc} className="ql-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => put("exp", o.amount, o.desc, 0)}
-                      title={`Add ${o.desc} to today (⌘${i + 1})`}>{o.desc}<b>{fmt(o.amount)}</b></button>
+              <button key={o.desc} className="ql-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => put("exp", o.amount, o.desc, back)}
+                      title={`Add ${o.desc} to ${back ? qlDayWord(back) : "today"} (⌘${i + 1})`}>{o.desc}<b>{fmt(o.amount)}</b></button>
             ))}
           </div>
         )}
@@ -3703,6 +3946,7 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
   const [text, setText] = useState(seed);
   const [flip, setFlip] = useState(false);            // Tab: a loss where the line says a win, and the other way round
   const [done, setDone] = useState(null);             // the last trade added: { id, loss, text }
+  const [when, setWhen] = useState(null), [calOn, setCalOn] = useState(false);      // the day picked (days back), its month open
   const [closing, setClosing] = useState(false);
   const boxRef = useRef(null), inRef = useRef(null), shut = useRef(null);
   useLayoutEffect(() => { if (seed) inRef.current?.setSelectionRange(seed.length, seed.length); }, []);      // opened by a digit: the caret after it
@@ -3721,22 +3965,24 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
   const { M, money } = api.current;
   const often = useMemo(() => api.current.often(), [done]);      // counted again after each add
   const p = parseQuickTrade(text, M);
+  const back = when ?? p.back;
   const loss = !p.be && p.loss !== flip, ok = p.be || p.amount > 0;
   const pnl = p.be ? (p.loss ? -p.amount : p.amount) : loss ? -p.amount : p.amount;
   const ink = p.be ? "#e3cd77" : loss ? "#ff8d97" : "#3ddc97";
   const day = api.current.today();
   const put = (name) => {
-    const shown = api.current.put(p.be ? 0 : loss ? -1 : 1, p.be ? pnl : p.amount, name, p.back, p.side);
+    const shown = api.current.put(p.be ? 0 : loss ? -1 : 1, p.be ? pnl : p.amount, name, back, p.side);
     inRef.current?.focus();
     if (!shown) return;
     setText(""); setFlip(false);
-    setDone({ id: Date.now(), loss: pnl < 0, text: `${shown}${pairName(name) ? ` ${pairName(name)}` : ""}${p.back ? " · yesterday" : ""}` });
+    setDone({ id: Date.now(), loss: pnl < 0, text: `${shown}${pairName(name) ? ` ${pairName(name)}` : ""}${back ? ` · ${back === 1 ? "yesterday" : qlDayWord(back)}` : ""}` });
   };
   // a name he trades often: with an amount on the line it adds the trade, without one it is written on the line
   const pick = (name) => { if (ok) put(name); else { setText(`${name} `); inRef.current?.focus(); } };
+  const pickDay = (b) => { setWhen(b); setCalOn(false); inRef.current?.focus(); };
   const onKey = (e) => {
     e.stopPropagation();
-    if (e.key === "Escape") { shut.current(); return; }
+    if (e.key === "Escape") { if (calOn) setCalOn(false); else shut.current(); return; }
     if (e.key === "Tab") { e.preventDefault(); setFlip((v) => !v); return; }
     if (e.metaKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); const o = often[e.key - 1]; if (o) pick(o.name); return; }
     if (e.key !== "Enter") return;
@@ -3751,6 +3997,7 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
                   title="Tab switches between a win and a loss"><i />{p.be ? "Breakeven" : loss ? "Loss" : "Win"}</button>
           <input ref={inRef} autoFocus className="ql-in" value={text} spellCheck={false} aria-label="The trade to add to today"
                  placeholder={M.quick} onChange={(e) => setText(e.target.value.slice(0, 120))} onKeyDown={onKey} />
+          <QlDate back={back} open={calOn} onOpen={setCalOn} onPick={pickDay} />
         </div>
         <div className="ql-read">
           {!text.trim() ? <span>Type the {M.small.toLowerCase()} and what it made, then Enter. A minus is a loss.{M.dp ? "" : " A bare number is thousands: 350 is 350Rb."}</span>
@@ -3759,7 +4006,7 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
                 <b style={{ color: ink }}>{money(pnl)}</b>
                 <i>·</i><b>{pairName(p.name) || M.none}</b>
                 {M.sides && <><i>·</i><span>{M.sideName[p.side === "short" ? 1 : 0]}</span></>}
-                <i>·</i><span>{p.back ? "Yesterday" : "Today"}</span>
+                <i>·</i><span>{qlDayWord(back)}</span>
                 <kbd>Enter</kbd>
               </>}
         </div>
@@ -3802,9 +4049,10 @@ const TradeQuickLog = memo(({ api, seed = "", onClose }) => {
 const SIDE_PARTS = { cal: ".cal-wrap", weekly: '[data-card="weekly expenses"]', flow: '[data-card="money flow"]', goals: '[data-card="goals"]', debts: ".debt-sec",
                      an: '[data-card="PnL analysis"]', perf: '[data-card="performance"]', names: '[data-card="coins"], [data-card="stocks"], [data-card="pairs"]', kinds: '[data-card="breakdown"]',
                      todo: '[data-card="to-do"]', week: '[data-card="week"]', activity: '[data-card="activity"]', body: '[data-card="body"]', diet: '[data-card="diet"]',
-                     gym: '[data-card="gym"]', board: '[data-card="vision board"]' };
-const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"],
-                   health: ["todo", "week", "activity", "body", "diet", "gym", "board"] };
+                     gym: '[data-card="gym"]', board: '[data-card="vision board"]', asg: '[data-card="assignments"]', shop: '[data-card="shopping"]',
+                     subs: '[data-card="subscriptions"]' };
+const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts", "subs"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"],
+                   health: ["todo", "shop", "week", "asg", "activity", "body", "diet", "gym", "board"] };
 // the sidebar's props are written out afresh on every render of its panel: they are compared by what they hold, so the
 // sidebar redraws only when a row, the button on top or the crocodile's words really change
 const sameFlat = (a, b) => {
@@ -3815,19 +4063,37 @@ const sameFlat = (a, b) => {
   for (const k of ka) if (a[k] !== b[k]) return false;
   return true;
 };
-const sameSideProps = (a, b) => a.api === b.api && a.spy === b.spy && a.spyKey === b.spyKey && a.hidden === b.hidden && a.home === b.home
+const sameSideProps = (a, b) => a.api === b.api && a.spy === b.spy && a.spyKey === b.spyKey && a.hidden === b.hidden && a.home === b.home && a.arrange === b.arrange
   && sameFlat(a.act, b.act) && sameFlat(a.foot, b.foot)
   && (a.rows === b.rows || (a.rows.length === b.rows.length && a.rows.every((r, i) => sameFlat(r, b.rows[i]))));
 const SIDE_ACT = {
   // the trading sides have two buttons on top: the quick log, as on the finance side, then the calculator
   trade: [{ id: "quick", icon: "add", text: "Quick log", key: "⌘N", tip: "Log a trade to today (⌘N)" },
-          { id: "calc", icon: "calculate", text: "Calculator", tip: "Open the calculator" }],
+          { id: "calc", icon: "calculate", text: "Calculator", tip: "Open the calculator" },
+          { id: "fx", icon: "currency_exchange", text: "Exchange money", key: "⌘E", tip: "Convert between currencies at live rates (⌘E)" },
+          { id: "plan", icon: "schedule", text: "Time plan", key: "⌘T", tip: "When you will be done or arrive (⌘T)" },
+          { id: "cur", icon: "payments", text: "Next currency", key: "⌘K", tip: "Show amounts in the next currency (⌘K); works with a pop-up open too" }],
   finance: [{ id: "quick", icon: "add", text: "Log", key: "⌘N", tip: "Log an expense or an income to today (⌘N)" },
-            { id: "bill", icon: "group", text: "Split bill", tip: "Work out what each person pays" }],
+            { id: "worth", icon: "balance", text: "Worth it?", key: "⌘B", tip: "Check a purchase before you make it (⌘B)" },
+            { id: "fx", icon: "currency_exchange", text: "Exchange money", key: "⌘E", tip: "Convert between currencies at live rates (⌘E)" },
+            { id: "plan", icon: "schedule", text: "Time plan", key: "⌘T", tip: "When you will be done or arrive (⌘T)" },
+            { id: "cur", icon: "payments", text: "Switch IDR ⇄ MYR", key: "⌘K", tip: "Show amounts in the other currency (⌘K); works with a pop-up open too" },
+            { id: "bill", icon: "group", text: "Split bill", tip: "Work out what each person pays" },
+            // six tools share the row; Log stays above as the primary action
+            { id: "weekend", icon: "celebration", text: "Weekend fund", key: "⌘J", tip: "How much a weekday may take so the weekend can splurge (⌘J)" }],
 };
-const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home }) => {
+const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home, arrange }) => {
+  useKbs();
   const [open, setOpen] = useState(false);          // always shut until the three lines are pressed
   const [at, setAt] = useState(null);
+  const [query, setQuery] = useState("");
+  const search = useRef(null), menu = useRef(null), found = useRef(null);
+  const acts = Array.isArray(act) ? act : act ? [act] : [];
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = words.length ? [...acts, ...rows.filter((r) => !r.head && r.pic === undefined)]
+    .filter((r, i, all) => all.findIndex((v) => v.id === r.id) === i)
+    .filter((r) => words.every((w) => `${r.text} ${r.tip || ""} ${r.key ? kbTx(r.key) : ""}`.toLowerCase().includes(w))) : [];
+  useEffect(() => { if (!open) setQuery(""); }, [open]);
   useLayoutEffect(() => { document.body.classList.add("has-side"); return () => document.body.classList.remove("has-side"); }, []);
   // which part is on the line two fifths down the window: read once a frame while the page scrolls, and written only
   // when it changes. The parts are looked up again whenever one has left the page: a card puts its content there
@@ -3863,14 +4129,33 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home }) => {
   // Esc shuts it, and goes no further (the panels behind have Esc steps of their own)
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); setOpen(false); } };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (query) { setQuery(""); search.current?.focus(); }
+        else { setOpen(false); menu.current?.focus({ preventScroll: true }); }
+      }
+    };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open]);
+  }, [open, query]);
   useEffect(() => { if (hidden) setOpen(false); }, [hidden]);
   // a row pressed does its thing and the panel shuts behind it
   const go = (id) => { setOpen(false); api.current.go(id); };
   const tab = open ? 0 : -1;
+  const findKey = (e) => {
+    // Keep typed digits and arrows inside navigation; the calendar has its own shortcuts.
+    e.stopPropagation();
+    if (e.nativeEvent.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    const buttons = [...(found.current?.querySelectorAll("button") || [])];
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && buttons.length) {
+      e.preventDefault();
+      const i = buttons.indexOf(document.activeElement), step = e.key === "ArrowDown" ? 1 : -1;
+      buttons[i < 0 ? (step > 0 ? 0 : buttons.length - 1) : (i + step + buttons.length) % buttons.length].focus();
+    } else if (e.key === "Enter" && e.target === search.current && matches.length) {
+      e.preventDefault(); go(matches[0].id);
+    }
+  };
   let k = 0;      // each line's place in the list, for its turn to come in
   const line = (key, cls, kid) => <div key={key} className={`sd-in${cls ? ` ${cls}` : ""}`} style={{ "--i": k++ }}>{kid}</div>;
   return createPortal(
@@ -3878,17 +4163,58 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home }) => {
       <div className="snav-scrim" onClick={() => setOpen(false)} />
       <nav className="snav" aria-label="Sections" aria-hidden={!open}>
         {line("name", "snav-name", "FLOW")}
-        {/* the button on top; the trading sides have two (the quick log, then the calculator) */}
-        {(Array.isArray(act) ? act : [act]).map((a) => line(`act-${a.id}`, "", (
-          <button className="sd-act" tabIndex={tab} onClick={() => go(a.id)} title={a.tip}>
-            <span className="msym">{a.icon}</span><span className="sd-t">{a.text}</span>{a.key && <kbd>{a.key}</kbd>}
+        {line("find", "", <div className="sd-search" onKeyDown={findKey}>
+          <span className="msym" aria-hidden="true">search</span>
+          <input ref={search} value={query} onChange={(e) => setQuery(e.target.value)} tabIndex={tab}
+                 placeholder="Find a page or action" aria-label="Find a page or action" autoComplete="off" spellCheck={false} />
+          {query && <button tabIndex={tab} aria-label="Clear search" onClick={() => { setQuery(""); search.current?.focus(); }}><span className="msym" aria-hidden="true">close</span></button>}
+        </div>)}
+        <div className="sd-body">
+        {words.length ? <div className="sd-found" ref={found} onKeyDown={findKey}>
+          <div className="sd-found-count" role="status">{matches.length ? `${matches.length} ${matches.length === 1 ? "match" : "matches"}` : "No matches"}</div>
+          {matches.map((r) => <button key={r.id} className="sd-result" tabIndex={tab} onClick={() => go(r.id)}>
+            <span className="msym" aria-hidden="true">{r.icon}</span>
+            <span><b>{r.text}</b><small>{acts.some((a) => a.id === r.id) ? "Action" : "Go to page"}</small></span>
+            {r.key ? <kbd>{kbTx(r.key)}</kbd> : <span className="msym sd-result-arrow" aria-hidden="true">arrow_forward</span>}
+          </button>)}
+          {!matches.length && <p className="sd-no-match">Try a name such as Calendar, Settings or a tool you use.</p>}
+          {!!matches.length && <div className="sd-find-hint">↑ ↓ to choose <span>↵ to open</span></div>}
+        </div> : <>
+        {/* the button on top (Log), then the other tools as one row of symbols, each saying its name and its keys in a small
+            note under the pointer (29 October 2026, his picture of six big buttons: "clean this up, way too much clutter") */}
+        {/* two actions only (Health's: Add to-do, Log steps; 30 October 2026: "this could be one bar, 50% log to do and 50% log
+            steps"): one bar in two halves, each a button; the keys are in the note (title), there is no room for them */}
+        {acts.length === 2 && line("split", "", (
+          <div className="sd-split" role="group" aria-label="Quick actions">
+            {acts.map((a) => (
+              <button key={a.id} className="sd-half" tabIndex={tab} onClick={() => go(a.id)} title={kbTx(a.tip)}>
+                <span className="msym" aria-hidden="true">{a.icon}</span><span className="sd-t">{a.text}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+        {acts.length !== 2 && acts.slice(0, 1).map((a) => line(`act-${a.id}`, "", (
+          <button className="sd-act" tabIndex={tab} onClick={() => go(a.id)} title={kbTx(a.tip)}>
+            <span className="msym">{a.icon}</span><span className="sd-t">{a.text}</span>{a.key && <kbd>{kbTx(a.key)}</kbd>}
           </button>
         )))}
+        {acts.length > 2 && line("tools", "", (
+          <div className="sd-tools" role="group" aria-label="Tools" style={{ "--tools": Math.min(6, acts.length - 1) }}>
+            {acts.slice(1).map((a) => (
+              <button key={a.id} className="sd-tool" tabIndex={tab} onClick={() => go(a.id)} aria-label={a.key ? `${a.text} (${kbTx(a.key)})` : a.text}>
+                <span className="msym" aria-hidden="true">{a.icon}</span>
+                <span className="bk-tip sd-tip" aria-hidden="true"><b>{a.text}</b>{a.key ? kbTx(a.key) : ""}</span>
+              </button>
+            ))}
+          </div>
+        ))}
         {rows.map((r, i) => r.head ? line(`h${i}`, "", <div className="sd-head">{r.head}</div>) : line(r.id, "", (
-          <button className={`sd-row${r.sub ? " sub" : ""}${r.on ? " on" : ""}${at === r.id ? " at" : ""}`} tabIndex={tab} onClick={() => go(r.id)} title={r.tip || r.text}>
+          <button className={`sd-row${r.sub ? " sub" : ""}${r.on ? " on" : ""}${at === r.id ? " at" : ""}`} tabIndex={tab} aria-current={r.on ? "page" : at === r.id ? "location" : undefined} onClick={() => go(r.id)} title={r.tip || r.text}>
             {r.pic !== undefined ? <span className={`sd-pic${r.dev ? " dev" : ""}`}><Avatar pic={r.pic} img={r.img} bg={r.bg} bgImg={r.bgImg} /></span> : <span className="msym">{r.icon}</span>}<span className="sd-t">{r.text}</span>{r.tail != null && <i>{r.tail}</i>}
           </button>
         )))}
+        </>}
+        </div>
         <div className="sd-gap" />
         {/* the crocodile says how today stands: a green mark when it is going well, a drop of sweat when it is not */}
         {foot && line("foot", "", (
@@ -3898,9 +4224,11 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home }) => {
           </button>
         ))}
       </nav>
-      {home && <button className="snav-home" onClick={() => { setOpen(false); api.current.go("dash"); }} title="Home: your widgets" aria-label="Home"><span className="msym" aria-hidden="true">home</span></button>}
+      {home && <button className="snav-home" onClick={() => { setOpen(false); api.current.go("dash"); }} title={typeof home === "string" ? home : "Home: your widgets"} aria-label="Home"><span className="msym" aria-hidden="true">home</span></button>}
+      {/* under Home: the cards' order (Health's day page: "off" / "on" is whether its pane is open; nothing: no button) */}
+      {arrange && <button className={`snav-arrange${home ? "" : " solo"}${arrange === "on" ? " on" : ""}`} onClick={() => api.current.go("arrange")} title="Arrange the cards" aria-label="Arrange the cards" aria-expanded={arrange === "on"}><span className="msym" aria-hidden="true">view_agenda</span></button>}
       {/* the three lines: they turn into a cross while the panel is open, and back */}
-      <button className="snav-burger" onClick={() => setOpen((v) => !v)} title={open ? "Close the menu (Esc)" : "Menu"} aria-label="Menu" aria-expanded={open}><i /><i /><i /></button>
+      <button ref={menu} className="snav-burger" onClick={() => setOpen((v) => !v)} title={open ? "Close the menu (Esc)" : "Menu"} aria-label="Menu" aria-expanded={open}><i /><i /><i /></button>
     </div>, document.body);
 }, sameSideProps);
 
@@ -3912,7 +4240,7 @@ const cleanDebts = (list) => (Array.isArray(list) ? list : [])
   .filter((d) => d && typeof d === "object" && d.id && typeof d.name === "string" && Number(d.amount) > 0)
   .map((d) => {
     const amount = Math.min(Number(d.amount), MAX_AMOUNT);
-    return { id: d.id, name: d.name.slice(0, 60), amount, paid: Math.min(amount, Math.max(0, Number(d.paid) || 0)), dir: d.dir === "owed" ? "owed" : "owe", ...(d.test && { test: true, ...(typeof d.bill === "string" && { bill: d.bill.slice(0, 10) }) }) };
+    return { id: d.id, name: d.name.slice(0, 60), amount, paid: Math.min(amount, Math.max(0, Number(d.paid) || 0)), dir: d.dir === "owed" ? "owed" : "owe", ...(typeof d.note === "string" && d.note.trim() && { note: d.note.trim().slice(0, 200) }), ...(d.test && { test: true, ...(typeof d.bill === "string" && { bill: d.bill.slice(0, 10) }) }) };
   });
 const DEBT_KINDS = [
   { dir: "owe", label: "I owe", icon: "call_made", tone: "#e2808c", who: "Who I owe, e.g. Budi", pay: "I paid this much back", unpay: "Take a payment back" },
@@ -3957,6 +4285,49 @@ const SecHead = ({ icon, title, children }) => (
     {children != null && children !== false && <span className="sec-r">{children}</span>}
   </div>
 );
+
+/* The Insights box folds (30 October 2026, his words: "make the whole insight box collapsible, then opened for the important
+   insights, then a button for all the other insights"). Its header is the button; open (the way it starts), the three that
+   matter most stand on show and "View all N insights" unfolds the rest (renderInsights); folded, only the header and how many
+   there are. It is a component of its own so that folding redraws nothing else (the panel's rule), and it remembers being
+   folded for the app, not an account (INS_FOLD_KEY; no storage: open every time) */
+const INS_FOLD_KEY = "flow-ins-fold";
+const InsFold = ({ count, children }) => {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(INS_FOLD_KEY) !== "1"; } catch (e) { return true; } });
+  const flip = () => {
+    const v = !open;
+    setOpen(v);
+    try { if (v) localStorage.removeItem(INS_FOLD_KEY); else localStorage.setItem(INS_FOLD_KEY, "1"); } catch (e) { /* not remembered */ }
+  };
+  return (
+    <div className="ins-box">
+      <button type="button" className="ins-head" aria-expanded={open} onClick={flip} title={open ? "Fold the insights" : "Show the insights"}>
+        <SecHead icon="lightbulb" title="Insights">{count > 0 && <span className="ins-count">{count}</span>}</SecHead>
+        <span className={`plain-arrow chev${open ? " up" : ""}`} aria-hidden="true"><Chevron /></span>
+      </button>
+      <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
+        <div style={S.fold} ref={(el) => { if (el) el.inert = !open; }}>{children}</div>
+      </div>
+    </div>
+  );
+};
+
+/* The amount of a logged row, typed into (30 October 2026, his words: "there is a bug where on already entered expenses i cant edit
+   them"; found in ringgit, which he uses). The row keeps its amount in rupiah and showed it back as RM with two decimals at every
+   key, so "13.64" + a digit came back as "13.64" and a Backspace as "13.60": nothing could be typed or taken away. While the box
+   is being typed in, ringgit show what was typed (digits and one point, two decimals at most); the saved figure is still worked out
+   at every key, and the box shows it tidy again when it is left. Rupiah never had it: its dots are put back by the caret rule */
+const RowAmt = ({ isMYR, shown, onType, onBlur, ...rest }) => {
+  const [draft, setDraft] = useState(null);
+  const clean = (v) => {
+    let t = String(v).replace(/,/g, ".").replace(/[^\d.]/g, "");
+    const i = t.indexOf(".");
+    return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, "").slice(0, 2);
+  };
+  return <input {...rest} value={isMYR && draft !== null ? draft : shown}
+                onChange={(e) => { if (isMYR) { const d = clean(e.target.value); setDraft(d); onType(d); } else onType(e.target.value); }}
+                onBlur={(e) => { setDraft(null); if (onBlur) onBlur(e); }} />;
+};
 
 const WeekPlans = memo(({ plans, api, cur, isMYR, tick, week }) => {
   const days = useMemo(() => planDays(new Date(), week), [tick, week]);
@@ -4029,17 +4400,19 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
   const [dir, setDir] = useState("owe");
   const [name, setName] = useState("");
   const [amt, setAmt] = useState("");
+  const [note, setNote] = useState("");
   const [payId, setPayId] = useState(null);         // the debt whose payment box is open
   const [payAmt, setPayAmt] = useState("");
-  const [edit, setEdit] = useState(null);           // the debt being edited: { id, name, amt (as typed), was (amt as it stood), dir }
+  const [edit, setEdit] = useState(null);           // the debt being edited: { id, name, note, amt (as typed), was (amt as it stood), dir }
   const [leaving, setLeaving] = useState(null);
   const { fmt, fmtLive, toIDR, typed, save } = api.current;
   const ghostOf = (v) => !isMYR && digitsOf(v).length > 0 && digitsOf(v).length < 4;
   const add = () => {
     const who = name.trim(), amount = toIDR(amt);
     if (!who || !amount) return;
-    save([...debts, { id: uid(), name: who, amount, paid: 0, dir }]);
-    setName(""); setAmt(""); setAdding(false);
+    const why = note.trim().slice(0, 200);
+    save([...debts, { id: uid(), name: who, amount, paid: 0, dir, ...(why && { note: why }) }]);
+    setName(""); setNote(""); setAmt(""); setAdding(false);
   };
   const pay = (id, sign, e) => {
     const by = toIDR(payAmt);
@@ -4057,11 +4430,17 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
   };
   // edit: the name, the amount and whose debt it is. An amount left as it stood is kept to the rupiah (in MYR the box
   // only shows it rounded); what was paid never comes to more than the new amount
-  const openEdit = (d) => { const amt = typed(d.amount); setEdit(edit && edit.id === d.id ? null : { id: d.id, name: d.name, amt, was: amt, dir: d.dir }); setPayId(null); };
+  const openEdit = (d) => { const amt = typed(d.amount); setEdit(edit && edit.id === d.id ? null : { id: d.id, name: d.name, note: d.note || "", amt, was: amt, dir: d.dir }); setPayId(null); };
   const saveEdit = () => {
     const who = edit.name.trim(), amount = edit.amt === edit.was ? null : toIDR(edit.amt);
     if (!who || amount === 0) return;
-    save(debts.map((d) => (d.id !== edit.id ? d : { ...d, name: who.slice(0, 60), amount: amount || d.amount, paid: Math.min(d.paid, amount || d.amount), dir: edit.dir })));
+    const why = edit.note.trim().slice(0, 200);
+    save(debts.map((d) => {
+      if (d.id !== edit.id) return d;
+      const next = { ...d, name: who.slice(0, 60), amount: amount || d.amount, paid: Math.min(d.paid, amount || d.amount), dir: edit.dir };
+      if (why) next.note = why; else delete next.note;
+      return next;
+    }));
     setEdit(null);
   };
   const left = (kind) => debts.filter((d) => d.dir === kind).reduce((a, d) => a + d.amount - d.paid, 0);
@@ -4100,6 +4479,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       </button>
                     </span>
                   </div>
+                  {d.note && <div className="debt-note">{d.note}</div>}
                   <div style={S.goalBarRow}>
                     <GoalBar pct={pct} done={done} kind={k.dir} delay={120 + i * 60} />
                     <span style={{ ...S.goalPct, color: done ? "#8fd7a4" : "#c7cdd2" }}>
@@ -4124,6 +4504,8 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                           <SlideSeg cls="debt-seg" style={{ "--owe": ed.dir === "owe" ? 1 : 0 }} value={ed.dir} onPick={(v) => setEdit((e) => (e ? { ...e, dir: v } : e))} options={DEBT_OPTS} />
                           <input style={{ ...S.darkInput, width: 190 }} value={ed.name} aria-label="Name" autoFocus
                                  onChange={(e) => setEdit({ ...ed, name: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEdit(null); }} />
+                          <input style={{ ...S.darkInput, width: 220 }} value={ed.note} aria-label="Description" placeholder="Description (optional)" maxLength={200}
+                                 onChange={(e) => setEdit({ ...ed, note: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEdit(null); }} />
                           <AmountField value={ed.amt} setValue={(v) => setEdit((e) => (e ? { ...e, amt: typeof v === "function" ? v(e.amt) : v } : e))} accent={ed.dir === "owe" ? "red" : "green"} cur={cur} width={150}
                                        ghost={ghostOf(ed.amt)} allowDecimal={isMYR} onSubmit={saveEdit} />
                           <button className="goal-save" onClick={saveEdit} title="Save changes" aria-label="Save changes"><span className="msym" style={{ fontSize: 22 }}>check</span></button>
@@ -4145,6 +4527,8 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
             <SlideSeg cls="debt-seg" style={{ "--owe": dir === "owe" ? 1 : 0 }} value={dir} onPick={setDir} options={DEBT_OPTS} />
             <input style={{ ...S.darkInput, width: 190 }} placeholder={kindNow.who} value={name}
                    onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+            <input style={{ ...S.darkInput, width: 220 }} placeholder="Description (optional)" aria-label="Description" maxLength={200} value={note}
+                   onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
             <AmountField value={amt} setValue={setAmt} accent={dir === "owe" ? "red" : "green"} cur={cur} width={150}
                          ghost={ghostOf(amt)} allowDecimal={isMYR} onSubmit={add} />
             <button className="goal-save" onClick={add} title="Save debt" aria-label="Save debt"><span className="msym" style={{ fontSize: 22 }}>check</span></button>
@@ -4158,6 +4542,530 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
     </div>
   );
 });
+
+/* ---------- subscriptions (30 October 2026, his words: "make a subscriptions panel where it is billed each month and i
+   can choose the exact date of when"). Each: a name, an amount (IDR), the day of the month it is billed (1–31; a month
+   without that day bills on its last), a category (Bills unless another is picked) and the date of its first bill. On
+   each billing day the bill is logged as that day's expense by itself (the expense carries `sub`, its subscription's id),
+   once a month at most: `last` is the last bill logged, so a bill he deletes stays deleted. Deleting a subscription keeps
+   what it billed; a new amount counts from the next bill ---------- */
+const SUB_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const cleanSubs = (list) => (Array.isArray(list) ? list : [])
+  .filter((x) => x && typeof x === "object" && typeof x.name === "string" && x.name.trim() && cleanAmount(x.amount) > 0
+    && Number.isInteger(x.day) && x.day >= 1 && x.day <= 31 && SUB_DAY_RE.test(x.from || ""))
+  .slice(0, 100)
+  .map((x) => ({ id: typeof x.id === "string" && x.id ? x.id : uid(), name: x.name.trim().slice(0, 60), amount: cleanAmount(x.amount), day: x.day,
+                 cat: typeof x.cat === "string" && Object.hasOwn(CATS, x.cat) ? x.cat : "bills", from: x.from, ...(SUB_DAY_RE.test(x.last || "") ? { last: x.last } : {}) }));
+// the day a subscription bills in a month (m from 0)
+const subOn = (y, m, day) => keyOf(y, m, Math.min(day, new Date(y, m + 1, 0).getDate()));
+// its first bill, made on `today`: this month's when it is still to come (or today), else next month's; `already`: this month's even if it has passed
+const subFrom = (day, today, already) => {
+  const y = +today.slice(0, 4), m = +today.slice(5, 7) - 1, k = subOn(y, m, day);
+  return k >= today || already ? k : m === 11 ? subOn(y + 1, 0, day) : subOn(y, m + 1, day);
+};
+// the bills due up to today and not logged yet, oldest first (one a month, never in a month that already has one)
+const subDue = (x, today) => {
+  const out = [], lastM = x.last ? x.last.slice(0, 7) : "";
+  let y = +x.from.slice(0, 4), m = +x.from.slice(5, 7) - 1;
+  for (let i = 0; i < 600 && out.length < 36; i++) {
+    const k = subOn(y, m, x.day);
+    if (k > today) break;
+    if (k >= x.from && k.slice(0, 7) > lastM) out.push(k);
+    if (m === 11) { m = 0; y++; } else m++;
+  }
+  return out;
+};
+// its next bill from today on (today itself while it isn't logged yet)
+const subNext = (x, today) => {
+  const lastM = x.last ? x.last.slice(0, 7) : "";
+  let y = +today.slice(0, 4), m = +today.slice(5, 7) - 1;
+  for (let i = 0; i < 30; i++) {
+    const k = subOn(y, m, x.day);
+    if (k >= today && k >= x.from && k.slice(0, 7) > lastM) return k;
+    if (m === 11) { m = 0; y++; } else m++;
+  }
+  return null;
+};
+const SUB_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
+const subNice = (k) => { const d = new Date(+k.slice(0, 4), +k.slice(5, 7) - 1, +k.slice(8, 10)); return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
+const subWhen = (k, today) => {
+  if (!k) return "";
+  const n = Math.round((new Date(`${k}T12:00:00`) - new Date(`${today}T12:00:00`)) / 864e5);
+  return n === 0 ? "next bill today" : n === 1 ? "next bill tomorrow" : n <= 7 ? `next bill in ${n} days` : `next bill ${subNice(k)}`;
+};
+// the day picker and the category chips, shared by a new one and one being changed
+const SubPick = ({ day, setDay, cat, setCat }) => (
+  <>
+    <span className="sub-cap">Billed every month on the {nth(day)}</span>
+    <div className="sub-days" role="group" aria-label="Day of the month">
+      {SUB_DAYS.map((d) => <button key={d} type="button" className={d === day ? "on" : ""} aria-pressed={d === day} onClick={() => setDay(d)}>{d}</button>)}
+    </div>
+    {day > 28 && <span className="sub-first">In a month without the {nth(day)} it bills on the last day.</span>}
+    <span className="sub-cap">Category</span>
+    <span className="jr-pick">{CAT_ORDER.map((c) => <button key={c} type="button" className={`jr-chip${cat === c ? " on" : ""}`} onClick={() => setCat(c)}>{CATS[c].label}</button>)}</span>
+  </>
+);
+const Subs = memo(({ subs, api, cur, isMYR, tick }) => {
+  const today = dayKeyOf(new Date());
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [amt, setAmt] = useState("");
+  const [day, setDay] = useState(() => new Date().getDate());
+  const [cat, setCat] = useState("bills");
+  const [already, setAlready] = useState("next");
+  const [edit, setEdit] = useState(null);           // the one being changed: { id, name, amt (as typed), was (amt as it stood), day, cat }
+  const [leaving, setLeaving] = useState(null);
+  const { fmt, toIDR, typed, save } = api.current;
+  const ghostOf = (v) => !isMYR && digitsOf(v).length > 0 && digitsOf(v).length < 4;
+  const passed = subOn(+today.slice(0, 4), +today.slice(5, 7) - 1, day) < today;
+  const first = subFrom(day, today, passed && already === "this");
+  const add = (e) => {
+    const nm = name.trim(), amount = toIDR(amt);
+    if (!nm || !amount) { nudgeNear(e); return; }
+    save([...api.current.list(), { id: uid(), name: nm.slice(0, 60), amount, day, cat, from: first }]);
+    setName(""); setAmt(""); setAlready("next"); setAdding(false);
+  };
+  const openEdit = (x) => { const a = typed(x.amount); setEdit(edit && edit.id === x.id ? null : { id: x.id, name: x.name, amt: a, was: a, day: x.day, cat: x.cat }); };
+  const saveEdit = () => {
+    const nm = edit.name.trim(), amount = edit.amt === edit.was ? null : toIDR(edit.amt);
+    if (!nm || amount === 0) return;
+    save(api.current.list().map((x) => {
+      if (x.id !== edit.id) return x;
+      // not billed yet and its first bill still to come: the first bill moves to the new day
+      const from = !x.last && x.from > today && edit.day !== x.day ? subFrom(edit.day, today, false) : x.from;
+      return { ...x, name: nm.slice(0, 60), amount: amount || x.amount, day: edit.day, cat: edit.cat, from };
+    }));
+    setEdit(null);
+  };
+  const remove = (id) => {
+    setLeaving(id);
+    setTimeout(() => {
+      const was = api.current.list(), at = was.findIndex((x) => x.id === id), gone = was[at];
+      save(was.filter((x) => x.id !== id)); setLeaving(null); setEdit((q) => (q && q.id === id ? null : q));
+      if (gone) offerUndo(gone.name || "subscription", () => api.current.save(backInto(api.current.list(), gone, at)));
+    }, 260);
+  };
+  const rows = subs.map((x) => ({ x, next: subNext(x, today) })).sort((a, b) => (a.next || "9").localeCompare(b.next || "9") || a.x.name.localeCompare(b.x.name));
+  const total = subs.reduce((a, x) => a + x.amount, 0);
+  const left = rows.filter((r) => r.next && r.next.slice(0, 7) === today.slice(0, 7)).reduce((a, r) => a + r.x.amount, 0);
+  return (
+    <div className="sub-sec" data-tick={tick}>
+      {subs.length > 0 ? (
+        <div className="sub-sum">
+          <span><b>{fmt(total)}</b> a month</span>
+          <span><b>{fmt(total * 12)}</b> a year</span>
+          <span>{left > 0 ? <><b>{fmt(left)}</b> still to bill this month</> : "Nothing left to bill this month"}</span>
+        </div>
+      ) : !adding && <div style={S.insEmpty}>No subscriptions. Add what is billed every month (Netflix, Spotify, a gym, a phone plan): it is logged on its day by itself.</div>}
+      <div className="sub-list">
+        {rows.map(({ x, next }, i) => {
+          const ed = edit && edit.id === x.id ? edit : null, soon = next && Math.round((new Date(`${next}T12:00:00`) - new Date(`${today}T12:00:00`)) / 864e5) <= 3;
+          return (
+            <div key={x.id} className={`sub-item${leaving === x.id ? " leaving" : ""}`} style={{ animationDelay: `${i * 50}ms` }}>
+              <div className="sub-row">
+                <span className="sub-ico" style={{ color: CAT_COLORS[x.cat], background: `${CAT_COLORS[x.cat]}1f` }}><span className="msym" aria-hidden="true">{CATS[x.cat].icon}</span></span>
+                <span className="sub-tx">
+                  <b>{x.name}</b>
+                  <small>Every month on the {nth(x.day)}{x.last === today ? <> · <em>billed today</em></> : next ? <> · {soon ? <em>{subWhen(next, today)}</em> : subWhen(next, today)}</> : ""}</small>
+                </span>
+                <span className="sub-amt">{fmt(x.amount)}</span>
+                <button className={`goal-icon-btn${ed ? " on" : ""}`} title={ed ? "Close" : "Change this subscription"} aria-label={ed ? "Close" : `Change ${x.name}`} onClick={() => openEdit(x)}>
+                  <span className="msym" style={{ fontSize: 17 }}>{ed ? "close" : "edit"}</span>
+                </button>
+              </div>
+              <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+                <div style={S.fold}>
+                  {ed && (
+                    <div className="sub-form" style={{ animation: "fadeIn .24s ease backwards" }}>
+                      <div className="sub-form-row">
+                        <input style={{ ...S.darkInput, width: 200 }} value={ed.name} aria-label="Name" maxLength={60} autoFocus
+                               onChange={(e) => setEdit({ ...ed, name: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEdit(null); }} />
+                        <AmountField value={ed.amt} setValue={(v) => setEdit((q) => (q ? { ...q, amt: typeof v === "function" ? v(q.amt) : v } : q))} accent="red" cur={cur} width={150}
+                                     ghost={ghostOf(ed.amt)} allowDecimal={isMYR} onSubmit={saveEdit} />
+                        <button className="goal-save" onClick={saveEdit} title="Save changes" aria-label="Save changes"><span className="msym" style={{ fontSize: 22 }}>check</span></button>
+                        <button className="trash-btn" style={{ ...S.delBtn, marginLeft: "auto" }} title="Delete this subscription (what it billed stays)" aria-label={`Delete ${x.name}`} onClick={() => remove(x.id)}><TrashIcon /></button>
+                      </div>
+                      <SubPick day={ed.day} setDay={(d) => setEdit((q) => (q ? { ...q, day: d } : q))} cat={ed.cat} setCat={(c) => setEdit((q) => (q ? { ...q, cat: c } : q))} />
+                      <span className="sub-first">A new amount or day counts from the next bill. What was billed before stays as it is.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+        <div style={S.fold}>
+          <div className="sub-form" style={{ opacity: adding ? 1 : 0, transition: "opacity .24s ease" }} ref={(el) => { if (el) el.inert = !adding; }}>
+            <div className="sub-form-row">
+              <input style={{ ...S.darkInput, width: 200 }} placeholder="Netflix, Spotify, gym…" aria-label="Name" maxLength={60} value={name}
+                     onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(e); }} />
+              <AmountField value={amt} setValue={setAmt} accent="red" cur={cur} width={150} ghost={ghostOf(amt)} allowDecimal={isMYR} onSubmit={add} />
+              <button className="goal-save" onClick={add} title="Save subscription" aria-label="Save subscription"><span className="msym" style={{ fontSize: 22 }}>check</span></button>
+            </div>
+            <SubPick day={day} setDay={setDay} cat={cat} setCat={setCat} />
+            {passed && (
+              <SlideSeg value={already} onPick={setAlready}
+                        options={[["next", `First bill ${subNice(subFrom(day, today, false))}`, "This month's has passed: start with next month's"],
+                                  ["this", `Log ${subNice(subFrom(day, today, true))} too`, "It was already billed this month: log that one now as well"]]} />
+            )}
+            <span className="sub-first">{first === today ? "Billed today: logged as today's expense now." : first < today ? `${subNice(first)}'s bill is logged now, then every month on the ${nth(day)}.` : `First bill on ${subNice(first)}, logged that day by itself.`}</span>
+          </div>
+        </div>
+      </div>
+      <button className="goal-new" onClick={() => { setAdding((v) => !v); setEdit(null); }}>
+        <span className="msym" style={{ fontSize: 17, transform: adding ? "rotate(45deg)" : "none", transition: "transform .3s cubic-bezier(0.34,1.3,0.64,1)" }}>add</span>
+        {adding ? "Cancel" : "New subscription"}
+      </button>
+    </div>
+  );
+});
+
+/* ---------- any stretch of days (30 October 2026, his words: "add a feature where i can track specific days when to when,
+   and shows info on how much i spent etc. eg i pick 15 oct - 30 oct and i can see info on those days only", then "put
+   this feature on the bottom right of the pnl this month ui, make it small and not super noticable"). A small "Days…"
+   under the month's tiles opens it: a calendar to pick the first and the last day (or a preset), and what those days
+   hold: spent, a day on average, against the same number of days before, income and what is left, days logged, no-spend
+   and under the limit, the categories, the biggest day and expense, the places most spent at. Read only ---------- */
+const rgKey = (d) => keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+const rgDate = (k) => new Date(+k.slice(0, 4), +k.slice(5, 7) - 1, +k.slice(8, 10), 12);
+const rgAdd = (k, n) => { const d = rgDate(k); d.setDate(d.getDate() + n); return rgKey(d); };
+const rgDays = (a, b) => Math.round((rgDate(b) - rgDate(a)) / 864e5) + 1;
+const rgNice = (k, year) => { const d = rgDate(k); return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}${year ? ` ${d.getFullYear()}` : ""}`; };
+const RG_DOW = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const rgStats = (a, b, spending, incomes, limitOf, catOf) => {
+  const cats = {}, places = {};
+  let spent = 0, logged = 0, zero = 0, under = 0, big = null, bigDay = null;
+  for (let k = a, n = 0; k <= b && n < 1830; k = rgAdd(k, 1), n++) {
+    const items = spending[k] || [];
+    if (!items.length) continue;
+    logged++;
+    let sp = 0;
+    for (const it of items) {
+      if (it.zero) continue;
+      const c = catOf(it);
+      sp += it.amount; cats[c] = (cats[c] || 0) + it.amount;
+      if (!big || it.amount > big.amount) big = { amount: it.amount, name: (it.desc || "").trim() || CATS[c].label, k };
+      const raw = (it.desc || "").trim();
+      if (raw) { const q = canonKey(raw); if (!places[q]) places[q] = { name: prettyName(q), n: 0, sum: 0 }; places[q].n++; places[q].sum += it.amount; }
+    }
+    if (sp === 0) zero++;
+    const d = rgDate(k);
+    if (sp <= limitOf(d.getFullYear(), d.getMonth())) under++;
+    spent += sp;
+    if (sp > 0 && (!bigDay || sp > bigDay.sp)) bigDay = { k, sp };
+  }
+  // income: a payment on a day in the range; one with no day counts when the 1st of its month is in it
+  let income = 0, y = +a.slice(0, 4), m = +a.slice(5, 7) - 1;
+  const yb = +b.slice(0, 4), mb = +b.slice(5, 7) - 1;
+  for (let i = 0; i < 80 && (y < yb || (y === yb && m <= mb)); i++) {
+    for (const it of incomes[monthKeyOf(y, m)] || []) {
+      const k = keyOf(y, m, it.day ? Math.min(it.day, new Date(y, m + 1, 0).getDate()) : 1);
+      if (k >= a && k <= b) income += it.amount;
+    }
+    if (m === 11) { m = 0; y++; } else m++;
+  }
+  const catRows = CAT_ORDER.map((c) => ({ c, v: cats[c] || 0 })).filter((r) => r.v > 0).sort((p, q) => q.v - p.v);
+  const top = Object.values(places).sort((p, q) => q.sum - p.sum || q.n - p.n).slice(0, 3);
+  return { days: rgDays(a, b), spent, logged, zero, under, big, bigDay, income, catRows, top };
+};
+// the presets, worked out from today
+const rgPresets = (today) => {
+  const t = rgDate(today), y = t.getFullYear(), m = t.getMonth(), dow = (t.getDay() + 6) % 7;
+  return [
+    ["This week", rgAdd(today, -dow), today],
+    ["Last 7 days", rgAdd(today, -6), today],
+    ["This month", keyOf(y, m, 1), today],
+    ["Last month", m ? keyOf(y, m - 1, 1) : keyOf(y - 1, 11, 1), keyOf(m ? y : y - 1, m ? m - 1 : 11, new Date(y, m, 0).getDate())],
+    ["Last 30 days", rgAdd(today, -29), today],
+  ];
+};
+const RangePop = ({ spending, incomes, api, from, to, onClose }) => {
+  const today = rgKey(new Date());
+  const [a, setA] = useState(from);
+  const [b, setB] = useState(to);                    // null while the last day is still to be picked
+  const [hov, setHov] = useState(null);
+  const [vm, setVm] = useState(() => ({ y: +from.slice(0, 4), m: +from.slice(5, 7) - 1 }));
+  const sh = useSheet(onClose, (e) => {
+    const tag = (e.target && e.target.tagName || "").toLowerCase();
+    if (tag !== "input" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.stopPropagation(); return true; }
+    return false;
+  });
+  const { fmt, fmtLive, limitOf, catOf } = api.current;
+  const end = b || a;
+  const st = useMemo(() => rgStats(a, end, spending, incomes, limitOf, catOf), [a, end, spending, incomes]);
+  const prev = useMemo(() => rgStats(rgAdd(a, -st.days), rgAdd(a, -1), spending, incomes, limitOf, catOf).spent, [a, st.days, spending, incomes]);
+  const pick = (k) => {
+    if (b === null) { if (k < a) { setB(a); setA(k); } else setB(k); setHov(null); }
+    else { setA(k); setB(null); }
+  };
+  const step = (n) => setVm(({ y, m }) => { const d = new Date(y, m + n, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const lead = (new Date(vm.y, vm.m, 1).getDay() + 6) % 7, dim = new Date(vm.y, vm.m + 1, 0).getDate();
+  const lo = b === null && hov ? (hov < a ? hov : a) : a, hi = b === null ? (hov && hov > a ? hov : a) : b;
+  const total = st.catRows.reduce((s0, r) => s0 + r.v, 0) || 1;
+  const vs = prev > 0 ? ((st.spent - prev) / prev) * 100 : null;
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 9vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }} onPointerDown={stop} onKeyDown={stop}>
+      <div role="dialog" aria-modal="true" aria-label="Spending over chosen days" className="glass rg-pop" style={sh.pop} onClick={stop}>
+        <div className="fx-head">
+          <div>
+            <div className="rg-kicker"><span className="msym" aria-hidden="true">date_range</span>Chosen days</div>
+            <div className="rg-title">{a === end ? rgNice(a, true) : `${rgNice(a, a.slice(0, 4) !== end.slice(0, 4))} – ${rgNice(end, true)}`}<small>{st.days} {st.days === 1 ? "day" : "days"}</small></div>
+          </div>
+          <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+        </div>
+        <div className="rg-body">
+          <div className="rg-side">
+            <div className="rg-cal">
+              <div className="rg-cal-h">
+                <button type="button" onClick={() => step(-1)} aria-label="The month before"><span className="msym" aria-hidden="true">chevron_left</span></button>
+                <b>{MONTHS_FULL[vm.m]} {vm.y}</b>
+                <button type="button" onClick={() => step(1)} aria-label="The month after"><span className="msym" aria-hidden="true">chevron_right</span></button>
+              </div>
+              <div className="rg-cal-g" onPointerLeave={() => setHov(null)}>
+                {RG_DOW.map((d) => <span key={d} className="rg-dow">{d}</span>)}
+                {Array.from({ length: lead }, (_, i) => <span key={`e${i}`} />)}
+                {Array.from({ length: dim }, (_, i) => {
+                  const k = keyOf(vm.y, vm.m, i + 1), inR = k >= lo && k <= hi, edge = k === lo || k === hi;
+                  return (
+                    <button key={k} type="button" className={`${inR ? "in" : ""}${edge ? " edge" : ""}${k === today ? " today" : ""}${(spending[k] || []).length ? " has" : ""}`}
+                            onClick={() => pick(k)} onPointerEnter={() => { if (b === null) setHov(k); }} aria-label={rgNice(k, true)} aria-pressed={inR}>
+                      {i + 1}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="rg-say">{b === null ? "Now pick the last day" : "Pick a first day to start again"}</div>
+            </div>
+            <div className="rg-pre">
+              {rgPresets(today).map(([n, p, q]) => (
+                <button key={n} type="button" className={`jr-chip${a === p && end === q ? " on" : ""}`}
+                        onClick={() => { setA(p); setB(q); setHov(null); setVm({ y: +p.slice(0, 4), m: +p.slice(5, 7) - 1 }); }}>{n}</button>
+              ))}
+            </div>
+          </div>
+          <div className="rg-main">
+            <div className="rg-big">
+              <span className="rg-cap">Spent</span>
+              <span className="rg-num"><CountNum value={st.spent} duration={520} render={fmtLive} /></span>
+              <span className="rg-sub">
+                {fmt(st.spent / st.days)} a day on average
+                {/* against the same number of days just before: a share while the two are alike, the amount itself when the days before hold next to nothing */}
+                {vs !== null && Math.abs(vs) <= 300 && <> · <b style={{ color: vs > 0 ? "#ff8d97" : "#8fd7a4" }}>{vs > 0 ? "+" : "−"}{Math.abs(vs).toFixed(0)}%</b> against the {st.days} {st.days === 1 ? "day" : "days"} before</>}
+                {vs !== null && Math.abs(vs) > 300 && <> · {fmt(prev)} in the {st.days} {st.days === 1 ? "day" : "days"} before</>}
+              </span>
+            </div>
+            <div className="rg-tiles">
+              <div><span className="rg-cap">Income</span><b>{fmt(st.income)}</b><small>{st.income > 0 ? `${Math.round((st.spent / st.income) * 100)}% of it spent` : "None on these days"}</small></div>
+              <div><span className="rg-cap">Left</span><b style={{ color: st.income - st.spent >= 0 ? "#8fd7a4" : "#ff8d97" }}>{st.income - st.spent < 0 ? "−" : ""}{fmt(Math.abs(st.income - st.spent))}</b><small>income − spent</small></div>
+              <div><span className="rg-cap">Days logged</span><b>{st.logged} <small>of {st.days}</small></b><small>{st.zero} no-spend {st.zero === 1 ? "day" : "days"}</small></div>
+              <div><span className="rg-cap">Under the limit</span><b>{st.under} <small>{st.under === 1 ? "day" : "days"}</small></b><small>{st.logged ? `${Math.round((st.under / st.logged) * 100)}% of days logged` : "Nothing logged"}</small></div>
+            </div>
+            {st.catRows.length > 0 ? (
+              <>
+                <div className="wr-stack rg-stack">
+                  {st.catRows.map((r, i) => <span key={r.c} className="wr-stack-seg" style={{ width: `${(r.v / total) * 100}%`, background: CAT_COLORS[r.c], animationDelay: `${i * 60}ms` }} />)}
+                </div>
+                <div className="rg-cats">
+                  {st.catRows.map((r) => (
+                    <span key={r.c} className="rg-cat">
+                      <span className="msym" aria-hidden="true" style={{ color: CAT_COLORS[r.c] }}>{CATS[r.c].icon}</span>
+                      <span>{CATS[r.c].label}</span><b>{fmt(r.v)}</b><small>{Math.round((r.v / total) * 100)}%</small>
+                    </span>
+                  ))}
+                </div>
+                <div className="rg-facts">
+                  {st.bigDay && <span><span className="rg-cap">Biggest day</span><b>{rgNice(st.bigDay.k)}</b><small>{fmt(st.bigDay.sp)}</small></span>}
+                  {st.big && <span><span className="rg-cap">Biggest expense</span><b>{st.big.name}</b><small>{fmt(st.big.amount)} · {rgNice(st.big.k)}</small></span>}
+                  {st.top.length > 0 && <span><span className="rg-cap">Most spent at</span>{st.top.map((q) => <b key={q.name} className="rg-place">{q.name} <small>{fmt(q.sum)}{q.n > 1 ? ` · ${q.n}×` : ""}</small></b>)}</span>}
+                </div>
+              </>
+            ) : <div className="rg-none">Nothing spent on these days.</div>}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body);
+};
+
+/* ---------- the weekend fund (30 October 2026, his words: "how much i need to spend everyday (enough for food and needs) to
+   be able to comfortably splurge on food and wants on the weekend … be super creative"). Opened under Worth it? in the
+   menu (and ⌘J). The week (Monday first) has its budget: the daily limits of its seven days. What Monday to Friday don't
+   take is the weekend's. One figure is his to set, what a weekday may take, on a slider; or he builds the weekend he
+   wants out of treats (his own weekend places at what he usually pays there, or Flow's rough prices) and the slider
+   finds the weekday figure for it. Measured against what a weekday needs: his average weekday food (drinks included)
+   over the last eight weeks. The week drawn as seven bars: the days gone as spent, today as spent and still
+   allowed, the weekdays to come at the figure, the weekend in gold with what is left for it. Subscriptions are left
+   out (monthly bills, not a day's spending). Ideas from the usual advice: a weekend cap set in advance, a fixed
+   weekday allowance, what isn't spent rolling into the weekend. Nothing is saved but the weekday figure (finPrefs.wkd) */
+const WK_TREATS = [["Movie", "movie", 55000], ["Coffee & cake", "local_cafe", 65000], ["Karaoke", "mic", 80000], ["Brunch", "brunch_dining", 110000],
+                   ["Nice dinner", "restaurant", 180000], ["Sushi night", "set_meal", 220000], ["Shopping treat", "shopping_bag", 250000]];    // Flow's own rough prices for Indonesia (2026)
+// what a weekday needs (30 October 2026, his words: "the average weekday food expenses (includes drinks)"): the Food category, which holds drinks too
+const WK_NEEDS = ["food"];
+const wkMid = (a) => { if (!a.length) return 0; const q = [...a].sort((x, y) => x - y), h = q.length >> 1; return q.length % 2 ? q[h] : (q[h - 1] + q[h]) / 2; };
+const wkDow = (k) => (rgDate(k).getDay() + 6) % 7;
+const wkLive = (list) => (list || []).filter((it) => !it.zero && !it.sub);
+const wkStats = (spending, today, limitOf, catOf, ahead) => {
+  const mon = rgAdd(today, -wkDow(today) + 7 * ahead);
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const k = rgAdd(mon, i), d = rgDate(k);
+    return { k, i, end: i >= 5, spent: wkLive(spending[k]).reduce((a, it) => a + it.amount, 0), limit: limitOf(d.getFullYear(), d.getMonth()), past: k < today, today: k === today };
+  });
+  const needs = [], places = {}, weekends = [];
+  for (let n = 1; n <= 56; n++) {
+    const k = rgAdd(today, -n), list = wkLive(spending[k]);
+    if (wkDow(k) < 5) { if ((spending[k] || []).length) needs.push(list.filter((it) => WK_NEEDS.includes(catOf(it))).reduce((a, it) => a + it.amount, 0)); continue; }
+    // his weekend places, as treats: what he ate and bought, not rides or bills
+    for (const it of list) { const raw = (it.desc || "").trim(); if (!raw || catOf(it) === "transport" || catOf(it) === "bills") continue; const q = canonKey(raw); (places[q] = places[q] || { name: prettyName(q), prices: [] }).prices.push(it.amount); }
+  }
+  const mon0 = rgAdd(today, -wkDow(today));
+  for (let w = 1; w <= 8; w++) {
+    const sat = rgAdd(mon0, -7 * w + 5), sun = rgAdd(sat, 1);
+    if (!(spending[sat] || []).length && !(spending[sun] || []).length) continue;
+    weekends.push([sat, sun].reduce((a, k) => a + wkLive(spending[k]).reduce((b, it) => b + it.amount, 0), 0));
+  }
+  const favs = Object.values(places).filter((p) => p.prices.length >= 2).map((p) => ({ name: p.name, price: Math.round(wkMid(p.prices) / 1000) * 1000 || wkMid(p.prices), n: p.prices.length }))
+    .filter((p) => p.price > 0).sort((p, q) => q.n - p.n || q.price - p.price).slice(0, 4);
+  return { days, budget: days.reduce((a, d) => a + d.limit, 0), needs: needs.length >= 5 ? Math.round(needs.reduce((a, v) => a + v, 0) / needs.length) : null, usual: weekends.length >= 2 ? wkMid(weekends) : null, favs };
+};
+// what is left for the weekend at `d` a weekday: the week's budget less what each day takes (gone: what it took; today: at
+// least what it took; to come: d; the weekend's days gone or today: what they took)
+const wkFund = (st, d) => st.budget - st.days.reduce((a, x) => a + (x.past ? x.spent : x.today ? (x.end ? x.spent : Math.max(d, x.spent)) : x.end ? 0 : d), 0);
+// the other way: the weekday figure that leaves `w` for the weekend (never below nothing)
+const wkDayFor = (st, w) => {
+  const open = st.days.filter((x) => !x.end && !x.past);
+  if (!open.length) return 0;
+  let d = (wkFund(st, 0) - w) / open.length;
+  const t = open.find((x) => x.today);
+  if (t && t.spent > d && open.length > 1) d = (wkFund(st, 0) - t.spent - w) / (open.length - 1);
+  return Math.max(0, Math.floor(d / 1000) * 1000);
+};
+const wkMem = { picks: {} };
+const WeekendFund = ({ api, onClose }) => {
+  const x = api.current, today = rgKey(new Date()), weekend = wkDow(today) >= 5;
+  const [ahead, setAhead] = useState(weekend ? 1 : 0);
+  const st = useMemo(() => wkStats(x.spending, today, x.limitOf, x.catOf, ahead), [x.spending, today, ahead]);
+  const avgLimit = st.budget / 7, floor = st.needs ?? Math.round(avgLimit * 0.5 / 1000) * 1000;
+  const [d, setD] = useState(() => (x.wkd > 0 ? x.wkd : Math.ceil(floor / 1000) * 1000));
+  const [picks, setPicks] = useState(wkMem.picks);    // the treats he put in his weekend: { name: count }
+  useEffect(() => { wkMem.picks = picks; }, [picks]);
+  const sh = useSheet(onClose, (e) => {
+    e.stopPropagation();
+    if (kbIs(e, "weekend")) { e.preventDefault(); if (!e.repeat) sh.shut(); return true; }
+    if (e.key === "Escape") { e.preventDefault(); sh.shut(); return true; }
+    return true;
+  });
+  const treats = [...st.favs.map((f) => ({ name: f.name, icon: "favorite", price: f.price, own: f.n })),
+                  ...WK_TREATS.filter(([n]) => !st.favs.some((f) => f.name.toLowerCase() === n.toLowerCase())).map(([name, icon, price]) => ({ name, icon, price }))].slice(0, 8);
+  const planned = treats.reduce((a, t) => a + (picks[t.name] || 0) * t.price, 0), building = planned > 0;
+  const day = building ? wkDayFor(st, planned) : d;
+  const fund = wkFund(st, day), endLeft = st.days.filter((q) => q.end && !q.past).length || 1;
+  const keep = (v) => { setD(v); x.setWkd(v); };
+  const lo = 0, hi = Math.max(Math.ceil(avgLimit * 1.5 / 1000) * 1000, Math.ceil(floor * 1.5 / 1000) * 1000, day + 1000);
+  const open = st.days.filter((q) => !q.end && !q.past);
+  /* two verdicts, each said where its figure is (30 October 2026: "this says for the weekend a good amount of money though
+     its classified as tight … im confused"; one word judged the weekdays and stood under the weekend's money):
+     the weekend's money against a usual weekend (his own last weekends, else two days of limit), under the big figure;
+     the weekday figure against his average weekday food, beside the slider */
+  const wkRef = st.usual != null && st.usual > 0 ? st.usual : avgLimit * 2;
+  const tone = fund < 0 ? ["Over budget", "#ff5d6c"] : fund < wkRef * 0.5 ? ["A small weekend", "#ff9f5a"] : fund < wkRef ? ["A modest weekend", "#f5d34b"]
+    : fund < wkRef * 1.6 ? ["A comfortable weekend", "#3ddc97"] : ["A big weekend", "#ffd47a"];
+  const toneSay = fund < 0 ? "nothing left for it" : `${fund >= wkRef ? Math.round((fund / wkRef) * 10) / 10 + "×" : Math.round((fund / wkRef) * 100) + "% of"} ${st.usual != null ? "your usual weekend" : "two days of limit"} (${x.fmt(wkRef)})`;
+  const dayTone = day < floor * 0.8 ? ["Tight", "#ff9f5a", `below your average weekday food (${x.fmt(floor)})`] : day < floor ? ["Lean", "#f5d34b", `just under your average weekday food (${x.fmt(floor)})`]
+    : ["Comfortable", "#3ddc97", `covers your average weekday food (${x.fmt(floor)})`];
+  // what the weekend money fits, from the dearest treat down
+  const fits = (() => {
+    if (building || fund <= 0) return [];
+    let left = fund; const out = [];
+    for (const t of [...treats].sort((p, q) => q.price - p.price)) { const n = Math.min(3, Math.floor(left / t.price)); if (n > 0) { out.push([t, n]); left -= n * t.price; } if (out.length >= 3) break; }
+    return out;
+  })();
+  const max = Math.max(1, ...st.days.map((q) => Math.max(q.spent, q.end ? (q.past ? 0 : Math.max(0, fund) / endLeft) : q.past ? 0 : day)), avgLimit);
+  const add = (n, by) => setPicks((p) => { const c = Math.max(0, Math.min(9, (p[n] || 0) + by)); const q = { ...p }; if (c) q[n] = c; else delete q[n]; return q; });
+  const say = [];
+  if (!open.length) say.push(fund >= 0 ? `This weekend has ${x.fmt(fund)} left to enjoy.` : `This week is already ${x.fmt(-fund)} over its budget: the weekend has nothing left in it.`);
+  else if (fund < 0) say.push(wkFund(st, 0) < 0 ? `This week is already ${x.fmt(-wkFund(st, 0))} over its budget, even with nothing more spent on weekdays.` : `At ${x.fmt(day)} a day the week runs ${x.fmt(-fund)} over, so there is nothing for the weekend.`);
+  else say.push(`Keep ${open.length === 5 ? "Monday to Friday" : open.length === 1 ? "today" : `the ${open.length} weekdays left`} to ${x.fmt(day)} a day and the weekend has ${x.fmt(fund)}${endLeft === 2 ? `, ${x.fmt(fund / 2)} for each day` : ""}.`);
+  if (open.length) say.push(st.needs != null ? (day >= st.needs ? `That covers your average weekday food and drinks (${x.fmt(st.needs)}).` : `Your weekday food and drinks average ${x.fmt(st.needs)}: ${x.fmt(st.needs - day)} a day less will pinch.`)
+                                                 : "Log a few more weekdays and Flow will know what your food and needs usually take.");
+  if (st.usual != null) say.push(`Your last weekends came to about ${x.fmt(st.usual)}.`);
+  const stat = `This ${ahead ? "coming " : ""}week's budget ${x.fmt(st.budget)} · ${x.fmt(avgLimit)} a day`;
+  return (
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(32px, 7vh)" }} onClick={sh.shut}>
+      <div role="dialog" aria-modal="true" aria-label="Weekend fund" className="glass wi-sheet wk-sheet" onClick={(e) => e.stopPropagation()} style={sh.pop}>
+        <div className="fx-head">
+          <div>
+            <div className="fx-title">Weekend</div>
+            <div className="fx-stat"><span key={stat} className="fx-say">{stat}</span></div>
+          </div>
+          <span className="wk-head-r">
+            <SlideSeg cls="wi-seg" value={ahead ? "next" : "this"} onPick={(v) => setAhead(v === "next" ? 1 : 0)} options={[["this", weekend ? "This weekend" : "This week"], ["next", "Next week"]]} />
+            <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+          </span>
+        </div>
+        <div className="wi-top wk-top" style={{ "--c": tone[1] }}>
+          <div className="wk-fund">
+            <div className="wi-k">For the weekend</div>
+            <div className="wk-num" style={{ color: fund < 0 ? "#ff8d97" : "#ffd47a" }}><CountNum value={Math.max(0, fund)} duration={420} still render={x.fmtLive} /></div>
+            <div key={tone[0]} className="wk-word" style={{ color: tone[1] }}>{tone[0]}</div>
+            <div className="wk-word-say">{toneSay}</div>
+          </div>
+          <p className="wi-say wk-say">{say.join(" ")}</p>
+        </div>
+        <div className="wk-week" role="img" aria-label="The week: what each day took or may take">
+          {st.days.map((q) => {
+            const will = q.end ? (q.past ? q.spent : Math.max(0, fund) / endLeft) : q.past ? q.spent : day;
+            const sp = Math.min(q.spent, max), cap = Math.min(will, max);
+            return (
+              <div key={q.k} className={`wk-col${q.end ? " end" : ""}${q.today ? " now" : ""}${q.past ? " past" : ""}`}>
+                <span className="wk-amt">{x.fmt(q.past ? q.spent : Math.max(will, q.spent))}</span>
+                <span className="wk-bar">
+                  {!q.past && (q.end ? <i className="wk-cap" style={{ transform: `scaleY(${cap / max})` }} />
+                    : <><span className="wk-capd"><i className="wk-cap" style={{ transform: `translateY(${(1 - cap / max) * 100}%)` }} /></span><b className="wk-capb" style={{ opacity: cap > 0 ? 1 : 0 }} /></>)}
+                  {(q.past || q.today) && <i className={`wk-spent${!q.end && q.spent > q.limit ? " over" : ""}`} style={{ transform: `scaleY(${sp / max})` }} />}
+                </span>
+                <span className="wk-d">{RG_DOW[q.i]}</span>
+              </div>
+            );
+          })}
+        </div>
+        {open.length > 0 && (
+          <div className="wi-block wk-slide">
+            <div className="wi-bh"><span>{building ? "A weekday may take, for that weekend" : "A weekday may take"}</span><b>{x.fmt(day)}</b></div>
+            <div className="wk-day-say"><b style={{ color: dayTone[1] }}>Weekdays: {dayTone[0].toLowerCase()}</b> · {dayTone[2]}</div>
+            <input type="range" className="wk-range" min={lo} max={hi} step={1000} value={Math.min(hi, day)} aria-label="What a weekday may take"
+                   style={{ "--p": `${(Math.min(hi, day) / hi) * 100}%`, "--n": `${(Math.min(hi, floor) / hi) * 100}%`, "--c": dayTone[1] }}
+                   onChange={(e) => { setPicks({}); keep(+e.target.value); }} />
+            <div className="wk-marks"><span>0</span><span className="wk-need" style={{ left: `${(Math.min(hi, floor) / hi) * 100}%` }}>{st.needs != null ? `avg weekday food ${x.fmt(st.needs)}` : "half the limit"}</span><span>{x.fmt(hi)}</span></div>
+          </div>
+        )}
+        <div className="wi-block">
+          <div className="wi-bh"><span>{building ? "Your weekend" : "Build your weekend"}</span>
+            {building ? <button className="wk-clear" onClick={() => setPicks({})}>Clear · {x.fmt(planned)}</button> : <b>{st.favs.length ? "♥ your own places" : "rough prices"}</b>}
+          </div>
+          <div className="wk-treats">
+            {treats.map((t) => {
+              const n = picks[t.name] || 0;
+              return (
+                <span key={t.name} className={`wk-treat${n ? " on" : ""}`}>
+                  <button className="wk-t-add" onClick={() => add(t.name, 1)} title={t.own ? `You spent here ${t.own} times on weekends lately; about ${x.fmt(t.price)} a time` : `About ${x.fmt(t.price)}`}>
+                    <span className="msym" aria-hidden="true">{t.icon}</span><b>{t.name}</b><small>{x.fmt(t.price)}</small>{n > 0 && <i>{n}×</i>}
+                  </button>
+                  {n > 0 && <button className="wk-t-less" aria-label={`One ${t.name} less`} onClick={() => add(t.name, -1)}><span className="msym" aria-hidden="true">remove</span></button>}
+                </span>
+              );
+            })}
+          </div>
+          {fits.length > 0 && <div className="wk-fits">That fits {fits.map(([t, n], i) => <span key={t.name}>{i ? " + " : ""}<b>{n > 1 ? `${n}× ` : ""}{t.name}</b></span>)}.</div>}
+          {building && <div className="wk-fits">{fund >= 0 ? <>Doable: keep weekdays to <b>{x.fmt(day)}</b>.</> : <>Too much for this week: <b>{x.fmt(-fund)}</b> over, even at {x.fmt(day)} a weekday.</>}</div>}
+        </div>
+        <div className="fx-foot"><span>The week's budget is its seven daily limits; subscriptions are left out. Rough prices are Flow's own for Indonesia (2026).</span><kbd><Kb id="weekend" /></kbd></div>
+      </div>
+    </div>
+  );
+};
 
 /* top-10 list used in the wrapped detail panel (module level so hover re-renders don't replay it) */
 const WrList = ({ rows, color, emptyText, dkey }) => rows.length === 0 ? <div style={S.insEmpty}>{emptyText}</div> : (
@@ -5869,6 +6777,9 @@ const TEST_COINS = ["BTC", "BTC", "BTC", "BTC", "ETH", "ETH", "ETH", "SOL", "SOL
    with the rate of the moment (the latest one fetched while online, or one typed by hand in the calculator's
    hidden settings, or the built-in one until either exists). */
 const CRYPTO_PREFS_KEY = "pnl-crypto-prefs";
+// a trading side's month cards, in the order he arranges them (CardArrange; kept in the side's prefs as `order`)
+const trCards = (M) => [["PnL analysis", "an", "PnL analysis", "show_chart"], ["performance", "perf", "Performance", "speed"], [M.things.toLowerCase(), "names", M.things, "paid"],
+                        ...(M.journal === "idx" ? [["breakdown", "kinds", "Breakdown", "category"]] : [])];
 const CUR_LIST = ["USDT", "IDR", "MYR"];
 const CUR_SIGN = { USDT: "$", IDR: "Rp", MYR: "RM" };
 const FX_DEFAULT = { IDR: 17900, MYR: 4.08 };       // 1 USDT on 2 October 2026: only used until a live or a typed rate exists
@@ -5879,8 +6790,8 @@ const fxOk = (c, v) => Number.isFinite(v) && (c === "IDR" ? v > 1000 && v < 1e6 
 const curBody = (cur, amount) => {
   const v = Math.abs(amount);
   if (cur === "USDT") return usdAbs(v);
-  const cut = (x, dp) => (Math.floor(x * 10 ** dp + 1e-6) / 10 ** dp).toString().replace(".", ",");
-  if (cur === "MYR") return v >= 1e6 ? cut(v / 1e6, 2) + "M" : v >= 1e3 ? cut(v / 1e3, 1) + "k" : oneDp(v);
+  const cutp = (x, dp) => (Math.floor(x * 10 ** dp + 1e-6) / 10 ** dp).toString(), cut = (x, dp) => cutp(x, dp).replace(".", ",");      // rupiah: a comma; ringgit and dollars: a point
+  if (cur === "MYR") return v >= 1e6 ? cutp(v / 1e6, 2) + "M" : v >= 1e3 ? cutp(v / 1e3, 1) + "k" : oneDp(v);
   return v >= 1e9 ? cut(v / 1e9, 2) + "M" : v >= 1e6 ? cut(v / 1e6, 2) + "jt" : v >= 1e3 ? cut(v / 1e3, 1) + "Rb" : String(Math.floor(v));
 };
 // the same while a number is counting: the resting units, each at one steady precision (see liveText)
@@ -5888,7 +6799,7 @@ const curLive = (cur, rate, n, busy, span) => {
   if (cur === "USDT") return usdLive(n, busy, span);
   const v = Math.abs(n) * rate;
   if (!busy || !span) return curBody(cur, v);
-  return liveText(v, Math.abs(span.from) * rate, Math.abs(span.to) * rate, LIVE_UNITS[cur === "MYR" ? "MYR" : "IDRT"], true) ?? curBody(cur, v);
+  return liveText(v, Math.abs(span.from) * rate, Math.abs(span.to) * rate, LIVE_UNITS[cur === "MYR" ? "MYR" : "IDRT"], cur !== "MYR") ?? curBody(cur, v);
 };
 // the calculator writes amounts out in full: $6.68 · Rp119,742 · RM27.21, or shortened for its RR table: Rp190.9k
 const NF2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -6109,11 +7020,9 @@ const cleanQuotes = (list) => (Array.isArray(list) ? list : []).filter((q) => qu
   .slice(0, QUOTE_KEEP).map((q) => ({ s: q.s, price: q.price, chg: Number.isFinite(q.chg) ? q.chg : null, src: String(q.src || "").slice(0, 20), late: q.late > 0 ? Number(q.late) : 0, at: Number(q.at) }));
 // when something was fetched: "Friday 2 Oct, 11:27 PM". The time's format is made once (made afresh on every call, a
 // format is slow, and Home's prices call this on every draw); the weekday is a word of our own
-let stampTime = null;
 const stampText = (at) => {
   const t = new Date(at);
-  stampTime ||= new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
-  return `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][t.getDay()]} ${t.getDate()} ${MONTHS_SHORT[t.getMonth()]}, ${stampTime.format(t)}`;
+  return `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][t.getDay()]} ${t.getDate()} ${MONTHS_SHORT[t.getMonth()]}, ${clk(`${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`)}`;
 };
 // the line in a calculator's settings: when this side's data was last fetched, and what is being used while offline
 const dataNote = (book, word, quote) => {
@@ -6530,13 +7439,107 @@ const SetGroup = ({ title, children }) => (
     <div className="set-card">{children}</div>
   </div>
 );
+/* Settings › Keyboard: every shortcut, folded away under one line until it is pressed open (25 October 2026, his words:
+   "make me be able to see all the shortcut in settings in a collapsed view ui, and make me be able to change the
+   shortcuts"). The five that open something have a key cap: pressed, it takes the next ⌘ and a letter (⇧ and ⌥ allowed)
+   unless macOS or every text box needs it, or another shortcut has it already; Esc, or a press elsewhere, leaves it as it
+   was, and ↺ puts the first one back. The rest are listed as they are. It unfolds as the details under a row do (grid
+   rows, the inside fading in as it comes down), and the pop-up follows it down so it shows */
+const KbFold = () => {
+  useKbs();
+  const [open, setOpen] = useState(false);
+  const [rec, setRec] = useState(null);            // the shortcut listening for its new keys
+  const [bad, setBad] = useState(null);            // { id, text }: why the keys pressed can't be it
+  const [just, setJust] = useState(null);          // the shortcut just changed (its cap pops)
+  const head = useRef(null);
+  useEffect(() => {
+    if (!rec) { kbRec.on = null; return; }
+    kbRec.on = (e) => {
+      e.preventDefault();
+      if (e.repeat || ["Meta", "Control", "Shift", "Alt", "CapsLock"].includes(e.key)) return;
+      if (e.key === "Escape") { setRec(null); setBad(null); return; }
+      const k = kbChar(e), c = { k, shift: !!e.shiftKey, alt: !!e.altKey };
+      const no = !(e.metaKey || e.ctrlKey) || !/^[a-z]$/.test(k) ? "Hold ⌘ and press a letter (⇧ and ⌥ can join in)"
+        : KB_TAKEN[k] ? `⌘${k.toUpperCase()} ${KB_TAKEN[k]}: pick another letter`
+        : (() => { const o = KB_LIST.find((x) => x.id !== rec && kbSame(kbNow(x.id), c)); return o ? `${kbLabel(c)} is ${o.name} already` : null; })();
+      if (no) { setBad({ id: rec, text: no }); return; }
+      setKb(rec, c); setJust(rec); setRec(null); setBad(null);
+    };
+    return () => { kbRec.on = null; };
+  }, [rec]);
+  useEffect(() => { if (!just) return; const t = setTimeout(() => setJust(null), 600); return () => clearTimeout(t); }, [just]);
+  // opened: the pop-up scrolls along as it unfolds, until its heading is at the top or there is no more to show
+  const follow = () => {
+    const h = head.current, pane = h && h.closest(".set-modal");
+    if (!pane) return;
+    const want = pane.scrollTop + h.getBoundingClientRect().top - pane.getBoundingClientRect().top - 14, t0 = performance.now();
+    const step = () => { pane.scrollTop = Math.min(want, pane.scrollHeight - pane.clientHeight); if (performance.now() - t0 < 420) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  };
+  const cap = (k) => (
+    <button className={`kb-cap${rec === k.id ? " rec" : ""}${just === k.id ? " just" : ""}`} aria-label={`${k.name}: ${kbL(k.id)}. Press to change it`}
+            onClick={() => { setBad(null); setRec(rec === k.id ? null : k.id); }} onBlur={() => { if (rec === k.id) { setRec(null); setBad(null); } }}>
+      {rec === k.id ? "Type keys" : kbL(k.id)}
+    </button>
+  );
+  return (
+    <>
+      <button ref={head} className={`set-row kb-head${open ? " open" : ""}`} aria-expanded={open}
+              onClick={() => { setRec(null); setBad(null); setOpen(!open); if (!open) follow(); }}>
+        <span className="set-k"><b>Keyboard shortcuts</b><SetSay>{open ? "Press a key cap, then the keys you want" : `${KB_LIST.length} you can change · ${KB_FIXED.length} built in`}</SetSay></span>
+        <span className="kb-peek" aria-hidden="true">{KB_LIST.map((k) => <kbd key={k.id}>{kbL(k.id)}</kbd>)}</span>
+        <span className="kb-chev" aria-hidden="true"><Chevron /></span>
+      </button>
+      <div className={`kb-fold${open ? " open" : ""}`} ref={(el) => { if (el) el.inert = !open; }}>
+        <div>
+          <div className="kb-in">
+            <div className="kb-sub">Yours to change</div>
+            {KB_LIST.map((k) => {
+              const no = bad && bad.id === k.id ? bad.text : null;
+              return (
+                <div key={k.id} className="set-row kb-row">
+                  <span className="set-k"><b>{k.name}</b>{no ? <small className="kb-bad">{no}</small> : <SetSay>{k.say}</SetSay>}</span>
+                  <span className="kb-r">
+                    {kbOpt.map[k.id] && rec !== k.id && <button className="kb-undo" title={`Back to ${kbLabel(kbDef(k.id))}`} aria-label={`${k.name}: back to ${kbLabel(kbDef(k.id))}`} onClick={() => { setKb(k.id, null); setJust(k.id); }}><span className="msym">restart_alt</span></button>}
+                    {cap(k)}
+                  </span>
+                </div>
+              );
+            })}
+            <div className="kb-sub">Built in</div>
+            {KB_FIXED.map(([name, where, keys]) => (
+              <div key={name} className="set-row kb-row fix">
+                <span className="set-k"><b>{name}</b>{where && <small>{where}</small>}</span>
+                <span className="kb-r">{keys.map((x, i) => (x === "–" ? <i key={i}>–</i> : <kbd key={i} className="kb-cap fix">{x}</kbd>))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+// the notice of old exports about to go (xcleanRun): in yellow at the foot of the window, for 12 seconds; Keep them turns it off
+const XcleanNote = ({ n, onDone }) => {
+  const [out, setOut] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setOut(true), 12000); return () => clearTimeout(t); }, []);
+  useEffect(() => { if (!out) return; const t = setTimeout(onDone, 260); return () => clearTimeout(t); }, [out]);
+  return (
+    <div className={`xc-note glass${out ? " out" : ""}`} role="status">
+      <span className="msym" aria-hidden="true">auto_delete</span>
+      <span>{n} old export {n === 1 ? "file" : "files"} will be deleted automatically within 48 hours</span>
+      <button onClick={() => { setXclean(false); setOut(true); }}>Keep them</button>
+      <button className="xc-x" aria-label="Close" onClick={() => setOut(true)}>×</button>
+    </div>
+  );
+};
 const SettingsPop = ({ onClose, children, title, start }) => {
   const [closing, setClosing] = useState(false);
-  const dev = useDevOpt(), light = useTheme();
+  const dev = useDevOpt(), light = useTheme(), h12 = useClock12(), xon = useXclean();
   const shut = useRef(null);
   shut.current = () => { if (closing) return; setClosing(true); setTimeout(onClose, 190); };
   useEffect(() => {
-    const onKey = (e) => { e.stopImmediatePropagation(); if (e.key === "Escape") shut.current(); };
+    const onKey = (e) => { e.stopImmediatePropagation(); if (kbRec.on) { kbRec.on(e); return; } if (e.key === "Escape") shut.current(); };
     const onWheel = (e) => e.stopImmediatePropagation();
     window.addEventListener("keydown", onKey, true); window.addEventListener("wheel", onWheel, true);
     return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("wheel", onWheel, true); };
@@ -6561,7 +7564,12 @@ const SettingsPop = ({ onClose, children, title, start }) => {
             <ThemeSwitch light={light} />
           </div>
           <GlassSlider />
+          <div className="set-row">
+            <span className="set-k"><b>Clock</b><SetSay>{h12 ? "1:30 PM" : "13:30"}</SetSay></span>
+            <SlideSeg value={h12 ? "12" : "24"} onPick={(v) => setClock12(v === "12")} options={[["12", "AM / PM"], ["24", "24-hour"]]} />
+          </div>
         </SetGroup>
+        <SetGroup title="Keyboard"><KbFold /></SetGroup>
         <SetGroup title="App">
           {window.flowBackup && (() => {
             const [line, state, bad] = autoSaid();
@@ -6572,6 +7580,12 @@ const SettingsPop = ({ onClose, children, title, start }) => {
               </div>
             );
           })()}
+          {window.flowBackup && window.flowBackup.olds && (
+            <div className="set-row">
+              <span className="set-k"><b>Delete old exports</b><small>{xon ? "Exports older than 30 days go, with 48 hours' notice" : "Off: every export is kept"}</small></span>
+              <SlideSeg value={xon ? "on" : "off"} onPick={(v) => setXclean(v === "on")} options={ON_OFF} />
+            </div>
+          )}
           <div className="set-row">
             <span className="set-k"><b>Developer options</b><small>Test data, test levels, Reset account</small></span>
             <SlideSeg value={dev ? "on" : "off"} onPick={(v) => setDevOpt(v === "on")} options={ON_OFF} />
@@ -6789,7 +7803,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
            onClick={(e) => e.stopPropagation()}>
         <div className="pc-head">
           <span style={S.panelTitle}>Calculator</span>
-          <button className="cur-btn" style={{ ...S.currency, marginLeft: 6 }} title={`Main currency · click: ${unit} ⇄ IDR · three quick clicks: MYR · double-click: the money exchanger (⌘E)`} onClick={onCurClick}>
+          <button className="cur-btn" style={{ ...S.currency, marginLeft: 6 }} title={`Main currency · click: ${unit} ⇄ IDR · three quick clicks: MYR · double-click: the money exchanger (${kbL("fx")})`} onClick={onCurClick}>
             <CurRoll idx={CUR_LIST.indexOf(cur)} usd={unit} />
           </button>
           {panel !== "empty" && (
@@ -6805,7 +7819,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
             </button>
             <button className="x-btn" style={S.closeBtn} onClick={close}>✕</button>
             {tools && (
-              <div className="pc-pop">
+              <div className="pc-pop lg-float">
                 <div className="pc-lab">Exchange rate</div>
                 {["IDR", "MYR"].map((c) => (
                   <div key={c} className="pc-pop-row">
@@ -7294,7 +8308,7 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
             </button>
             <button className="x-btn" style={S.closeBtn} onClick={close}>✕</button>
             {tools && (
-              <div className="pc-pop">
+              <div className="pc-pop lg-float">
                 <div className="pc-lab">Broker fees</div>
                 {[["buy", "On a buy"], ["sell", "On a sell"]].map(([k, name]) => (
                   <div key={k} className="pc-pop-row">
@@ -7937,7 +8951,7 @@ const Reveal = ({ children }) => {
 // each card's own colour, muted: its title is a tag in it and a soft glow of it sits behind the title. The glow is a
 // band of a fixed height at the top (never sized from the card), so folding a card draws nothing again
 const CARD_TINT = { "weekly expenses": "#86bfe8", "money flow": "#7fd8b4", goals: "#e3c477", "PnL analysis": "#86bfe8", performance: "#7fd8b4", coins: "#e3c477", stocks: "#e3c477", pairs: "#e3c477", breakdown: "#8fa3b8",
-                    "to-do": "#7fc4f0", week: "#b7a4e6", activity: "#6fdcae", body: "#8fa3b8", diet: "#e3c477", gym: "#e2808c", "vision board": "#9db7c9" };
+                    "to-do": "#7fc4f0", week: "#b7a4e6", activity: "#6fdcae", body: "#8fa3b8", diet: "#e3c477", gym: "#e2808c", "vision board": "#9db7c9", assignments: "#f2a5e6" };
 const FOLD_SEEN = 0.12, FOLD_STEPS = [0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12, 0.14, 0.16, 0.18];
 const FoldCard = ({ title, sub, runKey, name, style, loose, parts, flask, children }) => {      // flask: the card's test-data flask (developer mode)
   const ref = useRef(null);
@@ -9022,7 +10036,14 @@ const importSide = async (side, data) => {
    - Colours: each widget has a soft colour of its own (the glow from its top-left corner, its icon, its line); a result
      is still green when it gained and red when it lost. */
 const DG_COLS = 12, DG_GAP = 16, DG_MAX_H = 8, DG_MAX_N = 30, DG_E = 1e-6;
-const DG_STEP = 0.5;                  // snap on: places and sizes move in half cells
+// what a widget can be resized by in edit mode: its four edges and four corners (t r b l; tl tr bl br), each with its pointer
+const DG_EDGES = ["t", "r", "b", "l", "tl", "tr", "bl", "br"];
+const DG_EDGE_CUR = { t: "ns-resize", b: "ns-resize", l: "ew-resize", r: "ew-resize", tl: "nwse-resize", br: "nwse-resize", tr: "nesw-resize", bl: "nesw-resize" };
+const DG_STEP = 0.5;                  // snap on: places and sizes move in half cells (the grid as it comes)
+// the grid's sizes he can pick (25 October 2026: "an option to make the grid bigger or smaller with more points"): whole,
+// half and quarter cells. Kept with each side's layout (`grid`), the half cell left out as the one it comes with
+const DG_GRIDS = [1, 0.5, 0.25];
+const DG_GRID_WORD = { 1: "whole", 0.5: "half", 0.25: "quarter" };
 const DG_HOLD_MS = 480;               // a press held this long on a widget starts editing, and the drag with it
 const DG_QUOTE_MS = 60000;            // live prices are asked again once a minute, while the dashboard is on screen
 const DG_SIZE = { s: [2, 2], m: [4, 2], l: [4, 4], xl: [8, 4] };
@@ -9031,7 +10052,7 @@ const DG_PER = { d: "Today", w: "Week", m: "Month", y: "Year", a: "All time" };
 const DG_PER_IN = { d: "today", w: "this week", m: "this month", y: "this year", a: "yet" };
 const DG_PREV = { d: "yesterday", w: "last week", m: "last month", y: "last year" };
 const DG_SPAN = { 7: "7D", 30: "30D", 90: "90D", ytd: "YTD" };
-const DG_SIDE = { finance: { name: "Finance", hue: "#8fe2b6" }, crypto: { name: "Crypto", hue: "#f7b267" }, idx: { name: "IDX stocks", hue: "#8ec8f8" }, fx: { name: "Forex", hue: "#c3a8ff" } };
+const DG_SIDE = { health: { name: "Health", hue: "#2fd08a" }, finance: { name: "Finance", hue: "#8fe2b6" }, crypto: { name: "Crypto", hue: "#f7b267" }, idx: { name: "IDX stocks", hue: "#8ec8f8" }, fx: { name: "Forex", hue: "#c3a8ff" } };
 // what the finance side hands the widgets in place of a market (the board's code reads these few words)
 const FIN_M = { base: "IDR", unit: "IDR", dp: 0, sides: false, sideName: ["", ""], things: "", small: "", none: "", nameOf: (p) => p };
 const DG_W = {
@@ -9066,6 +10087,23 @@ const DG_W = {
   facts:   { fin: true, name: "Shortcuts", icon: "apps", hue: "#b8c4d0", sizes: ["s", "m"], desc: "Add an expense, split a bill, the calendar, this month's wrapped and the money exchanger." },
   fxch:    { fin: true, name: "Exchange", icon: "currency_exchange", hue: "#f6a5c0", sizes: ["s", "m", "l"], desc: "The money exchanger: type in any of its currencies and see the others, at live rates." },
   fplan:   { fin: true, name: "Time plan", icon: "schedule", hue: "#a9d4ff", sizes: ["s", "m", "l"], desc: "Type your plan as one line and see when you will be done, or arrive." },
+  // Health (25 October 2026)
+  hscore:  { hl: true, name: "Day score", icon: "speed", hue: "#5ee3a9", sizes: ["s", "m", "l"], desc: "Your day out of 100: your steps, moving and to-dos, with the last seven days." },
+  hrings:  { hl: true, name: "Rings", icon: "track_changes", hue: "#ff8a4c", sizes: ["s", "m", "l"], desc: "Steps, move and to-dos as Apple's three rings, with the last seven days." },
+  hsteps:  { hl: true, name: "Steps", icon: "directions_walk", hue: "#2fd08a", sizes: ["s", "m", "l"], desc: "Today's steps against your goal, and the last two weeks." },
+  hheat:   { hl: true, name: "Steps year", icon: "calendar_view_month", hue: "#8fe2b6", sizes: ["m", "l", "xl"], desc: "Every day as a square, greener the nearer it came to your step goal." },
+  hnext:   { hl: true, name: "Up next", icon: "event_upcoming", hue: "#8ec8f8", sizes: ["s", "m", "l"], desc: "The class on now or coming next, how long until it, and the rest of today." },
+  htodo:   { hl: true, name: "To-dos", icon: "checklist", hue: "#4fb3ff", sizes: ["s", "m", "l"], desc: "Today's to-dos. Tick them off right here." },
+  hshop:   { hl: true, name: "Shopping", icon: "shopping_cart", hue: "#f7b267", sizes: ["s", "m", "l"], desc: "What is left to buy, and where. Tick things off right here." },
+  hweight: { hl: true, name: "Weight", icon: "monitor_weight", hue: "#c3a8ff", sizes: ["s", "m", "l"], desc: "Your latest weight, how it moved, and how you stand against your goal." },
+  hfuel:   { hl: true, name: "Fuel", icon: "restaurant", hue: "#f6a5c0", sizes: ["s", "m"], max: [4.5, 3], desc: "What is left to eat today: your diet goal's budget, or what your body uses in a day." },
+  hbmi:    { hl: true, name: "BMI", icon: "accessibility_new", hue: "#84dcd4", sizes: ["s", "m"], max: [4.5, 3], desc: "Your BMI on the Asian scale, and the healthy weights for your height." },
+  hgym:    { hl: true, name: "Gym week", icon: "fitness_center", hue: "#ffa497", sizes: ["s", "m", "l"], desc: "This week's sessions, the weeks in a row you trained, your last workout and best lifts." },
+  hawards: { hl: true, name: "Awards", icon: "military_tech", hue: "#f0d88a", sizes: ["s", "m", "l"], desc: "Badges you earn for good: 10K days, a week on fire, a perfect day, an iron week and more." },
+  hvision: { hl: true, name: "Vision", icon: "lightbulb", hue: "#eba6e6", sizes: ["s", "m", "l"], desc: "A note or picture from your vision board, a new one each day." },
+  hstreak: { hl: true, name: "Streak", icon: "local_fire_department", hue: "#ffc07e", sizes: ["s", "m"], max: [4.5, 3], desc: "Days in a row at your step goal, and your best run this year." },
+  hacts:   { hl: true, name: "Shortcuts", icon: "apps", hue: "#b8c4d0", sizes: ["s", "m"], desc: "Add a to-do, log steps, a workout or your weight, and read your timetable off a picture." },
+  hplan:   { hl: true, name: "Time plan", icon: "schedule", hue: "#a9d4ff", sizes: ["s", "m", "l"], desc: "Type your plan as one line and see when you will be done, or arrive." },
 };
 // what differs per side: the names and words of three trading widgets, and which widgets a side has at all
 const dgInfo = (id, M) => {
@@ -9076,67 +10114,91 @@ const dgInfo = (id, M) => {
   return w;
 };
 // finance has its own widgets; no forex price is fetched (the app has no source for one), and stocks have no side
-const dgHas = (id, M, market) => { const w = DG_W[id]; return !!w && !!w.fin === (market === "finance") && (id !== "sides" || M.sides) && (id !== "prices" || market !== "fx"); };
+const dgHas = (id, M, market) => { const w = DG_W[id]; return !!w && !!w.fin === (market === "finance") && !!w.hl === (market === "health") && (id !== "sides" || M.sides) && (id !== "prices" || market !== "fx"); };
 
 /* The presets ("make different iterations of this where there are widget presets for the user to choose from"): each
    a list of [widget, size, its period or time frame], placed in reading order. The first is the dashboard as it comes.
    A widget a side doesn't have takes the first of its stand-ins (DG_ALT) that the preset doesn't use already. */
+// (31 October 2026, his words: "update all of the preset widget setups for all apps, more useful first", and "for the preset
+// widgets have some widget stacks"): what is looked at most stands first, each row fills the 12 columns, every layout has
+// stacks in it, and the layouts most likely to be wanted come first in the list
 const DG_PRESETS = {
   trade: [
-    { id: "overview", name: "Overview", icon: "dashboard", desc: "A bit of everything: the balance, PnL, the curve, prices, trades and the calendar.",
-      items: [["bal", "m"], ["pnl", "m"], ["win", "s"], ["streak", "s"], ["curve", "xl"], ["prices", "l"], ["recent", "l"], ["cal", "l"], ["names", "l"], ["year", "m"], ["sides", "m"], ["acts", "m"]] },
-    { id: "day", name: "Day trader", icon: "bolt", desc: "Today first: today's trades and result, live prices, the last trades and the week.",
-      items: [["today", "m"], ["pnl", "m", { per: "d" }], ["win", "s", { per: "w" }], ["streak", "s"], ["prices", "l"], ["recent", "l"], ["acts", "m"], ["curve", "m", { span: "7" }], ["names", "m", { per: "m" }], ["year", "m"], ["sides", "m"]] },
-    { id: "analyst", name: "Analyst", icon: "query_stats", desc: "The long view: 90 days of the curve, the year's months, win rate and your names.",
-      items: [["curve", "xl", { span: "90" }], ["win", "l", { per: "y" }], ["year", "xl"], ["names", "l", { per: "y" }], ["pnl", "m", { per: "y" }], ["sides", "m", { per: "y" }], ["bal", "m"]] },
-    { id: "journal", name: "Journal", icon: "menu_book", desc: "Your log: the calendar, every recent trade, and how each name and each day did.",
-      items: [["cal", "l"], ["recent", "xl"], ["streak", "s"], ["today", "s"], ["win", "s"], ["pnl", "s"], ["names", "m"]] },
-    { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just the essentials: the balance, this month, today and the curve.",
-      items: [["bal", "m"], ["pnl", "m"], ["win", "s"], ["today", "s"], ["curve", "xl"], ["names", "l"]] },
-    // with stacks (23 October 2026: "add new widget presets that has this feature in it … be creative"): an item whose first
-    // part is a list is one box holding those widgets, swiped through (each [widget] or [widget, its period or span])
-    { id: "stacks", name: "Smart stacks", icon: "layers", stacked: true, desc: "Every widget in six boxes. Swipe a box up or down: results, today, tools, the curve and the months, the days and what you trade.",
-      items: [["bal", "m"], [["pnl", "win", "sides"], "m"], [["today", "streak"], "s"], [["acts", "xch", "plan"], "s"], [["curve", "year"], "xl"], [["cal", "recent", "names", "prices"], "l"]] },
+    { id: "overview", name: "Overview", icon: "dashboard", desc: "Today, this month and the balance first, then the curve with your last trades, prices, the calendar and the rest, some of it stacked.",
+      items: [["today", "m"], ["pnl", "m"], ["bal", "m"], ["curve", "xl"], ["recent", "l"], ["prices", "l"], ["cal", "l"], ["names", "l"],
+              [["win", "sides", "streak"], "m"], ["year", "m"], [["acts", "xch", "plan"], "m"]] },
+    { id: "day", name: "Day trader", icon: "bolt", desc: "Today first: today's trades and result, live prices, the last trades, the week's curve; tools and your names stacked.",
+      items: [["today", "m"], [[["pnl", { per: "d" }], ["win", { per: "w" }]], "m"], ["streak", "s"], ["acts", "s"], ["prices", "l"], ["recent", "l"],
+              [["xch", "plan"], "m"], [[["names", { per: "m" }], "sides"], "m"], [[["curve", { span: "7" }], "year"], "xl"], ["cal", "l"]] },
     { id: "session", name: "Trading session", icon: "speed", stacked: true, desc: "For the hours you trade: today and the week up top, live prices and your trades in reach, the calculator one press away.",
       items: [[["today", ["pnl", { per: "d" }], "streak"], "m"], [[["win", { per: "w" }], ["sides", { per: "m" }]], "m"], [["acts", "xch", "plan"], "m"],
               ["prices", "l"], [["recent", ["names", { per: "m" }]], "l"], [[["curve", { span: "7" }], "cal"], "l"]] },
+    { id: "journal", name: "Journal", icon: "menu_book", desc: "Your log: every recent trade and the calendar, then today, this month and how you win, stacked in pairs.",
+      items: [["recent", "xl"], ["cal", "l"], [["today", "pnl"], "m"], [["win", "streak"], "m"], ["names", "m"]] },
+    { id: "analyst", name: "Analyst", icon: "query_stats", desc: "The long view: 90 days of the curve, the year's months, win rate and your names; the year's PnL and the balance stacked.",
+      items: [["curve", "xl", { span: "90" }], ["win", "l", { per: "y" }], ["year", "xl"], ["names", "l", { per: "y" }],
+              [[["pnl", { per: "y" }], "bal"], "m"], ["sides", "m", { per: "y" }], ["recent", "m"]] },
+    { id: "stacks", name: "Smart stacks", icon: "layers", stacked: true, desc: "Every widget in six boxes, today first. Swipe a box up or down: today, results, the balance, tools, the curve and the months, your trades.",
+      items: [[["today", "streak"], "m"], [["pnl", "win", "sides"], "m"], ["bal", "s"], [["acts", "xch", "plan"], "s"], [["curve", "year"], "xl"], [["recent", "cal", "names", "prices"], "l"]] },
     { id: "onerow", name: "One row", icon: "view_week", stacked: true, desc: "Nine widgets in a single row of three boxes: today, how you trade, and the market. Swipe each one.",
       items: [[["today", ["pnl", { per: "d" }], "streak"], "m"], [[["curve", { span: "30" }], "win", "sides"], "m"], [["prices", "recent", "names"], "m"]] },
+    { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just today, this month, the balance and the curve, with your last trades and the calendar in one stack.",
+      items: [["today", "m"], ["pnl", "m"], ["bal", "m"], ["curve", "xl"], [["recent", "cal"], "l"]] },
   ],
   finance: [
-    { id: "overview", name: "Overview", icon: "dashboard", desc: "Today, the month, the week, the calendar, categories, goals and the last expenses.",
-      items: [["ftoday", "m"], ["fmonth", "m"], ["fstreak", "s"], ["fincome", "s"], ["fweek", "l"], ["fcal", "l"], ["fcats", "l"], ["frecent", "l"], ["fgoals", "l"], ["fyear", "m"], ["facts", "m"]] },
-    { id: "daily", name: "Daily", icon: "today", desc: "Today first: what is left to spend, this week, the last expenses and the calendar.",
-      items: [["ftoday", "m"], ["fmonth", "m"], ["fstreak", "s"], ["facts", "s"], ["fweek", "l"], ["frecent", "l"], ["fcal", "l"], ["fcats", "m"], ["fgoals", "m"], ["fdebts", "m"]] },
-    { id: "saver", name: "Saver", icon: "savings", desc: "Goals and what is left over: the month, income, debts and the year.",
-      items: [["fgoals", "l"], ["fmonth", "l"], ["fincome", "m"], ["fdebts", "m"], ["fyear", "xl"], ["fstreak", "s"], ["facts", "s"], ["fcats", "m"]] },
-    { id: "budget", name: "Budget", icon: "pie_chart", desc: "Where the money goes: categories, the calendar, the year and the week.",
-      items: [["fcats", "l"], ["fcal", "l"], ["fmonth", "m"], ["ftoday", "m"], ["fyear", "xl"], ["fweek", "l"]] },
-    { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just today, the month, the week and your goals.",
-      items: [["ftoday", "m"], ["fmonth", "m"], ["fstreak", "s"], ["fincome", "s"], ["fweek", "xl"], ["fgoals", "l"]] },
+    { id: "overview", name: "Overview", icon: "dashboard", desc: "Today and the month first, then your last expenses, the week, the calendar, categories and goals; the rest stacked.",
+      items: [["ftoday", "m"], ["fmonth", "m"], [["fincome", "fstreak"], "s"], ["facts", "s"], ["frecent", "l"], [["fweek", "fyear"], "l"], ["fcal", "l"],
+              ["fcats", "l"], ["fgoals", "l"], ["fdebts", "m"], [["fxch", "fplan"], "m"]] },
+    { id: "daily", name: "Daily", icon: "today", desc: "Today first: what is left to spend, the month with your income, the last expenses, the week and the calendar.",
+      items: [["ftoday", "m"], [["fmonth", "fincome"], "m"], ["fstreak", "s"], ["facts", "s"], ["frecent", "l"], ["fweek", "l"], ["fcal", "l"],
+              ["fcats", "m"], [["fgoals", "fdebts"], "m"], ["fplan", "m"]] },
+    { id: "budget", name: "Budget", icon: "pie_chart", desc: "Where the money goes: categories, the week and the year stacked, the calendar, then the month, today and the last expenses.",
+      items: [["fcats", "l"], [["fweek", "fyear"], "l"], ["fcal", "l"], ["fmonth", "m"], ["ftoday", "m"], ["frecent", "m"]] },
+    { id: "saver", name: "Saver", icon: "savings", desc: "Goals and what is left over: the month, income, debts and the year, with today and your tools stacked.",
+      items: [["fgoals", "l"], ["fmonth", "l"], ["fincome", "m"], ["fdebts", "m"], ["fyear", "xl"], ["fcats", "l"], [["ftoday", "fstreak"], "m"], [["facts", "fxch"], "m"], ["fweek", "m"]] },
     { id: "stacks", name: "Smart stacks", icon: "layers", stacked: true, desc: "Every widget in six boxes. Swipe a box up or down: today, the month, goals, tools, the week and the year, and where it went.",
-      items: [[["ftoday", "fstreak"], "m"], [["fmonth", "fincome"], "m"], [["fgoals", "fdebts"], "s"], [["facts", "fxch", "fplan"], "s"], [["fweek", "fyear"], "xl"], [["fcal", "fcats", "frecent"], "l"]] },
+      items: [[["ftoday", "fstreak"], "m"], [["fmonth", "fincome"], "m"], [["fgoals", "fdebts"], "s"], [["facts", "fxch", "fplan"], "s"], [["fweek", "fyear"], "xl"], [["frecent", "fcal", "fcats"], "l"]] },
     { id: "payday", name: "Payday", icon: "payments", stacked: true, desc: "Money in and out: the month and its categories, the year and the week, then income with your goals, debts and the exchanger.",
       items: [[["fmonth", "fcats"], "l"], [["fyear", "fweek"], "xl"], [["fincome", "fgoals"], "m"], [["fdebts", "fstreak"], "m"], [["fxch", "facts"], "m"]] },
     { id: "onerow", name: "One row", icon: "view_week", stacked: true, desc: "Nine widgets in a single row of three boxes: your day, your month, your spending. Swipe each one.",
       items: [[["ftoday", "fstreak", "fincome"], "m"], [["fmonth", "fcats", "fweek"], "m"], [["frecent", "fcal", "fgoals"], "m"]] },
+    { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just today, the month and the week, with your goals and last expenses in one stack.",
+      items: [["ftoday", "m"], ["fmonth", "m"], [["fincome", "fstreak"], "s"], ["facts", "s"], ["fweek", "xl"], [["fgoals", "frecent"], "l"]] },
+  ],
+  // Health (25 October 2026): each row fills the board's 12 columns
+  health: [
+    { id: "overview", name: "Overview", icon: "dashboard", desc: "What is next, your score and your to-dos first, then a year of steps, the gym and your body, the rest stacked.",
+      items: [["hnext", "m"], ["hscore", "m"], [["hrings", "hsteps"], "m"], ["htodo", "l"], ["hheat", "xl"], [["hgym", "hweight"], "m"], [["hfuel", "hbmi"], "m"], ["hawards", "m"],
+              [["hacts", "hplan"], "m"], ["hvision", "m"], ["hstreak", "m"]] },
+    { id: "student", name: "Student", icon: "school", desc: "Classes and to-dos up top with the time plan, then the day's score, the rings and your steps, the rest stacked.",
+      items: [["hnext", "l"], ["htodo", "l"], ["hplan", "l"], ["hscore", "m"], [["hrings", "hsteps"], "m"], ["hacts", "m"], ["hvision", "m"], [["hfuel", "hstreak"], "m"], [["hgym", "hweight"], "m"]] },
+    { id: "morning", name: "Morning", icon: "wb_sunny", desc: "The day ahead: up next, to-dos, the score, what to eat, the rings and a card to keep you going.",
+      items: [["hnext", "m"], ["htodo", "m"], ["hscore", "s"], ["hfuel", "s"], ["hrings", "l"], ["hsteps", "l"], ["hvision", "l"], [["hacts", "hplan"], "m"], ["hweight", "m"], [["hstreak", "hbmi"], "m"]] },
+    { id: "athlete", name: "Athlete", icon: "fitness_center", desc: "Training first: the gym week, a year of steps, your steps and the streak, awards, weight and fuel.",
+      items: [["hgym", "l"], ["hheat", "xl"], ["hsteps", "m"], [["hweight", "hbmi"], "m"], ["hstreak", "s"], ["hrings", "s"], ["hawards", "m"], ["hfuel", "m"], ["hscore", "m"]] },
+    { id: "stacks", name: "Smart stacks", icon: "layers", stacked: true, desc: "Every widget in six boxes. Swipe a box up or down: your plans, your day, tools, the long view, your training and body, and your fuel.",
+      items: [[["hnext", "htodo"], "m"], [["hscore", "hrings", "hsteps"], "m"], [["hacts", "hplan"], "s"], [["hfuel", "hbmi", "hstreak"], "s"], ["hheat", "xl"], [["hgym", "hweight", "hawards", "hvision"], "l"]] },
+    { id: "onerow", name: "One row", icon: "view_week", stacked: true, desc: "Nine widgets in a single row of three boxes: your plans, your day, your training. Swipe each one.",
+      items: [[["hnext", "htodo", "hplan"], "m"], [["hscore", "hrings", "hsteps"], "m"], [["hgym", "hweight", "hawards"], "m"]] },
+    { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just what is next, your to-dos, the score and a year of steps, with the rings and steps in one stack.",
+      items: [["hnext", "m"], ["htodo", "m"], ["hscore", "m"], ["hheat", "xl"], [["hrings", "hsteps"], "l"]] },
   ],
 };
 const DG_ALT = { sides: ["today", "bal", "streak"], prices: ["bal", "year", "names"] };
-const dgPresets = (market) => (market === "finance" ? DG_PRESETS.finance : DG_PRESETS.trade);
+const dgPresets = (market) => (market === "finance" ? DG_PRESETS.finance : market === "health" ? DG_PRESETS.health : DG_PRESETS.trade);
 
 /* ---------- the board's arithmetic: places in cells, never in pixels ---------- */
 const dgHit = (a, b) => a.x < b.x + b.w - DG_E && b.x < a.x + a.w - DG_E && a.y < b.y + b.h - DG_E && b.y < a.y + a.h - DG_E;
-const dgQ = (v) => Math.round(v / DG_STEP) * DG_STEP;
+const dgQ = (v, st = DG_STEP) => Math.round(v / st) * st;
 // every widget clear of the others: `lead` keeps its place, the rest in reading order, each moved down below whatever it
 // lands on; with snap on, each first rises as far as the room above it allows. A widget that ends where it was is the
 // same object, so it is not drawn again
-const dgSettle = (items, snap, lead) => {
+const dgSettle = (items, snap, lead, st = DG_STEP) => {
   const order = items.slice().sort((a, b) => (a.k === lead ? -1 : b.k === lead ? 1 : a.y - b.y || a.x - b.x));
   const out = [];
   for (const src of order) {
     const it = { ...src };
-    if (snap && it.k !== lead) while (it.y >= DG_STEP - DG_E && !out.some((p) => dgHit({ ...it, y: it.y - DG_STEP }, p))) it.y = dgQ(it.y - DG_STEP);
+    if (snap && it.k !== lead) while (it.y >= st - DG_E && !out.some((p) => dgHit({ ...it, y: it.y - st }, p))) it.y = dgQ(it.y - st, st);
     for (let g = 0; g < 999; g++) {
       let low = -1;
       for (const p of out) if (dgHit(it, p)) low = Math.max(low, p.y + p.h);
@@ -9150,7 +10212,7 @@ const dgSettle = (items, snap, lead) => {
 };
 // one widget moved (x, y) or resized (w, h, and x when it had to step left to fit), the others making room. On a move,
 // a single widget in the way goes to the place the moved one left, if it fits there
-const dgArrange = (items, k, rect, snap, swap) => {
+const dgArrange = (items, k, rect, snap, swap, st = DG_STEP) => {
   const from = items.find((o) => o.k === k);
   if (!from) return items;
   const moved = { ...from, ...rect };
@@ -9162,8 +10224,8 @@ const dgArrange = (items, k, rect, snap, swap) => {
       if (spot.x + spot.w <= DG_COLS + DG_E && !list.some((o) => o.k !== spot.k && dgHit(o, spot))) list = list.map((o) => (o.k === spot.k ? spot : o));
     }
   }
-  const first = dgSettle(list, snap, k);
-  return snap ? dgSettle(first, true, null) : first;      // and the moved one rises too, so where it shows is where it lands
+  const first = dgSettle(list, snap, k, st);
+  return snap ? dgSettle(first, true, null, st) : first;      // and the moved one rises too, so where it shows is where it lands
 };
 // the first free place in reading order for a widget of w × h
 const dgFit = (items, w, h) => {
@@ -9177,26 +10239,36 @@ const dgFit = (items, w, h) => {
    A stack (several widgets in one box, swiped through: DgStack) takes only the sizes every widget in it can take. It is
    kept as the widget on show (id, o) with the whole list (st: [{ id, o }], at: the one on show) */
 const DG_STACK_N = 6;
+/* How big a widget may be made at most (25 October 2026, his words: "add a max scaling for the widgets cus right now they
+   can scale infinitely but make sure the limit is big enough to where the user can fully adjust its preferences"): two
+   cells past its biggest size each way (a large one up to 6 × 6), the whole width for one that comes extra large, never
+   taller than DG_MAX_H; the few drawn for small sizes keep their own (`max`). It was the whole board, 12 × 8, for all */
+const dgMax = (id) => {
+  const w = DG_W[id];
+  if (w.max) return w.max;
+  const [a, b] = DG_SIZE[w.sizes[w.sizes.length - 1]];
+  return [a >= 8 ? DG_COLS : Math.min(DG_COLS, a + 2), Math.min(DG_MAX_H, b + 2)];
+};
 const dgPages = (it) => it.st || [{ id: it.id, ...(it.o ? { o: it.o } : {}) }];
 const dgLim = (it) => {
   let mw = 0, mh = 0, xw = DG_COLS, xh = DG_MAX_H;
   for (const p of dgPages(it)) {
-    const [a, b] = DG_SIZE[DG_W[p.id].sizes[0]], [c, d] = DG_W[p.id].max || [DG_COLS, DG_MAX_H];
+    const [a, b] = DG_SIZE[DG_W[p.id].sizes[0]], [c, d] = dgMax(p.id);
     mw = Math.max(mw, a); mh = Math.max(mh, b); xw = Math.min(xw, c); xh = Math.min(xh, d);
   }
   return { mw, mh, xw: Math.max(mw, xw), xh: Math.max(mh, xh) };
 };
 // whether a widget can stand in a box of w × h
-const dgFits = (id, w, h) => { const [a, b] = DG_SIZE[DG_W[id].sizes[0]], [c, d] = DG_W[id].max || [DG_COLS, DG_MAX_H]; return w >= a - DG_E && h >= b - DG_E && w <= c + DG_E && h <= d + DG_E; };
+const dgFits = (id, w, h) => { const [a, b] = DG_SIZE[DG_W[id].sizes[0]], [c, d] = dgMax(id); return w >= a - DG_E && h >= b - DG_E && w <= c + DG_E && h <= d + DG_E; };
 // a stack turned to its widget `at`
 const dgTurn = (it, at) => { const p = it.st[at], { o, ...rest } = it; return { ...rest, at, id: p.id, ...(p.o ? { o: p.o } : {}) }; };
 // a widget's period or time frame changed: in a stack, the one on show keeps it
 const dgOptSet = (it, patch) => { const o = { ...(it.o || {}), ...patch }; return it.st ? { ...it, o, st: it.st.map((p, j) => (j === (it.at || 0) ? { ...p, o } : p)) } : { ...it, o }; };
 // a widget on the snap grid: place and size in half cells, its size kept between its smallest and its biggest (dgLim)
-const dgSnapOne = (it) => {
+const dgSnapOne = (it, st = DG_STEP) => {
   const { mw, mh, xw, xh } = dgLim(it);
-  const w = Math.min(xw, Math.max(mw, dgQ(it.w))), h = Math.min(xh, Math.max(mh, dgQ(it.h)));
-  return { ...it, w, h, x: Math.min(Math.max(0, dgQ(it.x)), DG_COLS - w), y: Math.max(0, dgQ(it.y)) };
+  const w = Math.min(xw, Math.max(mw, dgQ(it.w, st))), h = Math.min(xh, Math.max(mh, dgQ(it.h, st)));
+  return { ...it, w, h, x: Math.min(Math.max(0, dgQ(it.x, st)), DG_COLS - w), y: Math.max(0, dgQ(it.y, st)) };
 };
 // the size class a widget's figures are set in (its pieces are fitted to its room, see dgPlan): the biggest of its sizes
 // it reaches, half a cell short counting
@@ -9244,7 +10316,7 @@ const dgDefault = (market, M) => ({ snap: true, preset: dgPresets(market)[0].id,
 // unique, nothing overlapping. null when there is none (the dashboard as it comes)
 const dgClean = (raw, market, M) => {
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.items)) return null;
-  const snap = raw.snap !== false;
+  const snap = raw.snap !== false, grid = DG_GRIDS.includes(raw.grid) ? raw.grid : DG_STEP;
   const num = (v, lo, hi, d) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v * 100) / 100)) : d);
   const keys = new Set(), items = [];
   for (const o of raw.items.slice(0, DG_MAX_N)) {
@@ -9263,12 +10335,12 @@ const dgClean = (raw, market, M) => {
     const k = typeof o.k === "string" && /^w\d{1,9}$/.test(o.k) && !keys.has(o.k) ? o.k : "";
     if (k) keys.add(k);
     const it = { k, ...base, x: num(o.x, 0, DG_COLS - w, 0), y: num(o.y, 0, 9999, 0), w, h };
-    items.push(snap ? dgSnapOne(it) : it);
+    items.push(snap ? dgSnapOne(it, grid) : it);
   }
   let n = items.reduce((m, it) => Math.max(m, it.k ? parseInt(it.k.slice(1), 10) : 0), 0);
   items.forEach((it) => { if (!it.k) it.k = `w${++n}`; });
   const preset = typeof raw.preset === "string" && dgPresets(market).some((p) => p.id === raw.preset) ? raw.preset : undefined;
-  return { snap, ...(preset ? { preset } : {}), items: dgSettle(items, snap, null) };
+  return { snap, ...(grid !== DG_STEP ? { grid } : {}), ...(preset ? { preset } : {}), items: dgSettle(items, snap, null, grid) };
 };
 const dgPos = (o, p) => ({ width: Math.max(0, o.w * p - DG_GAP), height: Math.max(0, o.h * p - DG_GAP), transform: `translate3d(${o.x * p}px, ${o.y * p}px, 0)` });
 // the board's height: down to the lowest widget, and two rows more while editing, to have somewhere to drop
@@ -9476,15 +10548,16 @@ const dgRows = (h, rh) => Math.max(0, Math.floor((h + 2) / (rh + 2)));
 const dgPxSize = (text, r, lineH) => [64, 56, 48, 40, 32, 24, 16].find((s) => (String(text).length + 0.5) * s <= r.w && s <= Math.max(16, lineH)) || 16;
 
 /* ---------- the widgets' parts ---------- */
-const DgHead = ({ info, children, go, onGo, goIcon = "arrow_outward", px }) => (
+const DgHead = ({ info, children, go: say, onGo, goIcon = "arrow_outward", px }) => { useKbs(); const go = kbTx(say); return (
   <div className="wd-head">
     <span className="wd-ico msym" aria-hidden="true">{info.icon}</span>
-    <span className={`wd-name${px ? " px" : ""}`}>{info.name}</span>
+    {onGo ? <button className={`wd-name wd-title-link${px ? " px" : ""}`} title={go} onClick={onGo}>{info.name}</button>
+      : <span className={`wd-name${px ? " px" : ""}`}>{info.name}</span>}
     <span className="wd-sp" />
     {children}
     {onGo && <button className="wd-go" title={go} aria-label={go} onClick={onGo}><span className="msym">{goIcon}</span></button>}
   </div>
-);
+); };
 // the period (or the span) of a widget: a press moves it on to the next one, and it is kept with the widget. In a
 // narrow widget it is its word alone
 const DgChip = ({ label, title, onClick, sm }) => {
@@ -9505,9 +10578,9 @@ const useSwap = (k) => {
   if (seen.current.k !== k) seen.current = { k, moved: true };
   return seen.current.moved ? " go" : "";
 };
-const DgEmpty = ({ icon, text, sub, children }) => (
-  <div className="wd-empty"><span className="msym" aria-hidden="true">{icon}</span><b>{text}</b>{sub && <small>{sub}</small>}{children}</div>
-);
+const DgEmpty = ({ icon, text, sub, children }) => { useKbs(); return (
+  <div className="wd-empty"><span className="msym" aria-hidden="true">{icon}</span><b>{text}</b>{sub && <small>{kbTx(sub)}</small>}{children}</div>
+); };
 // a name as a coloured disc with its letters (no logos: nothing is fetched to draw one). Its colours are its own
 const DgAv = ({ name, size = 30 }) => {
   const nm = String(name || "?").toUpperCase();
@@ -9614,7 +10687,7 @@ const DgDots = ({ y, m, today, dows, dot, onPick }) => {
   for (let d = 1; d <= dim; d++) {
     const q = dot(d);
     cells.push(
-      <button key={d} className={`wd-day${q.cls}${d === today.d && y === today.y && m === today.m ? " now" : ""}`} title={q.title} onClick={() => onPick(d)}>
+      <button key={d} className={`wd-day${q.cls}${d === today.d && y === today.y && m === today.m ? " now" : ""}`} title={q.title} aria-label={q.title} aria-current={d === today.d && y === today.y && m === today.m ? "date" : undefined} onClick={() => onPick(d)}>
         <i style={q.style}><span>{d}</span></i>
       </button>
     );
@@ -10085,15 +11158,20 @@ const DgPrices = ({ r, info, x, still }) => {
 };
 
 // the streak of either side: green trading days, or (finance) days at or under the daily limit
+// (Health's, 25 October 2026: the days with steps logged, at the goal or not; a day with none logged neither adds nor breaks)
+const hlStreak = (h, todayKey, y) => {
+  const keys = Object.keys(h.steps).filter((k) => k <= todayKey && h.steps[k] > 0).sort();
+  return dgRuns(keys, keys.map((k) => (h.steps[k] >= h.profile.steps ? 1 : -1)), y);
+};
 const DgStreak = ({ r, info, x }) => {
-  const fin = x.market === "finance";
-  const s = useMemo(() => (fin ? finStreak(x.spending, x.todayKey, x.today.y, x.lim) : dgStreak(x.trades, x.todayKey, x.today.y)), [x]);
-  const word = fin ? "under the limit in a row" : "green in a row";
-  if (!s.cur && !s.best && !s.last.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No streak yet" sub={r.w >= 200 && r.h >= 150 ? (fin ? "Each day at or under your daily limit adds one." : "Each green trading day adds one.") : null} /></>;
+  const fin = x.market === "finance", hl = x.market === "health";
+  const s = useMemo(() => (hl ? hlStreak(x.h, x.todayKey, x.today.y) : fin ? finStreak(x.spending, x.todayKey, x.today.y, x.lim) : dgStreak(x.trades, x.todayKey, x.today.y)), [x]);
+  const word = hl ? "at your step goal in a row" : fin ? "under the limit in a row" : "green in a row";
+  if (!s.cur && !s.best && !s.last.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No streak yet" sub={r.w >= 200 && r.h >= 150 ? (hl ? "Each day you reach your step goal adds one." : fin ? "Each day at or under your daily limit adds one." : "Each green trading day adds one.") : null} /></>;
   const runs = (cls) => (
-    <div className={`wd-runs${cls}`} aria-label={fin ? "The last 14 days logged" : "The last 14 trading days"}>
+    <div className={`wd-runs${cls}`} aria-label={hl || fin ? "The last 14 days logged" : "The last 14 trading days"}>
       {s.last.map((q) => <i key={q.k} className={q.s > 0 ? "up" : q.s < 0 ? "dn" : "be"} title={dgKeyDate(q.k)} />)}
-      {!s.last.length && <small>{fin ? "No days logged yet" : "No trading days yet"}</small>}
+      {!s.last.length && <small>{hl || fin ? "No days logged yet" : "No trading days yet"}</small>}
     </div>
   );
   // the days under the figure whenever they fit (then they span the width: 23 October 2026, a tall wide Streak had them
@@ -10193,6 +11271,9 @@ const DG_ACTS = {
   finance: [["quick", "add", "Log", "#8fe2b6", "Log an expense or an income to today (⌘N)"], ["bill", "group", "Split bill", "#8ec8f8", "Work out what each person pays"],
             ["year", "calendar_month", "Calendar", "#c5ea8a", "The yearly panel"], ["wrap", "auto_awesome", "Wrapped", "#f0d88a", "This month's wrapped"],
             ["fx", "currency_exchange", "Exchange", "#f6a5c0", "The money exchanger (⌘E)"]],
+  health: [["addtodo", "add_task", "To-do", "#4fb3ff", "Add a to-do to today (⌘N)"], ["steps", "directions_walk", "Steps", "#2fd08a", "Type today's steps"],
+           ["gym", "fitness_center", "Workout", "#ffa497", "Log a gym session"], ["weigh", "monitor_weight", "Weigh in", "#c3a8ff", "Log today's weight"],
+           ["scan", "document_scanner", "Timetable", "#f0d88a", "Read your timetable off a screenshot or a photo"]],
 };
 /* The buttons fill the whole widget (23 October 2026, his picture of the five in a row with room above and below them:
    "i absolutely hate these button icons, cause they dont fit the whole box and theres so much empty space"). They stand
@@ -10210,8 +11291,11 @@ const dgActRows = (n, w, h, g) => {
   }
   return best.per;
 };
-const DgActs = ({ r, x }) => {
-  const list = DG_ACTS[x.market === "finance" ? "finance" : "trade"], per = dgActRows(list.length, r.w, r.h, r.g);
+const DgActs = ({ c, r, x }) => {
+  useKbs();
+  // a small one carries the first four, two by two (31 October 2026, his words: "make this just 4 boxes"; it was three over
+  // two): the last, the exchanger (⌘E, a widget of its own) or Health's timetable, waits for a bigger box
+  const all = DG_ACTS[x.market === "finance" || x.market === "health" ? x.market : "trade"], list = c === "s" ? all.slice(0, 4) : all, per = dgActRows(list.length, r.w, r.h, r.g);
   // the words on every button or on none: when one row's buttons are too small to carry theirs, the others leave theirs out too
   const bh = (r.h - (per.length - 1) * r.g) / per.length, bare = Math.min(...per.map((c) => (r.w - (c - 1) * r.g) / c), bh) - 8 < 64;
   let from = 0;
@@ -10223,7 +11307,7 @@ const DgActs = ({ r, x }) => {
         return (
           <div key={ri} className="wd-actr">
             {row.map(([id, icon, name, hue, tip]) => (
-              <button key={id} className="wd-act" title={tip} aria-label={name} onClick={() => x.api.current.go(id)}>
+              <button key={id} className="wd-act" title={kbTx(tip)} aria-label={name} onClick={() => x.api.current.go(id)}>
                 <span className="wd-acti"><span className="msym" data-dk="" style={{ "--ac": hue }} aria-hidden="true">{icon}</span><span className="wd-actn">{name}</span></span>
               </button>
             ))}
@@ -10510,7 +11594,7 @@ const DgFDebts = ({ r, info, x }) => {
   );
   const rowsOf = (n) => open.slice().sort((a, b) => (b.amount - b.paid) - (a.amount - a.paid)).slice(0, n).map((d) => (
     <button key={d.id} className="wd-row" onClick={go}>
-      <span className="wd-rt"><b>{d.name}</b><small>{d.dir === "owe" ? "you owe" : "owes you"}</small></span>
+      <span className="wd-rt"><b>{d.name}</b><small>{d.dir === "owe" ? "you owe" : "owes you"}{d.note ? ` · ${d.note}` : ""}</small></span>
       <span className="wd-rv" style={{ color: d.dir === "owe" ? dgTone(-1) : dgTone(1) }}>{f.abs(d.amount - d.paid)}</span>
     </button>
   ));
@@ -10771,8 +11855,9 @@ const tpParse = (line) => {
   }
   return { start, steps, dest };
 };
+const tpHM = (m) => clk(tpHM24(m));        // (as his clock says: Settings, Clock)
 const tpNow = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
-const tpHM = (m) => { const r = ((Math.round(m) % 1440) + 1440) % 1440; return `${String(Math.floor(r / 60)).padStart(2, "0")}:${String(r % 60).padStart(2, "0")}`; };
+const tpHM24 = (m) => { const r = ((Math.round(m) % 1440) + 1440) % 1440; return `${String(Math.floor(r / 60)).padStart(2, "0")}:${String(r % 60).padStart(2, "0")}`; };
 const tpDur = (m) => {
   if (m > 0 && m < 1) return `${Math.round(m * 60)} s`;
   const r = Math.round(m), h = Math.floor(r / 60), mm = r % 60;
@@ -10849,20 +11934,21 @@ const tpMissSay = (w) => `“${w.miss.name || "A step"}” has no time yet`;
 // Home's Time plan widget (plan on the trading sides, fplan on finance). Small: the arrival and where; a press opens the
 // pop-up. Medium and up: the line to type in, the arrival, and as many of the steps as fit
 const DgPlan = ({ c, r, info, x, still }) => {
+  useClock12();
   const tp = useTp(!still);
   const line = tp.line ?? "";
   const plan = useMemo(() => tpParse(line), [line]);
   const w = tpWork(plan, tpNow());
   const open = () => x.api.current.go("plan");
   // small: the arrival as big as the room allows (it stood at 32px in the middle of an empty pane once the box was taller)
-  const pxs = dgPxSize("00:00", r, c === "s" ? Math.max(dgBig(c, r.u), (r.h - DGH.head - DGH.sub - 3 * r.g) * 0.55) : dgBig(c, r.u));
+  const pxs = dgPxSize(tpHM(12 * 60 + 30), r, c === "s" ? Math.max(dgBig(c, r.u), (r.h - DGH.head - DGH.sub - 3 * r.g) * 0.55) : dgBig(c, r.u));
   const sub = w.miss ? <span className="tp-warn">{tpMissSay(w)}</span> : w.end !== null ? <span>{plan.dest || "Done"} · {w.rel}</span> : <span>Your steps and their minutes</span>;
   if (c === "s") {
     const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", DGH.sub]]);
     return (
       <>
         <DgHead info={info} go="Open the time plan (⌘T)" onGo={open} />
-        <div className="tpw-one" onClick={open} title="Open the time plan (⌘T)">
+        <div className="tpw-one" onClick={open} title={kbTx("Open the time plan (⌘T)")}>
           <TpFig end={w.end} px={pxs} />
           {on.sub && <div className="wd-sub">{sub}</div>}
         </div>
@@ -10888,6 +11974,7 @@ const DgPlan = ({ c, r, info, x, still }) => {
 };
 // the pop-up (⌘T): the line, the arrival, the steps. Every key is its own while it is open, as in the exchanger
 const TimePlan = ({ onClose }) => {
+  useClock12();
   const tp = useTp(true);
   const line = tp.line ?? "";
   const plan = useMemo(() => tpParse(line), [line]);
@@ -10895,8 +11982,8 @@ const TimePlan = ({ onClose }) => {
   const box = useRef(null), fit = useEaseHeight();
   const sh = useSheet(onClose, (e) => {
     e.stopPropagation();
-    const k = e.key, mod = e.metaKey || e.ctrlKey;
-    if (mod && !e.shiftKey && !e.altKey && k.toLowerCase() === "t") { e.preventDefault(); sh.shut(); return true; }
+    const k = e.key;
+    if (kbIs(e, "plan")) { e.preventDefault(); if (!e.repeat) sh.shut(); return true; }
     if (k === "Escape") { e.preventDefault(); sh.shut(); return true; }
     return true;
   });
@@ -10926,14 +12013,795 @@ const TimePlan = ({ onClose }) => {
           <div className="tp-sub">{sub}</div>
         </div>
         <div className="tp-fit" ref={fit}><TpRows w={w} plan={plan} /></div>
-        <div className="fx-foot"><span>Steps part at commas or “then”. A number is minutes; 1h30 and 1.5 jam work too. A last step with no number is where you arrive. Start with a time (15.23) to plan from it.</span><kbd>⌘T</kbd></div>
+        <div className="fx-foot"><span>Steps part at commas or “then”. A number is minutes; 1h30 and 1.5 jam work too. A last step with no number is where you arrive. Start with a time (15.23) to plan from it.</span><kbd><Kb id="plan" /></kbd></div>
       </div>
     </div>
   );
 };
+/* ---------- Worth it? (24 October 2026, his words: "is this purchase worth it … i input an item i want to buy and the
+   price, and you tell me if its a good purchase or not. option for want/need or just decide on your own … compare the
+   item price to others thats the same … a short detailed but easily understandable answer … a 'is this a rational
+   purchase' score … good graphic design and visuals so its not all text clutter". Asked to choose, I made it a pop-up of
+   its own (⌘B, "buy"; a button beside the finance side's Log and on its Home), so Log stays the quick thing it is, with
+   Log it in the verdict for a purchase he decides to make.
+   Fully offline, as the app is (PRODUCT.md, rule 2): the usual price is from a table of typical Indonesian prices kept in
+   the app (WI_TYPES; estimates, and the pop-up says so: nothing free gives real average prices, looked for that day), the
+   item is placed by its words, English and Indonesian (as the categories are), and failing that by the on-device
+   model's category (food, transport…), which gives a rough comparison or none. The rest is his own figures: this
+   month's daily limit and spending, and what he paid for the same kind of thing before. Right, or it says no: an item
+   it can't place is weighed against his budget only, and it says so.
+   The score (0–100, `wiScore`): the price against the usual one, the price against what is left of this month's budget,
+   the cost of each use, and need or want; the weights shift to the budget when the price can't be compared. ---------- */
+// [id, name, icon, words, low, typical, high (rupiah), a need?, uses a year (0: used up at once), priority (accessories win)]
+const WI_TYPES = [
+  ["tee", "T-shirt", "apparel", "t-shirt, tshirt, tee, kaos, kaus, oversize tee, graphic tee", 40e3, 100e3, 260e3, false, 52],
+  ["shirt", "Shirt", "apparel", "shirt, kemeja, blouse, polo, flannel, flanel", 80e3, 180e3, 420e3, false, 40],
+  ["pants", "Trousers", "checkroom", "pants, trousers, jeans, chinos, celana, celana panjang, cargo pants, joggers", 100e3, 250e3, 600e3, false, 50],
+  ["shorts", "Shorts", "checkroom", "shorts, celana pendek, boxer", 50e3, 120e3, 300e3, false, 40],
+  ["dress", "Dress", "checkroom", "dress, gaun, rok, skirt, gamis", 120e3, 300e3, 900e3, false, 15],
+  ["jacket", "Jacket", "checkroom", "jacket, jaket, hoodie, sweater, coat, cardigan, windbreaker, blazer", 150e3, 350e3, 1e6, false, 40],
+  ["shoes", "Shoes", "footprint", "shoes, sepatu, sneakers, sneaker, running shoes, boots, loafers, heels", 200e3, 600e3, 1.6e6, false, 150],
+  ["sandals", "Sandals", "footprint", "sandals, sandal, sendal, slippers, flip flops, crocs", 30e3, 90e3, 300e3, false, 150],
+  ["socks", "Socks or underwear", "checkroom", "socks, kaos kaki, kaus kaki, underwear, celana dalam, bra, singlet", 15e3, 40e3, 120e3, true, 100],
+  ["bag", "Bag", "backpack", "bag, tas, backpack, ransel, tote, tote bag, sling bag, wallet, dompet, laptop bag, tas laptop, pouch", 100e3, 350e3, 1.2e6, false, 150, 2],
+  ["watch", "Watch", "watch", "watch, jam tangan, arloji", 250e3, 900e3, 4e6, false, 300],
+  ["glasses", "Glasses", "eyeglasses", "glasses, kacamata, sunglasses, eyeglasses, lensa", 150e3, 500e3, 1.5e6, true, 300],
+  ["perfume", "Perfume", "sanitizer", "perfume, parfum, cologne, eau de parfum, body mist", 80e3, 300e3, 1.2e6, false, 150],
+  ["skincare", "Skincare", "spa", "skincare, serum, sunscreen, sunblock, moisturizer, moisturiser, toner, facial wash, cleanser, sabun muka, masker wajah", 35e3, 110e3, 350e3, false, 60],
+  ["makeup", "Make-up", "brush", "makeup, make-up, make up, lipstick, lip tint, foundation, cushion, mascara, bedak, eyeliner", 40e3, 130e3, 400e3, false, 60],
+  ["haircut", "Haircut", "content_cut", "haircut, potong rambut, cukur, barber, barbershop, salon, pangkas", 25e3, 60e3, 180e3, true, 0],
+  ["meal", "A meal", "lunch_dining", "makan, makan siang, makan malam, sarapan, lunch, dinner, breakfast, nasi, ayam, mie, mi ayam, bakso, soto, sate, nasi goreng, padang, warteg, rice bowl, ramen, pho", 12e3, 30e3, 75e3, true, 0],
+  ["dineout", "Eating out", "restaurant", "restaurant, restoran, resto, sushi, steak, buffet, all you can eat, ayce, fine dining, omakase, korean bbq, yakiniku, hotpot, shabu", 80e3, 200e3, 550e3, false, 0],
+  ["fastfood", "Fast food", "fastfood", "mcd, mcdonalds, kfc, burger king, burger, pizza, fried chicken, hokben, richeese", 30e3, 60e3, 150e3, false, 0],
+  ["coffee", "Coffee", "local_cafe", "coffee, kopi, latte, cappuccino, americano, espresso, flat white, kopi susu, starbucks", 15e3, 35e3, 70e3, false, 0],
+  ["drink", "A drink", "local_drink", "boba, bubble tea, milk tea, es teh, teh, juice, jus, smoothie, matcha, mixue, chatime", 8e3, 25e3, 50e3, false, 0],
+  ["snack", "A snack", "cookie", "snack, jajan, keripik, chips, cokelat, chocolate, biskuit, cookies, cookie, roti, donut, martabak, gorengan", 5e3, 18e3, 60e3, false, 0],
+  ["groceries", "Groceries", "shopping_cart", "groceries, belanja bulanan, sembako, supermarket, indomaret, alfamart, beras, telur, minyak goreng, sayur, sayuran, buah", 50e3, 300e3, 1.5e6, true, 0],
+  ["phone", "A phone", "smartphone", "phone, hp, handphone, smartphone, samsung galaxy, galaxy s, pixel, xiaomi, redmi, oppo, vivo, realme", 1.5e6, 4e6, 22e6, true, 700],
+  ["iphone", "An iPhone", "smartphone", "iphone, iphone pro, iphone pro max", 8e6, 16e6, 28e6, true, 700],
+  ["laptop", "A laptop", "laptop_mac", "laptop, notebook, thinkpad, chromebook", 5e6, 11e6, 32e6, true, 900],
+  ["macbook", "A MacBook", "laptop_mac", "macbook, macbook air, macbook pro", 14e6, 20e6, 45e6, true, 900],
+  ["tablet", "A tablet", "tablet_mac", "tablet, ipad, galaxy tab", 2e6, 6e6, 20e6, false, 500],
+  ["earbuds", "Earphones", "headphones", "earphones, earphone, earbuds, headset, headphones, headphone, tws, iem", 100e3, 500e3, 4e6, false, 400],
+  ["airpods", "AirPods", "headphones", "airpods, airpods pro, airpods max", 1.9e6, 3.6e6, 9e6, false, 400],
+  ["smartwatch", "A smartwatch", "watch", "smartwatch, apple watch, smart band, mi band, galaxy watch, garmin", 300e3, 1.8e6, 9e6, false, 600],
+  ["accessory", "A phone or laptop accessory", "cable", "case, casing, phone case, cover, charger, kabel, cable, power bank, powerbank, adapter, tempered glass, anti gores, screen protector, strap, dongle, hub", 25e3, 120e3, 450e3, false, 300, 2],
+  ["keyboard", "Keyboard or mouse", "keyboard", "keyboard, mechanical keyboard, mouse, mousepad, mouse pad, keycaps", 80e3, 400e3, 2e6, false, 600],
+  ["monitor", "A monitor", "monitor", "monitor, display, layar monitor", 1.2e6, 2.5e6, 8e6, false, 900],
+  ["console", "A game console", "sports_esports", "ps5, ps4, playstation, nintendo switch, switch 2, xbox, steam deck, console, konsol", 3.5e6, 7e6, 11e6, false, 300],
+  ["game", "A game", "sports_esports", "game, steam game, dlc, top up, topup, diamond, battle pass, gift card", 30e3, 250e3, 900e3, false, 50],
+  ["camera", "A camera", "photo_camera", "camera, kamera, mirrorless, dslr, gopro, lens, lensa kamera", 2e6, 8e6, 30e6, false, 100],
+  ["furniture", "Furniture", "chair", "furniture, meja, kursi, lemari, kasur, rak, desk, chair, bed, sofa, mattress, shelf, wardrobe, coffee table, meja kopi", 250e3, 1.5e6, 6e6, false, 900, 2],
+  ["appliance", "An appliance", "kitchen", "kulkas, mesin cuci, ac, air conditioner, rice cooker, magic com, blender, microwave, fridge, washing machine, vacuum, air fryer, kipas, fan, dispenser", 250e3, 1.8e6, 7e6, true, 900],
+  ["kitchenware", "Kitchenware", "skillet", "panci, wajan, piring, gelas, mangkok, sendok, pan, pot, mug, tumbler, botol minum, bottle, cutlery, pisau, knife", 25e3, 100e3, 400e3, false, 300, 2],
+  ["decor", "Home decor", "lightbulb", "lampu, lamp, poster, tanaman, plant, decor, dekorasi, rug, karpet, gorden, curtain, frame, bingkai, candle, lilin, pillow, bantal, blanket, selimut", 40e3, 150e3, 600e3, false, 300, 2],
+  ["ride", "A ride", "local_taxi", "gojek, goride, gocar, grab, grabbike, grabcar, ojek, ojol, taxi, taksi, uber, maxim, bluebird", 10e3, 25e3, 90e3, true, 0],
+  ["fuel", "Fuel", "local_gas_station", "bensin, pertalite, pertamax, solar, shell, fuel, petrol, isi bensin", 20e3, 50e3, 300e3, true, 0],
+  ["motorbike", "A motorbike", "two_wheeler", "motor, motorbike, scooter, vario, beat, nmax, pcx, aerox", 15e6, 25e6, 45e6, false, 900],
+  ["car", "A car", "directions_car", "mobil, car", 150e6, 280e6, 700e6, false, 900],
+  ["flight", "A flight", "flight", "flight, plane ticket, tiket pesawat, pesawat, airasia, garuda, lion air, citilink", 500e3, 1.5e6, 6e6, false, 0],
+  ["train", "Train or bus", "train", "kereta, train, krl, mrt, lrt, transjakarta, bus, bis, travel, whoosh", 3.5e3, 80e3, 600e3, true, 0],
+  ["movie", "A movie", "movie", "movie, bioskop, nonton, cinema, xxi, cgv, cinepolis", 35e3, 55e3, 120e3, false, 0],
+  ["event", "A concert or event", "confirmation_number", "concert, konser, festival, event, tiket konser, ticket, tiket, show, gig", 150e3, 900e3, 4e6, false, 0],
+  ["subscription", "A subscription", "subscriptions", "netflix, spotify, youtube premium, disney, hbo, prime video, subscription, langganan, chatgpt, icloud, vidio", 30e3, 60e3, 200e3, false, 12],
+  ["gym", "Gym or sport", "fitness_center", "gym, gym membership, fitness, membership gym, futsal, badminton, padel, yoga, pilates, renang, swimming", 50e3, 350e3, 1.2e6, false, 12],
+  ["book", "A book", "menu_book", "book, buku, novel, komik, comic, manga, kindle", 40e3, 100e3, 350e3, false, 5],
+  ["hotel", "A stay", "hotel", "hotel, villa, staycation, airbnb, resort, penginapan", 300e3, 800e3, 3e6, false, 0],
+  ["gift", "A gift", "redeem", "gift, kado, hadiah, present, bouquet, buket, bunga, flowers", 50e3, 200e3, 1e6, false, 0],
+  ["medicine", "Medicine", "medication", "medicine, obat, vitamin, apotek, pharmacy, suplemen, supplement, panadol, paracetamol", 10e3, 50e3, 300e3, true, 0],
+  ["doctor", "A doctor's visit", "stethoscope", "doctor, dokter, klinik, clinic, dentist, dokter gigi, checkup, check up, rumah sakit, hospital", 80e3, 250e3, 1e6, true, 0],
+  ["toy", "A toy or collectible", "toys", "lego, figure, action figure, funko, toy, mainan, gundam, gunpla, plush, boneka, trading card", 80e3, 500e3, 3e6, false, 30],
+].map(([id, name, icon, words, lo, typ, hi, need, uses, pri = 1]) => ({
+  id, name, icon, lo, typ, hi, need, uses, pri,
+  words: words.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean)
+    .map((w) => ({ w, re: new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^a-z0-9])`) })),
+}));
+const WI_BY = Object.fromEntries(WI_TYPES.map((t) => [t.id, t]));
+// what the on-device model's category gives when no word matched: a rough comparison, or none
+const WI_ROUGH = { food: "meal", transport: "ride" };
+// the kind of thing a line names: the type whose matched word is the longest; a holder or an add-on wins over what it
+// holds or goes with ("iphone case", "laptop bag", "meja kopi", "coffee mug": priority 2; 24 October 2026, the review:
+// "laptop bag" was priced as a laptop). Each line is matched once (WI_SEEN): the history reads every expense
+const WI_SEEN = new Map();
+const wiMatch = (text) => {
+  const key = String(text || "").toLowerCase();
+  if (WI_SEEN.has(key)) return WI_SEEN.get(key);
+  const best = wiMatchNow(key);
+  if (WI_SEEN.size > 4000) WI_SEEN.clear();
+  WI_SEEN.set(key, best);
+  return best;
+};
+const wiMatchNow = (low) => {
+  const s = ` ${low} `;
+  let best = null, score = 0;
+  for (const t of WI_TYPES) for (const { w, re } of t.words) {
+    if (!re.test(s)) continue;
+    const v = t.pri * 100 + w.length;
+    if (v > score) { score = v; best = t; }
+  }
+  return best;
+};
+// a price as typed: 500.000 · 500rb · 1,5jt · 500k · 2.5m (rupiah, or ringgit when the app shows MYR)
+const wiPrice = (text) => {
+  const s = String(text || "").toLowerCase().replace(/\s+/g, "").replace(/^(rp|rm|idr|myr)\.?/, "");
+  const m = s.match(/^([\d.,]+)(rb|ribu|k|jt|juta|m)?$/);
+  if (!m) return 0;
+  const unit = m[2] ? (/^(rb|ribu|k)$/.test(m[2]) ? 1e3 : 1e6) : 1;
+  const n = unit > 1 ? parseFloat(m[1].replace(",", ".")) : parseFloat(m[1].replace(/[.,](?=\d{3}(\D|$))/g, "").replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? Math.min(n * unit, MAX_AMOUNT) : 0;
+};
+const WI_OFTEN = [["daily", "Daily", 300], ["weekly", "Weekly", 52], ["monthly", "Monthly", 12], ["rarely", "Rarely", 3]];
+const wiOftenOf = (uses) => (uses >= 200 ? "daily" : uses >= 40 ? "weekly" : uses >= 10 ? "monthly" : "rarely");
+const WI_BANDS = [[80, "Sensible", "#3ddc97"], [60, "Reasonable", "#8fd7a4"], [40, "Think twice", "#f5d34b"], [20, "Hard to justify", "#f5a742"], [0, "Irresponsible", "#ff5d6c"]];
+const wiBand = (score) => WI_BANDS.find(([min]) => score >= min);
+const wiLerp = (x, x0, x1, y0, y1) => y0 + ((Math.min(Math.max(x, x0), x1) - x0) / (x1 - x0)) * (y1 - y0);
+/* the verdict: { score, band, need (as weighed), ratio, share, days, perUse, sentences }.
+   ref: { lo, typ, hi } or null; left: what is left of this month's budget; limit: the daily limit */
+const wiScore = ({ price: P, ref, why, autoNeed, left, limit, uses, once, hist, fmt, name }) => {
+  const need = why === "need" || (why === "auto" && autoNeed);
+  const priceS = !ref ? null : P <= ref.typ ? 100 : P <= ref.hi ? wiLerp(P, ref.typ, ref.hi, 100, 65) : 65 * Math.pow(ref.hi / P, 1.6);
+  const share = P / Math.max(1, left);
+  const budgetS = share <= 0.05 ? 100 : share <= 0.25 ? wiLerp(share, 0.05, 0.25, 100, 60) : share <= 0.6 ? wiLerp(share, 0.25, 0.6, 60, 20) : share <= 1 ? wiLerp(share, 0.6, 1, 20, 0) : 0;
+  const perUse = once ? P : P / Math.max(1, uses);
+  const useS = once ? null : perUse <= limit * 0.1 ? 100 : perUse <= limit * 0.5 ? wiLerp(perUse, limit * 0.1, limit * 0.5, 100, 70) : perUse <= limit ? wiLerp(perUse, limit * 0.5, limit, 70, 45) : 25;
+  const needS = need ? 100 : 40;
+  const parts = [[priceS, 0.4], [budgetS, 0.35], [useS, 0.1], [needS, 0.15]].filter(([v]) => v !== null);
+  const sum = parts.reduce((a, [, w]) => a + w, 0);
+  let score = parts.reduce((a, [v, w]) => a + v * w, 0) / sum;
+  if (!need && share > 1) score = Math.min(score, 25);                       // a want bigger than all that is left
+  if (need && ref && P <= ref.hi) score = Math.max(score, 62);                 // a need at a normal price is fine
+  if (ref && P > ref.hi * 4) score = Math.min(score, need ? 35 : 18);          // far beyond any usual price
+  score = Math.round(Math.max(0, Math.min(100, score)));
+  const band = wiBand(score), ratio = ref ? P / ref.typ : null, days = P / Math.max(1, limit);
+  const say = [];
+  if (!ref) say.push(`I don't know what ${name ? `“${name}”` : "that"} usually costs, so this weighs it against your budget only.`);
+  else if (P > ref.hi) say.push(`That's ${ratio >= 1.95 ? `${ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1).replace(".", ",")}×` : "well above"} what it usually costs (${fmt(ref.typ)}); most go for ${fmt(ref.lo)}–${fmt(ref.hi)}.`);
+  else if (P > ref.typ * 1.5) say.push(`Well above the usual ${fmt(ref.typ)}, though some do cost this much (${fmt(ref.lo)}–${fmt(ref.hi)}).`);
+  else if (P > ref.typ) say.push(`A bit above the usual ${fmt(ref.typ)}, within the normal range (${fmt(ref.lo)}–${fmt(ref.hi)}).`);
+  else say.push(`A fair price: it usually costs about ${fmt(ref.typ)}.`);
+  say.push(share > 1 ? `It's more than everything left in this month's budget (${fmt(left)}).`
+    : `It would take ${Math.max(1, Math.round(share * 100))}% of what's left this month (${fmt(left)}), ${days < 0.95 ? `${Math.max(1, Math.round(days * 100))}% of a day's limit` : days < 1.05 ? "about a day of your daily limit" : `${days < 10 ? days.toFixed(1).replace(".", ",") : Math.round(days)} days of your daily limit`}.`);
+  if (hist && hist.n >= 2) say.push(`You've usually paid about ${fmt(hist.med)} for this before.`);
+  const as = why === "auto" ? `I'd call it a ${need ? "need" : "want"}` : `As a ${need ? "need" : "want"}`;
+  say.push(score >= 80 ? `${as}: go for it.` : score >= 60 ? `${as}: reasonable, if you'll use it.` : score >= 40 ? `${as}: sleep on it, or look for a cheaper one.` : score >= 20 ? `${as}: hard to justify at this price.` : `${as}: this would be an irresponsible buy.`);
+  return { score, band, need, ratio, share, days, perUse, say };
+};
+// what he paid before for the same kind of thing: the middle of his last ten, and how many there were
+const wiHistory = (spending, type) => {
+  if (!type || !spending) return null;
+  const got = [];
+  for (const k of Object.keys(spending).sort()) for (const it of spending[k] || []) {
+    if (!it || it.zero || !(it.amount > 0) || !it.desc) continue;
+    if (wiMatch(it.desc) === type) got.push(it.amount);
+  }
+  if (!got.length) return null;
+  const last = got.slice(-10).sort((a, b) => a - b);
+  return { n: got.length, med: last[Math.floor(last.length / 2)] };
+};
+const wiMem = { item: "", price: "", why: "auto", often: null };
+// a price in the other currency, for the grey line beside it (24 October 2026: "a grey text that tells the price in the
+// 2nd / the other currency so if im in idr it shows in myr and the other way around"), at the app's own MYR rate
+const WI_RM = new Intl.NumberFormat("id-ID", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const wiOther = (idr, myr) => (myr ? `Rp ${Math.round(idr).toLocaleString("id-ID")}` : `RM ${WI_RM.format(idr / MYR_RATE)}`);
+// the price strip: the usual range, the typical price and his, on a scale that grows with it (a log scale, so 50× fits)
+const WiStrip = ({ rf: r, price: P, fmt, c, myr }) => {
+  const a = Math.min(r.lo, P) / 1.6, b = Math.max(r.hi, P) * 1.35, at = (v) => (Math.log(v / a) / Math.log(b / a)) * 100;
+  const lo = at(r.lo), hi = at(r.hi), typ = at(r.typ), you = at(P);
+  return (
+    <div className="wi-strip" style={{ "--c": c }}>
+      <i className="wi-range" style={{ clipPath: `inset(0 ${100 - hi}% 0 ${lo}% round 99px)` }} />
+      <i className="wi-typ" style={{ transform: `translateX(${typ}%)` }}><b /><small>usual {fmt(r.typ)} <em>· {wiOther(r.typ, myr)}</em></small></i>
+      <i className="wi-you" style={{ transform: `translateX(${you}%)` }}><b /><small>you {fmt(P)} <em>· {wiOther(P, myr)}</em></small></i>
+    </div>
+  );
+};
+const WorthIt = ({ api, onClose }) => {
+  const [item, setItem] = useState(wiMem.item), [price, setPrice] = useState(wiMem.price);
+  const [why, setWhy] = useState(wiMem.why), [often, setOften] = useState(wiMem.often), [aiCat, setAiCat] = useState(null);
+  const box = useRef(null), x = api.current;
+  useEffect(() => { Object.assign(wiMem, { item, price, why, often }); }, [item, price, why, often]);
+  const sh = useSheet(onClose, (e) => {
+    e.stopPropagation();
+    const k = e.key;
+    if (kbIs(e, "worth")) { e.preventDefault(); if (!e.repeat) sh.shut(); return true; }
+    if (k === "Escape") { e.preventDefault(); sh.shut(); return true; }
+    return true;
+  });
+  useLayoutEffect(() => { const el = box.current; if (el) { el.focus(); el.select(); } }, []);
+  // the currency switched while it is open (⌘K): what is typed keeps its worth, written in the other currency
+  const wasMYR = useRef(x.isMYR);
+  useEffect(() => {
+    if (wasMYR.current === x.isMYR) return;
+    wasMYR.current = x.isMYR;
+    setPrice((t) => {
+      const v = wiPrice(t);
+      if (!v) return t;
+      return x.isMYR ? WI_RM.format(v / MYR_RATE) : Math.round(v * MYR_RATE).toLocaleString("id-ID");
+    });
+  }, [x.isMYR]);
+  const type = useMemo(() => wiMatch(item), [item]);
+  // no word matched: the on-device model's category, a moment after typing stops (it is only asked then)
+  useEffect(() => {
+    setAiCat(null);
+    if (type || item.trim().length < 3 || !AI_OK) return;
+    let live = true;
+    const t = setTimeout(() => { window.flowAI.pick("cat", item, CAT_ORDER).then((c) => { if (live) setAiCat(c || null); }).catch(() => {}); }, 450);
+    return () => { live = false; clearTimeout(t); };
+  }, [item, type]);
+  const rough = !type && aiCat && WI_ROUGH[aiCat] ? WI_BY[WI_ROUGH[aiCat]] : null, ref = type || rough;
+  const hist = useMemo(() => wiHistory(x.spending, type), [x.spending, type]);
+  const P = x.toIDR(wiPrice(price));
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), limit = x.limitOf(y, m), dim = new Date(y, m + 1, 0).getDate();
+  const spent = finMonth(x.spending, y, m, limit).spent, left = Math.max(0, limit * dim - spent);
+  const once = ref ? !ref.uses : false, oftenNow = often || (ref && ref.uses ? wiOftenOf(ref.uses) : "monthly");
+  const uses = (WI_OFTEN.find(([k]) => k === oftenNow) || WI_OFTEN[2])[2];
+  const autoNeed = ref ? ref.need : ["food", "transport", "bills"].includes(aiCat);
+  const r = item.trim() && P > 0 ? wiScore({ price: P, ref, why, autoNeed, left, limit, uses, once, hist, fmt: x.fmt, name: item.trim() }) : null;
+  const logIt = () => { if (!r) return; x.put(P, item.trim()); sh.shut(); };
+  const stat = `Left this month ${x.fmt(left)} · daily limit ${x.fmt(limit)}`;
+  return (
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(32px, 8vh)" }} onClick={sh.shut}>
+      <div role="dialog" aria-modal="true" aria-label="Worth it?" className="glass wi-sheet" onClick={(e) => e.stopPropagation()} style={sh.pop}>
+        <div className="fx-head">
+          <div>
+            <div className="fx-title">Worth it?</div>
+            <div className="fx-stat"><span key={stat} className="fx-say">{stat}</span></div>
+          </div>
+          <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+        </div>
+        <div className="wi-form">
+          <label className="wi-in wi-item">
+            <span key={`ico-${ref ? ref.id : "none"}`} className="msym wi-ico" aria-hidden="true">{ref ? ref.icon : "shopping_bag"}</span>
+            <input ref={box} value={item} placeholder="What do you want to buy?" spellCheck={false} autoComplete="off" aria-label="What you want to buy"
+                   onChange={(e) => setItem(e.target.value.slice(0, 80))} />
+            {ref && <span key={`chip-${ref.id}`} className="wi-chip">{rough ? `roughly ${ref.name.toLowerCase()}` : ref.name}</span>}
+          </label>
+          <label className="wi-in wi-price">
+            <span className="wi-cur">{x.isMYR ? "RM" : "Rp"}</span>
+            <input value={price} placeholder={x.isMYR ? "120" : "500.000 or 500rb"} inputMode="decimal" spellCheck={false} autoComplete="off" aria-label="Its price"
+                   onChange={(e) => setPrice(e.target.value.slice(0, 24))}
+                   onBlur={() => { const v = wiPrice(price); if (v && /^[\d.,]+$/.test(price.trim()) && !x.isMYR) setPrice(Math.round(v).toLocaleString("id-ID")); }} />
+            {P > 0 && <span className="wi-other">≈ {wiOther(P, x.isMYR)}</span>}
+          </label>
+          <div className="wi-row"><span className="wi-k">It's a</span>
+            <SlideSeg cls="wi-seg" value={why} onPick={setWhy} options={[["need", "Need"], ["want", "Want"], ["auto", "Decide for me"]]} /></div>
+          {!once && (
+            <div className="wi-row"><span className="wi-k">You'd use it</span>
+              <SlideSeg cls="wi-seg" value={oftenNow} onPick={setOften} options={WI_OFTEN.map(([k, l]) => [k, l])} /></div>
+          )}
+        </div>
+        {r ? (
+          <div className="wi-res">
+            <div className="wi-top" style={{ "--c": r.band[2] }}>
+              <div className="wi-dial">
+                <svg viewBox="0 0 120 120" aria-hidden="true">
+                  <circle className="wi-ring-bg" cx="60" cy="60" r="52" />
+                  <circle className="wi-ring" cx="60" cy="60" r="52" pathLength="100" style={{ strokeDashoffset: 100 - r.score }} />
+                </svg>
+                <div className="wi-score"><CountNum value={r.score} duration={600} still render={(n) => Math.round(n)} /></div>
+              </div>
+              <div className="wi-verdict">
+                <div className="wi-k">Rational score{why === "auto" ? ` · a ${r.need ? "need" : "want"}, I'd say` : ""}</div>
+                <div key={r.band[1]} className="wi-word">{r.band[1]}</div>
+                <p className="wi-say">{r.say.join(" ")}</p>
+              </div>
+            </div>
+            {ref && (
+              <div className="wi-block">
+                <div className="wi-bh"><span>Price{rough ? " (roughly)" : ""}</span><b>{r.ratio > 1.95 ? `${r.ratio >= 10 ? Math.round(r.ratio) : r.ratio.toFixed(1).replace(".", ",")}× the usual` : P > ref.typ * 1.5 ? "well above the usual" : P > ref.typ ? "a bit above usual" : "a fair price"}</b></div>
+                <WiStrip rf={ref} price={P} fmt={x.fmt} c={r.band[2]} myr={x.isMYR} />
+              </div>
+            )}
+            <div className="wi-block">
+              <div className="wi-bh"><span>This month's budget</span><b>{r.share > 1 ? "more than what's left" : `${Math.max(1, Math.round(r.share * 100))}% of what's left`}</b></div>
+              <div className="wi-bar" style={{ "--c": r.share > 0.6 ? "#ff5d6c" : r.share > 0.25 ? "#f5d34b" : "#3ddc97" }}><i style={{ transform: `scaleX(${Math.min(1, r.share)})` }} /></div>
+            </div>
+            <div className="wi-tiles">
+              <div><small>{once ? "One-off" : "Each use"}</small><b>{x.fmt(Math.round(r.perUse))}</b><span>{once ? "used up at once" : `${WI_OFTEN.find(([k]) => k === oftenNow)[1].toLowerCase()}, over a year`}</span></div>
+              <div><small>Daily limits</small><b>{r.days < 10 ? r.days.toFixed(1).replace(".", ",") : Math.round(r.days)}</b><span>of {x.fmt(limit)} a day</span></div>
+              <div><small>You usually pay</small><b>{hist ? x.fmt(hist.med) : "–"}</b><span>{hist ? `${hist.n} bought before` : "nothing like it logged"}</span></div>
+            </div>
+            <div className="wi-acts">
+              <button className="dg-btn" onClick={sh.shut}><span className="dg-lbl"><span className="msym" aria-hidden="true">block</span>Skip it</span></button>
+              <button className={`dg-btn${r.score >= 60 ? " pri" : ""}`} onClick={logIt}><span className="dg-lbl"><span className="msym" aria-hidden="true">add</span>Log it to today</span></button>
+            </div>
+          </div>
+        ) : (
+          <div className="wi-hint"><span className="msym" aria-hidden="true">balance</span>Type what it is and what it costs. Flow compares it with what such things usually cost, with what's left of your month, and with what you've paid before.</div>
+        )}
+        <div className="fx-foot"><span>Usual prices are Flow's own estimates for Indonesia (2026), kept in the app; nothing is looked up online.</span><kbd><Kb id="worth" /></kbd></div>
+      </div>
+    </div>
+  );
+};
+/* ---------- Health's widgets (25 October 2026, his words: "i want to do something interesting and creative with the
+   fitness app, the finance app have widgets on the home, maybe another widget thingy? … search other similar apps from
+   the internet for ideas, develop and create them for the fitness app, and refine it to be perfect and easy to use for
+   normal users … copy from others designs"). Health's Home is the same board as the other sides' (HomeDash), with
+   widgets after the fitness apps looked at: a day score out of 100 (Wellness Project's Fit Score, Bevel's day), the
+   rings (Apple Fitness), steps against the goal, a year of steps as squares that grow greener (GitHub's and the habit
+   heatmaps: Habit Heatmap, Dots), up next on the timetable (iOS's Calendar widget), to-dos ticked on the widget itself
+   (Dots), the weight against the plan's line (MacroFactor), the day's food budget, BMI, the gym week (Hevy's week and
+   streak), awards (Apple Fitness's), a card from the vision board, the streak, shortcuts and the time plan. Every figure
+   is his own, read from the health data with Health's own sums (hlDayOf, hlRingVals, hlPlan …); nothing is made up ---------- */
+const HL_M = { base: "", unit: "", dp: 0, sides: false, sideName: ["", ""], things: "", small: "", none: "", nameOf: (p) => p };
+// a day out of 100: the steps and move rings and, when the day has to-dos, the to-dos, each counted up to full
+const hlScore = (h, k) => {
+  const d = hlDayOf(h, k), v = hlRingVals(h, d), parts = [v[0], v[1], ...(d.todos.length ? [v[2]] : [])].map((q) => Math.min(1, q || 0));
+  return { score: Math.round((parts.reduce((a, b) => a + b, 0) / parts.length) * 100), d, v };
+};
+const hlScoreSay = (s) => (s >= 85 ? "A strong day" : s >= 60 ? "A good day" : s >= 30 ? "Getting there" : s > 0 ? "Just started" : "Nothing yet");
+const hlScoreHue = (s) => (s >= 85 ? "#5ee3a9" : s >= 60 ? "#a5e07c" : s >= 30 ? "#f0d88a" : "#ffa497");
+const HL_DOW1 = "MTWTFSS";
+// what Health's widgets read, worked out once per change of its data (the score of today, the latest weight)
+const useHlDashCtx = ({ h, todayKey, api, loaded }) => useMemo(() => {
+  const today = dgToday(todayKey), n = (v) => hlFmt(Math.abs(v));
+  return { M: HL_M, market: "health", h, api, ready: loaded, today, todayKey, tn: dayNo(today.y, today.m, today.d),
+           f: { abs: n, money: n, absLive: n, live: n }, score: hlScore(h, todayKey), kg: hlWeightOn(h, todayKey) };
+}, [h, todayKey, api, loaded]);
+
+// a ring of a share of 100, round ended, in its colour
+const DgArc = ({ s, hue }) => {
+  const R = 42, C = 2 * Math.PI * R;
+  return (
+    <svg className="wd-ring" viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r={R} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="9" />
+      {s > 0 && <circle cx="50" cy="50" r={R} fill="none" stroke={hue} strokeWidth="9" strokeLinecap="round" transform="rotate(-90 50 50)" strokeDasharray={`${(Math.min(100, s) / 100) * C} ${C}`} />}
+    </svg>
+  );
+};
+// one bar a day, from the floor, in the colour `hue(i)` says; a dashed line at the goal when there is one
+const DgHBars = ({ vals, top, goal, hue, labels, now, tipOf, onPick }) => (
+  <div className="wd-bars">
+    {vals.map((v, i) => (
+      <button key={i} className={`wd-bar${i === now ? " now" : ""}`} disabled={!onPick} title={tipOf ? tipOf(i) : undefined} onClick={onPick ? () => onPick(i) : undefined}>
+        <b className={`wd-plot${goal ? " lim" : ""}`} style={{ "--base": goal ? `${100 - Math.min(100, (goal / top) * 100)}%` : "100%" }}>
+          {v > 0 && <i className="sp" style={{ bottom: 0, height: `${Math.min(100, (v / top) * 100)}%`, background: hue(i), "--i": i }} />}
+        </b>
+        {labels && <span>{labels[i]}</span>}
+      </button>
+    ))}
+  </div>
+);
+// the last seven days as small rings, today last; a press opens that day
+const DgHWeekRings = ({ h, todayKey, onPick }) => (
+  <div className="wd-hweek">
+    {Array.from({ length: 7 }, (_, i) => {
+      const k = hlAddDays(todayKey, i - 6);
+      return (
+        <button key={k} className={`wd-hwd${i === 6 ? " now" : ""}`} title={hlNice(k)} onClick={() => onPick(k)}>
+          <HlMini vals={hlRingVals(h, hlDayOf(h, k))} /><span>{HL_DOW1[hlDow(k)]}</span>
+        </button>
+      );
+    })}
+  </div>
+);
+
+// Day score: the day out of 100 in the middle of its ring, what makes it beside it, the week under it
+const DgHScore = ({ r, info, x }) => {
+  const { h, todayKey, api, score: now } = x, hue = hlScoreHue(now.score);
+  const week = useMemo(() => Array.from({ length: 7 }, (_, i) => { const k = hlAddDays(todayKey, i - 6); return { k, s: hlScore(h, k).score }; }), [h, todayKey]);
+  const parts = [["Steps", now.v[0], HL_TINT[0][0]], ["Move", now.v[1], HL_TINT[1][0]], ...(now.d.todos.length ? [["To-dos", now.v[2], HL_TINT[2][0]]] : [])];
+  const row = r.w >= 250, body = r.h - DGH.head - r.g;
+  const bars = r.w >= 250 && body - DGH.bars - r.g >= (row ? 92 : 150);
+  const room = body - (bars ? DGH.bars + r.g : 0) - (row ? 0 : DGH.sub + r.g);
+  const ring = Math.round(Math.max(56, Math.min(176, room, row ? r.w * 0.42 : r.w)));
+  const fig = ring >= 140 ? 32 : ring >= 92 ? 24 : 16, legN = Math.floor((Math.min(room, ring + 24) + 7) / 27);
+  return (
+    <>
+      <DgHead info={info} go="Open today" onGo={r.w < 210 ? null : () => api.current.go("day")} />
+      <div className={`wd-winb${row ? " row" : ""}`}>
+        <div className="wd-ringw" style={{ width: ring, height: ring }} title={`${now.score} of 100: ${hlScoreSay(now.score).toLowerCase()}`}>
+          <DgArc s={now.score} hue={hue} />
+          <span className="wd-ringn"><span className="wd-px" style={{ fontSize: fig }}><PxFig text={String(now.score)} /></span></span>
+        </div>
+        {row ? (
+          <div className="wd-leg">
+            {legN >= 1 && <span className="wd-legw" style={{ color: hue }}>{hlScoreSay(now.score)}</span>}
+            {parts.slice(0, Math.max(0, legN - 1)).map(([k, v, col]) => <span key={k}><i style={{ background: col }} />{k}<b>{Math.round(Math.min(1, v) * 100)}%</b></span>)}
+          </div>
+        ) : <div className="wd-sub"><span style={{ color: hue }}>{hlScoreSay(now.score)}</span></div>}
+      </div>
+      {bars && <DgHBars vals={week.map((q) => q.s)} top={100} hue={(i) => hlScoreHue(week[i].s)} labels={week.map((q) => HL_DOW1[hlDow(q.k)])} now={6}
+                        tipOf={(i) => `${hlNice(week[i].k)}: ${week[i].s}`} onPick={(i) => api.current.go("day", week[i].k)} />}
+    </>
+  );
+};
+
+// Rings: Apple's three, today, with what each holds beside them and the last seven days under them
+const DgHRings = ({ r, info, x }) => {
+  const { h, todayKey, api, score: now } = x, p = h.profile, d = now.d;
+  const row = r.w >= 250, body = r.h - DGH.head - r.g;
+  const week = r.w >= 250 && body - 58 - r.g >= (row ? 92 : 150);
+  const room = body - (week ? 58 + r.g : 0);
+  const size = Math.round(Math.max(56, Math.min(190, room, row ? r.w * 0.44 : r.w)));
+  const lines = [["Steps", d.steps, p.steps, ""], ["Move", Math.round(d.move), p.move, " kcal"], ["To-dos", d.done, d.todos.length, ""]];
+  const legN = Math.floor((Math.min(room, size + 24) + 7) / 27);
+  return (
+    <>
+      <DgHead info={info} go="Open today" onGo={r.w < 210 ? null : () => api.current.go("day")} />
+      <div className={`wd-winb${row ? " row" : ""}`}>
+        <div className="wd-hrings" style={{ width: size, height: size }}><HlRings vals={now.v} size={size} /></div>
+        {row && (
+          <div className="wd-leg">
+            {lines.slice(0, legN).map(([k, v, g, u], i) => <span key={k}><i style={{ background: HL_TINT[i][0] }} />{k}<b>{hlFmt(v)}<em> / {hlFmt(g)}{u}</em></b></span>)}
+          </div>
+        )}
+      </div>
+      {week && <DgHWeekRings h={h} todayKey={todayKey} onPick={(k) => api.current.go("day", k)} />}
+    </>
+  );
+};
+
+// Steps: today's against the goal, the last two weeks as bars against it
+const DgHSteps = ({ c, r, info, x }) => {
+  const { h, todayKey, api, score: now } = x, goal = h.profile.steps, d = now.d;
+  const pxs = dgPxSize(hlFmt(d.steps), r, dgBig(c, r.u));
+  const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["meter", 8], ["sub", DGH.sub], ["bars", DGH.bars]]);
+  const n = r.w >= 300 ? 14 : 7;
+  const days = useMemo(() => Array.from({ length: n }, (_, i) => { const k = hlAddDays(todayKey, i - n + 1); return { k, v: h.steps[k] || 0 }; }), [h.steps, todayKey, n]);
+  const top = Math.max(goal * 1.25, ...days.map((q) => q.v)) || 1;
+  return (
+    <>
+      <DgHead info={info} go="Log today's steps" goIcon="edit" onGo={r.w < 210 ? null : () => api.current.go("steps")} />
+      <DgFig value={d.steps} render={(v) => hlFmt(v)} px={pxs} color={d.steps >= goal ? "#5ee3a9" : null} />
+      {on.meter && <div className="wd-meter" title={`${hlFmt(d.steps)} of ${hlFmt(goal)}`}><i style={{ transform: `scaleX(${Math.min(1, d.steps / goal)})`, background: "var(--wc)" }} /></div>}
+      {on.sub && <div className="wd-sub"><span><b>{Math.round((d.steps / goal) * 100)}%</b> of {hlFmt(goal)}{r.w >= 230 ? ` · ${d.km.toFixed(1)} km` : ""}</span></div>}
+      {on.bars && on.rest >= DGH.bars - 6 && (
+        <DgHBars vals={days.map((q) => q.v)} top={top} goal={goal} hue={(i) => (days[i].v >= goal ? "#2fd08a" : "rgba(47,208,138,0.42)")}
+                 labels={days.map((q) => HL_DOW1[hlDow(q.k)])} now={days.length - 1} tipOf={(i) => `${hlNice(days[i].k)}: ${hlFmt(days[i].v)} steps`}
+                 onPick={(i) => api.current.go("day", days[i].k)} />
+      )}
+    </>
+  );
+};
+
+// Steps year: a square a day, a column a week, greener the nearer the day came to the goal (a day past it the greenest)
+const HL_HEAT_HINT = ["No steps", "Under half the goal", "Over half the goal", "The goal reached", "One and a half times the goal"];
+const DgHHeat = ({ r, info, x }) => {
+  const { h, todayKey, api } = x, goal = h.profile.steps;
+  const sub = r.h - DGH.head - r.g >= 7 * 9 + 18 + DGH.sub + r.g;
+  const gridH = r.h - DGH.head - r.g - (sub ? DGH.sub + r.g : 0), gap = gridH >= 120 ? 4 : 3;
+  const cell = Math.floor(Math.max(6, Math.min(22, (gridH - 6 * gap) / 7)));
+  const weeks = Math.max(4, Math.min(53, Math.floor((r.w + gap) / (cell + gap))));
+  const m = useMemo(() => {
+    const start = hlAddDays(todayKey, -hlDow(todayKey) - (weeks - 1) * 7), out = [];
+    let hit = 0, run = 0, best = 0;
+    for (let i = 0; i < weeks * 7; i++) {
+      const k = hlAddDays(start, i);
+      if (k > todayKey) { out.push({ k, l: -1 }); continue; }
+      const v = h.steps[k] || 0, q = v / goal;
+      const l = !v ? 0 : q < 0.5 ? 1 : q < 1 ? 2 : q < 1.5 ? 3 : 4;
+      if (q >= 1) { hit++; best = Math.max(best, ++run); } else run = 0;
+      out.push({ k, l, v });
+    }
+    return { out, hit, best };
+  }, [h.steps, goal, todayKey, weeks]);
+  const pick = (e) => { const k = e.target.dataset && e.target.dataset.k; if (k) api.current.go("day", k); };
+  return (
+    <>
+      <DgHead info={info} go="Open today" onGo={r.w < 210 ? null : () => api.current.go("day")} />
+      <div className="wd-heat" style={{ gridTemplateRows: `repeat(7, ${cell}px)`, gridAutoColumns: `${cell}px`, gap }} onClick={pick}>
+        {m.out.map((q) => <i key={q.k} data-k={q.l >= 0 ? q.k : undefined} className={`l${q.l}${q.k === todayKey ? " now" : ""}`}
+                             title={q.l < 0 ? undefined : `${hlNice(q.k)}: ${q.v ? `${hlFmt(q.v)} steps` : "no steps"}`} />)}
+      </div>
+      {sub && (
+        <div className="wd-sub wd-heatf">
+          <span><b>{m.hit}</b> {m.hit === 1 ? "day" : "days"} at your goal{r.w >= 330 ? ` in ${weeks} weeks` : ""}{r.w >= 420 && m.best > 1 ? <> · best run <b>{m.best}</b></> : null}</span>
+          {r.w >= 300 && <span className="wd-heatk" title={HL_HEAT_HINT.join(" · ")}>Less{[0, 1, 2, 3, 4].map((l) => <i key={l} className={`l${l}`} />)}More</span>}
+        </div>
+      )}
+    </>
+  );
+};
+
+// Up next: the class on now, or the next one, with how long until it; today's under it; tomorrow's first once the day
+// is done. Its own clock, read every 30 seconds (the board is not drawn again for it)
+const DgHNext = ({ r, info, x }) => {
+  useClock12();
+  const { h, todayKey, api } = x;
+  const [nowMin, setNowMin] = useState(() => { const t = new Date(); return t.getHours() * 60 + t.getMinutes(); });
+  useEffect(() => { const t = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 30000); return () => clearInterval(t); }, []);
+  const dow = hlDow(todayKey), of = (k) => h.classes.filter((q) => hlClsOn(q, k)).sort((a, b) => (a.from < b.from ? -1 : 1));
+  const list = of(todayKey), cur = list.find((q) => hlMin(q.from) <= nowMin && hlClsEnd(q) > nowMin), nxt = list.find((q) => hlMin(q.from) > nowMin);
+  const show = cur || nxt;
+  let later = null;
+  if (!show) for (let i = 1; i <= 7 && !later; i++) { const l = of(hlAddDays(todayKey, i)); if (l.length) later = { q: l[0], i }; }
+  const go = () => api.current.go("week");
+  if (!h.classes.length) return <><DgHead info={info} /><DgEmpty icon="event_upcoming" text="No timetable yet" sub={r.w >= 200 && r.h >= 150 ? "Add your classes, or read them off a screenshot." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Add your timetable</button>}</DgEmpty></>;
+  const q = show || later.q, hue = hlClsCol(q);
+  const when = cur ? `Now · until ${clk(q.to)}` : nxt ? `In ${hlDur(hlMin(q.from) - nowMin)} · ${clk(q.from)}` : `${later.i === 1 ? "Tomorrow" : HL_DOW_LONG[(dow + later.i) % 7]} · ${clk(q.from)}`;
+  const frac = cur ? (nowMin - hlMin(q.from)) / Math.max(1, hlClsEnd(q) - hlMin(q.from)) : 0;
+  const on = dgPlan(r, [["head", DGH.head], ["name", 26], ["when", DGH.sub], ["meter", cur ? 8 : 0], ["room", q.room ? DGH.sub : 0]]);
+  const rest = list.filter((o) => o !== q), n = Math.min(rest.length, dgRows(on.rest - 4, DGH.rowTight));
+  return (
+    <>
+      <DgHead info={{ ...info, name: show ? (cur ? "Now" : "Up next") : "Done for today" }} go="Open the week" onGo={r.w < 210 ? null : go} />
+      <button className="wd-next" style={{ "--nc": hue }} onClick={go}><i /><b>{q.name}</b></button>
+      {on.when && <div className="wd-sub"><span style={{ color: hue }}>{when}</span>{r.w >= 260 && <span>{clk(q.from)}–{clk(q.to)}</span>}</div>}
+      {on.meter && <div className="wd-meter" title={`${Math.round(frac * 100)}% through`}><i style={{ transform: `scaleX(${frac})`, background: hue }} /></div>}
+      {on.room && q.room && <div className="wd-sub"><span className="msym wd-subi" aria-hidden="true">location_on</span><span>{q.room}</span></div>}
+      {n > 0 && (
+        <div className="wd-rows tight">
+          {rest.slice(0, n).map((o) => (
+            <button key={o.id} className={`wd-row${hlClsEnd(o) <= nowMin ? " past" : ""}`} onClick={go}>
+              <i className="wd-cdot" style={{ background: hlClsCol(o) }} />
+              <span className="wd-rt"><b>{o.name}</b></span><span className="wd-rv">{clk(o.from)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+};
+
+// To-dos: today's, ticked on the widget itself; the undone ones first
+const DgHTodo = ({ r, info, x }) => {
+  const { h, todayKey, api } = x;
+  const list = useMemo(() => h.todos.filter((t) => hlOn(t, todayKey)).sort((a, b) => !!a.done[todayKey] - !!b.done[todayKey]), [h.todos, todayKey]);
+  const done = list.filter((t) => t.done[todayKey]).length, add = () => api.current.go("addtodo");
+  const head = <DgHead info={info} go="Add a to-do (⌘N)" goIcon="add" onGo={add} />;
+  if (!list.length) return <>{head}<DgEmpty icon="task_alt" text="Nothing to do today" sub={r.w >= 200 && r.h >= 150 ? "Add what you want done: once, every day, or on the days you pick." : null}>{r.h >= 140 && <button className="wd-btn" onClick={add}>Add a to-do</button>}</DgEmpty></>;
+  const fit = dgRows(r.h - DGH.head - DGH.sub - 2 * r.g, DGH.rowTight), n = Math.min(list.length, fit), more = list.length - n;
+  return (
+    <>
+      {head}
+      <div className="wd-sub"><span><b>{done}</b> of {list.length} done</span>{more > 0 && <span>· {more} more</span>}</div>
+      <div className="wd-rows">
+        {list.slice(0, Math.max(1, n)).map((t) => {
+          const on = !!t.done[todayKey], run = t.rep !== "once" ? hlRun(t, todayKey).streak : 0;
+          return (
+            <div key={t.id} className={`wd-row wd-trow${on ? " on" : ""}`}>
+              <button className="wd-tick" role="checkbox" aria-checked={on} aria-label={t.text} onClick={() => api.current.go("tick", t.id)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12.5l4 4 8-9" /></svg>
+              </button>
+              <span className="wd-rt"><b>{t.text}</b></span>
+              {run > 1 && <span className="wd-rv wd-run" title={`${run} days in a row`}><span className="msym" aria-hidden="true">local_fire_department</span>{run}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+};
+
+// Shopping: what is left to buy and where, ticked off right here; the bought ones last
+const DgHShop = ({ r, info, x }) => {
+  const { h, api } = x;
+  const list = useMemo(() => h.shop.flatMap((q) => q.items.map((t) => ({ ...t, place: q.place }))).sort((a, b) => !!a.got - !!b.got), [h.shop]);
+  const left = list.filter((t) => !t.got).length, places = h.shop.filter((q) => q.items.some((t) => !t.got)).length, go = () => api.current.go("shop");
+  const head = <DgHead info={info} go="Open the shopping list" onGo={r.w < 210 ? null : go} />;
+  if (!list.length) return <>{head}<DgEmpty icon="shopping_cart" text="Nothing to buy" sub={r.w >= 200 && r.h >= 150 ? "Make a list for each place: the mall, a pharmacy, online." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Make a list</button>}</DgEmpty></>;
+  const fit = dgRows(r.h - DGH.head - DGH.sub - 2 * r.g, DGH.rowTight), n = Math.min(list.length, fit), more = list.length - n;
+  return (
+    <>
+      {head}
+      <div className="wd-sub"><span>{left ? <><b>{left}</b> to buy{places > 1 ? ` at ${places} places` : ""}</> : "All bought"}</span>{more > 0 && <span>· {more} more</span>}</div>
+      <div className="wd-rows">
+        {list.slice(0, Math.max(1, n)).map((t) => (
+          <div key={t.id} className={`wd-row wd-trow${t.got ? " on" : ""}`}>
+            <button className="wd-tick" role="checkbox" aria-checked={!!t.got} aria-label={t.text} onClick={() => api.current.go("shoptick", t.id)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12.5l4 4 8-9" /></svg>
+            </button>
+            <span className="wd-rt"><b>{t.text}</b></span>
+            {r.w >= 230 && <span className="wd-rv wd-place">{t.place}</span>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+// Weight: the latest, how it moved over the last 90 days, and where the diet goal's line says it should be today
+const DgHWeight = ({ c, r, info, x }) => {
+  const { h, todayKey, api, kg } = x;
+  const pts = useMemo(() => Object.keys(h.weights).filter((k) => k <= todayKey && k >= hlAddDays(todayKey, -90)).sort(), [h.weights, todayKey]);
+  if (!kg) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No weight yet" sub={r.w >= 200 && r.h >= 150 ? "Weigh in to see how it moves." : null}>{r.h >= 140 && <button className="wd-btn" onClick={() => api.current.go("weigh")}>Weigh in</button>}</DgEmpty></>;
+  const first = pts.length ? h.weights[pts[0]] : kg, delta = Math.round((kg - first) * 10) / 10, g = h.goal;
+  const lose = g ? g.start > g.target : true, plan = g ? hlPlanAt(g, todayKey) : null, gone = g ? Math.abs(kg - g.target) < 0.05 : false;
+  const ok = g && (lose ? kg <= plan + 0.3 : kg >= plan - 0.3);
+  const pxs = dgPxSize(`${hlKg(kg)}kg`, r, dgBig(c, r.u));
+  const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", pts.length > 1 ? DGH.sub : 0], ["goal", g ? DGH.sub : 0], ["chart", pts.length > 1 ? DGH.chart : 0]]);
+  return (
+    <>
+      <DgHead info={info} go="Weigh in" goIcon="edit" onGo={r.w < 210 ? null : () => api.current.go("weigh")} />
+      <div className="wd-big wd-pxbig" style={{ fontSize: pxs }}><span className="wd-px" style={{ fontSize: pxs }}><PxFig text={hlKg(kg)} /></span><small className="wd-unit">kg</small></div>
+      {on.sub && <div className="wd-sub"><span style={{ color: delta ? dgTone(lose ? -delta : delta) : undefined }}><b style={{ color: "inherit" }}>{delta > 0 ? "+" : delta < 0 ? "−" : "±"}{hlKg(Math.abs(delta))} kg</b> since {dgKeyDate(pts[0])}</span></div>}
+      {on.goal && <div className="wd-sub"><span>{gone ? <b style={{ color: "#e6c877" }}>Goal reached</b> : <><b>{hlKg(Math.abs(kg - g.target))} kg</b> to {hlKg(g.target)}</>}</span>{!gone && <span style={{ color: ok ? "#5ee3a9" : "#f0d88a" }}>· {ok ? "on track" : "behind the plan"}</span>}</div>}
+      {on.chart && <DgLine vals={pts.map((k) => h.weights[k])} hue={info.hue} tip={(i) => `${dgKeyDate(pts[i])}: ${hlKg(h.weights[pts[i]])} kg`} />}
+    </>
+  );
+};
+
+// Fuel: what is left to eat today: the diet goal's budget, else what the body uses in a day as he lives
+const DgHFuel = ({ c, r, info, x }) => {
+  const { h, todayKey, api, kg, score: now } = x, p = h.profile;
+  if (!p.cm || !kg) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="Your food budget" sub={r.w >= 200 && r.h >= 150 ? "Add your height and weight under Body to see it." : null}>{r.h >= 140 && <button className="wd-btn" onClick={() => api.current.go("body")}>Open Body</button>}</DgEmpty></>;
+  const plan = h.goal ? hlPlan({ ...p, kg }, h.goal, todayKey, h.goal.way) : null, byPlan = plan && !plan.done;
+  const target = Math.round(byPlan ? plan.eat : hlBmr(kg, p.cm, p.age, p.sex) * p.act), eaten = h.food[todayKey] || 0, left = target - eaten;
+  const pxs = dgPxSize(hlFmt(Math.abs(left)), r, dgBig(c, r.u));
+  const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", DGH.sub], ["meter", 8], ["sub2", DGH.sub], ["btn", DGH.btn]]);
+  return (
+    <>
+      <DgHead info={info} go="Log what you ate" goIcon="edit" onGo={on.btn || r.w < 210 ? null : () => api.current.go("diet")} />
+      <DgFig value={Math.abs(left)} render={(v) => hlFmt(v)} px={pxs} color={left < 0 ? dgTone(-1) : null} />
+      {on.sub && <div className="wd-sub"><span>{left >= 0 ? "kcal left to eat today" : "kcal over today's budget"}</span></div>}
+      {on.meter && <div className="wd-meter" title={`${hlFmt(eaten)} of ${hlFmt(target)} kcal`}><i style={{ transform: `scaleX(${Math.min(1, eaten / Math.max(1, target))})`, background: left < 0 ? "#ff8d97" : "var(--wc)" }} /></div>}
+      {on.sub2 && <div className="wd-sub"><span><b>{hlFmt(eaten)}</b> of {hlFmt(target)}{r.w >= 250 ? ` · ${hlFmt(now.d.move)} burned moving` : ""}</span></div>}
+      {on.btn && <div className="wd-end"><button className="wd-btn" onClick={() => api.current.go("diet")}><span className="msym" aria-hidden="true">edit</span>{byPlan ? "Log food" : "Set a goal"}</button></div>}
+    </>
+  );
+};
+
+// BMI on the Asian scale (HL_BMI), on its gauge, with the healthy weights for his height
+const HL_GAUGE_AT = [15, 18.5, 23, 25, 30, 35];
+const DgHBmi = ({ c, r, info, x }) => {
+  const { h, kg, api } = x, cm = h.profile.cm;
+  if (!cm || !kg) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No BMI yet" sub={r.w >= 200 && r.h >= 150 ? "Add your height and weight under Body." : null}>{r.h >= 140 && <button className="wd-btn" onClick={() => api.current.go("body")}>Open Body</button>}</DgEmpty></>;
+  const bmi = hlBmi(kg, cm), band = hlBand(bmi), [lo, hi] = hlHealthy(cm), at = Math.min(1, Math.max(0, (bmi - 15) / 20));
+  const pxs = dgPxSize(bmi.toFixed(1), r, dgBig(c, r.u));
+  const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", DGH.sub], ["gauge", 12], ["sub2", DGH.sub]]);
+  return (
+    <>
+      <DgHead info={info} go="Open Body" onGo={r.w < 210 ? null : () => api.current.go("body")} />
+      <div className="wd-big wd-pxbig" style={{ fontSize: pxs, color: band[2] }}><span className="wd-px" style={{ fontSize: pxs }}><PxFig text={bmi.toFixed(1)} /></span></div>
+      {on.sub && <div className="wd-sub"><span style={{ color: band[2] }}>{band[1]}</span>{r.w >= 230 && <span>· Asian scale</span>}</div>}
+      {on.gauge && (
+        <div className="wd-gauge" title="15 to 35: under 18.5 under, to 23 healthy, to 25 over, to 30 obese I, then obese II">
+          {HL_BMI.map((b, i) => <i key={b[1]} style={{ flex: HL_GAUGE_AT[i + 1] - HL_GAUGE_AT[i], background: b[2] }} />)}
+          <b style={{ left: `${at * 100}%` }} />
+        </div>
+      )}
+      {on.sub2 && <div className="wd-sub"><span>Healthy: <b>{hlKg(lo)}–{hlKg(hi)} kg</b></span></div>}
+    </>
+  );
+};
+
+// Gym week: this week's sessions as its seven days, the weeks in a row with one, the last session, the best lifts
+const DgHGym = ({ c, r, info, x }) => {
+  const { h, todayKey, api } = x;
+  const m = useMemo(() => {
+    const mon = hlAddDays(todayKey, -hlDow(todayKey));
+    const week = Array.from({ length: 7 }, (_, i) => { const k = hlAddDays(mon, i); return { k, s: h.gym.filter((q) => q.day === k) }; });
+    const n = week.reduce((a, d) => a + d.s.length, 0);
+    let streak = 0;
+    for (let w = n ? 0 : 1; w < 520; w++) { const a = hlAddDays(mon, -7 * w), b = hlAddDays(a, 6); if (h.gym.some((q) => q.day >= a && q.day <= b)) streak++; else break; }
+    const last = h.gym.filter((q) => q.day <= todayKey).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0))[0] || null;
+    const best = {};
+    for (const s of h.gym) for (const e of s.ex || []) for (const st of e.sets || []) { const v = hl1rm(st.kg, st.reps); if (e.name && v > (best[e.name] || 0)) best[e.name] = v; }
+    return { week, n, streak, last, best: Object.entries(best).sort((a, b) => b[1] - a[1]) };
+  }, [h.gym, todayKey]);
+  const go = () => api.current.go("gym");
+  if (!h.gym.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No workouts yet" sub={r.w >= 200 && r.h >= 150 ? "Log a session: the split, its exercises and sets." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Log a workout</button>}</DgEmpty></>;
+  const on = dgPlan(r, [["head", DGH.head], ["big", 36], ["dots", 34], ["sub", DGH.sub], ["last", m.last ? DGH.row : 0]]);
+  const lifts = Math.min(m.best.length, dgRows(on.rest - 6, DGH.rowTight));
+  return (
+    <>
+      <DgHead info={info} go="Log a workout" goIcon="add" onGo={r.w < 210 ? null : go} />
+      <div className="wd-flame"><span className="wd-px big"><PxFig text={String(m.n)} /></span><span className="wd-gymw">{m.n === 1 ? "session" : "sessions"} this week</span></div>
+      {on.dots && (
+        <div className="wd-gdots">
+          {m.week.map((d) => <i key={d.k} className={`${d.s.length ? "on" : ""}${d.k === todayKey ? " now" : ""}${d.k > todayKey ? " later" : ""}`} title={`${hlNice(d.k)}${d.s.length ? `: ${d.s.map((q) => q.name).join(", ")}` : ""}`}>{HL_DOW1[hlDow(d.k)]}</i>)}
+        </div>
+      )}
+      {on.sub && <div className="wd-sub"><span>{m.streak ? <><b>{m.streak}</b> {m.streak === 1 ? "week" : "weeks"} in a row</> : "Start a new run this week"}</span></div>}
+      {on.last && m.last && (
+        <button className="wd-row" onClick={go}>
+          <span className="wd-cat" style={{ "--ac": info.hue, width: 30, height: 30 }} aria-hidden="true"><span className="msym">fitness_center</span></span>
+          <span className="wd-rt"><b>{m.last.name || "Workout"}</b><small>{m.last.day === todayKey ? "Today" : hlNice(m.last.day)} · {hlDur(m.last.min || 0)}{hlVolume(m.last) ? ` · ${hlFmt(hlVolume(m.last))} kg lifted` : ""}</small></span>
+        </button>
+      )}
+      {lifts > 0 && (
+        <div className="wd-rows tight">
+          {m.best.slice(0, lifts).map(([name, v]) => <div key={name} className="wd-row"><span className="wd-rt"><b>{name}</b></span><span className="wd-rv" title="One-rep max (Epley)">{hlKg(v)} kg</span></div>)}
+        </div>
+      )}
+    </>
+  );
+};
+
+// Awards, as Apple Fitness gives them: each earned once, for good, from what was logged; the nearest still to earn with
+// how far along it is
+const hlAwards = (h, todayKey) => {
+  const goal = h.profile.steps, km = hlStepKm(h.profile.cm || 170), keys = Object.keys(h.steps).filter((k) => k <= todayKey && h.steps[k] > 0).sort();
+  let max = 0, run = 0, best = 0, prev = null, week = 0, perfect = 0;
+  for (const k of keys) {
+    const v = h.steps[k];
+    max = Math.max(max, v);
+    if (v >= goal) { run = prev && hlAddDays(prev, 1) === k ? run + 1 : 1; best = Math.max(best, run); prev = k; }
+    let w = 0;
+    for (let i = 0; i < 7; i++) w += (h.steps[hlAddDays(k, -i)] || 0) * km;
+    week = Math.max(week, w);
+    if (!perfect) { const d = hlDayOf(h, k), q = hlRingVals(h, d); if (d.todos.length && q[0] >= 1 && q[1] >= 1 && q[2] >= 1) perfect = 1; }
+  }
+  const byWeek = {};
+  for (const s of h.gym) if (s.day <= todayKey) { const mon = hlAddDays(s.day, -hlDow(s.day)); byWeek[mon] = (byWeek[mon] || 0) + 1; }
+  const gymWeek = Math.max(0, ...Object.values(byWeek)), gymN = h.gym.filter((s) => s.day <= todayKey).length;
+  const habit = Math.max(0, ...h.todos.filter((t) => t.rep !== "once").map((t) => hlRun(t, todayKey).streak));
+  const g = h.goal, kg = hlWeightOn(h, todayKey), along = g && Math.abs(g.start - g.target) > 0.05 ? Math.max(0, (g.start - kg) / (g.start - g.target)) : 0;
+  const list = [
+    ["first", "First steps", "footprint", "#9cf0c8", keys.length, 1, "Log a day of steps"],
+    ["k10", "10K day", "directions_walk", "#2fd08a", max, 10000, "Walk 10,000 steps in a day"],
+    ["k20", "20K day", "directions_run", "#5ee3a9", max, 20000, "Walk 20,000 steps in a day"],
+    ["run7", "Week on fire", "local_fire_department", "#ffc07e", best, 7, "Reach your step goal 7 days in a row"],
+    ["perfect", "Perfect day", "trip_origin", "#4fb3ff", perfect, 1, "Close all three rings in one day"],
+    ["marathon", "Marathon week", "route", "#8ec8f8", Math.round(week * 10) / 10, 42.2, "Walk 42.2 km in seven days"],
+    ["iron", "Iron week", "fitness_center", "#ffa497", gymWeek, 3, "Three gym sessions in one week"],
+    ["ten", "Ten sessions", "exercise", "#ff8a4c", gymN, 10, "Log ten gym sessions"],
+    ["habit", "Habit", "task_alt", "#a8e1ff", habit, 7, "Do a repeating to-do 7 days in a row"],
+  ];
+  if (g) list.push(["half", "Halfway", "monitor_weight", "#c3a8ff", Math.round(along * 100), 50, "Get halfway to your weight goal"], ["goal", "Goal reached", "emoji_events", "#f0d88a", Math.round(along * 100), 100, "Reach your weight goal"]);
+  return list.map(([id, name, icon, hue, v, of, say]) => ({ id, name, icon, hue, v, of, say, on: v >= of, frac: Math.min(1, v / of) }));
+};
+const DgMedal = ({ a, size = 40 }) => {
+  const R = 46, C = 2 * Math.PI * R;
+  return (
+    <span className={`wd-medal${a.on ? " on" : ""}`} style={{ "--ac": a.hue, width: size, height: size }} title={`${a.name}: ${a.say}${a.on ? " · earned" : ""}`}>
+      {!a.on && a.frac > 0 && <svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r={R} fill="none" stroke={a.hue} strokeWidth="5" strokeLinecap="round" transform="rotate(-90 50 50)" strokeDasharray={`${a.frac * C} ${C}`} /></svg>}
+      <span className="msym" aria-hidden="true" style={{ fontSize: Math.round(size * 0.48) }}>{a.icon}</span>
+    </span>
+  );
+};
+const DgHAwards = ({ c, r, info, x }) => {
+  const { h, todayKey, api } = x;
+  const list = useMemo(() => hlAwards(h, todayKey), [h, todayKey]);
+  const got = list.filter((a) => a.on), next = list.filter((a) => !a.on).sort((a, b) => b.frac - a.frac)[0];
+  const say = (a) => (a.id === "marathon" ? `${hlKg(a.v)} of ${a.of} km` : a.id === "half" || a.id === "goal" ? `${a.v}% of the way` : a.id === "k10" || a.id === "k20" ? `best ${hlFmt(a.v)}` : `${hlFmt(Math.min(a.v, a.of))} of ${hlFmt(a.of)}`);
+  const head = <DgHead info={info} go="Open today" onGo={r.w < 210 ? null : () => api.current.go("day")}><span className="wd-cnt">{got.length}/{list.length}</span></DgHead>;
+  const body = r.h - DGH.head - r.g;
+  // a grid of every award when it fits with their names, else the nearest one to earn and a row of medals
+  const cols = Math.max(1, Math.floor((r.w + 8) / 76)), rows = Math.ceil(list.length / cols);
+  if (body >= rows * 78 && r.w >= 300) {
+    return (
+      <>
+        {head}
+        <div className="wd-medals grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+          {list.map((a) => <span key={a.id} className={`wd-aw${a.on ? " on" : ""}`}><DgMedal a={a} size={44} /><small>{a.name}</small></span>)}
+        </div>
+      </>
+    );
+  }
+  const strip = body - 54 - r.g >= 40 && r.w >= 200;
+  return (
+    <>
+      {head}
+      {next ? (
+        <div className="wd-one wd-awn">
+          <DgMedal a={next} size={c === "s" ? 40 : 46} />
+          <span className="wd-rt"><b>{next.name}</b><small>{r.w >= 230 ? next.say : say(next)}</small>{r.w >= 230 && <small>{say(next)}</small>}</span>
+        </div>
+      ) : <div className="wd-sub"><span style={{ color: "#e6c877" }}>Every award earned</span></div>}
+      {strip && (
+        <div className="wd-medals">
+          {[...got, ...list.filter((a) => !a.on && a !== next)].slice(0, Math.max(1, Math.floor((r.w + 6) / 40))).map((a) => <DgMedal key={a.id} a={a} size={34} />)}
+        </div>
+      )}
+    </>
+  );
+};
+
+// Vision: one card of his vision board a day (a note in its colour, or a picture); the arrow shows the next
+const DgHVision = ({ r, info, x }) => {
+  const { h, todayKey, api } = x, cards = h.board;
+  const [off, setOff] = useState(0);
+  const go = () => api.current.go("board");
+  if (!cards.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="Your vision board is empty" sub={r.w >= 200 && r.h >= 150 ? "Pin the notes and pictures that keep you going." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Open the board</button>}</DgEmpty></>;
+  const n = cards.length, i = (((hlDays("2026-01-01", todayKey) + off) % n) + n) % n, cd = cards[i];
+  return (
+    <>
+      <DgHead info={info}>{n > 1 && <button className="wd-go" title="The next card" aria-label="The next card" onClick={() => setOff((o) => o + 1)}><span className="msym">arrow_forward</span></button>}</DgHead>
+      <button key={cd.id} className={`wd-vis${cd.kind === "pic" ? " pic" : ""}`} style={{ "--nc": HL_CLS[cd.tint] || HL_CLS[0] }} onClick={go} title="Open the vision board">
+        {cd.kind === "pic" ? <Shot id={cd.img} big /> : <p>{cd.text || "…"}</p>}
+      </button>
+      {r.h >= 150 && n > 1 && <div className="wd-sub"><span>{i + 1} of {n} on your board</span></div>}
+    </>
+  );
+};
 const DG_BODY = { bal: DgBal, pnl: DgPnl, win: DgWin, curve: DgCurve, cal: DgCal, year: DgYear, names: DgNames, recent: DgRecent, prices: DgPrices, streak: DgStreak, today: DgToday, sides: DgSides, acts: DgActs,
                   ftoday: DgFToday, fmonth: DgFMonth, fweek: DgFWeek, fcal: DgFCal, fcats: DgFCats, frecent: DgFRecent, fgoals: DgFGoals, fdebts: DgFDebts, fyear: DgFYear, fincome: DgFIncome, fstreak: DgStreak, facts: DgActs,
-                  xch: DgFx, fxch: DgFx, plan: DgPlan, fplan: DgPlan };
+                  xch: DgFx, fxch: DgFx, plan: DgPlan, fplan: DgPlan,
+                  hscore: DgHScore, hrings: DgHRings, hsteps: DgHSteps, hheat: DgHHeat, hnext: DgHNext, htodo: DgHTodo, hshop: DgHShop, hweight: DgHWeight, hfuel: DgHFuel,
+                  hbmi: DgHBmi, hgym: DgHGym, hawards: DgHAwards, hvision: DgHVision, hstreak: DgStreak, hacts: DgActs, hplan: DgPlan };
 const DashWidget = memo(({ it, cls, ctx, i, still, pitch, empty }) => {
   const info = dgInfo(it.id, ctx.M), Body = DG_BODY[it.id];
   return (
@@ -11011,6 +12879,76 @@ const useSheet = (onClose, keys) => {
            pop: { animation: closing ? "modalPopOut .23s var(--ease-soft) both" : "modalPop .42s var(--ease) backwards" } };
 };
 
+/* Home's toolbar changing over (23 October 2026, his words: "when pressing the edit widget button i want the circle to
+   scale bigger horizontally then i want the buttons to move to the right … basically it scale down horizontally then
+   turns to circles … then it goes behind the main edit widget button then it disappears. then the new button appears
+   the same way but in reverse so it slides out behind the main edit widget"). The pencil and Done are one button (the
+   main one, `.dg-main`): it stretches from its circle into the Done pill, and back. The buttons beside it narrow into a
+   circle (clip-path from both sides, so nothing is squashed; the label fades first), slide behind the main one, a little
+   smaller, and fade away, the nearest first; the other set comes out from behind it as circles that slide to their
+   places and widen into their pills, the nearest first. Done plays it the other way: the set tucks in, Done shrinks to
+   the pencil's circle, Calendar and Log come out. Transform, opacity and clip-path, played from script on the buttons
+   themselves (no React state while it plays) */
+// (smoother, the same night: his two frames of the pencil "deformed" half-way. The clip's corners were worked out from
+// the button's measured height, which a press or a move in progress throws off, so they came out square-ish; now they
+// are the buttons' own fully round corners, `round 99px`, which the engine fits to the shape at every frame. Each button
+// narrows and slides at once (two animations, the clip and the move), the stages overlap, and the main button's label
+// travels with its stretch, so the circle is never an empty blob)
+const DG_TOOL = { grow: 360, tuck: 380, spill: 440, gap: 45, hide: 60, show: 120 };
+const DG_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";        // iOS's own: quick to start, a long soft landing
+const dgSide = (box) => [...box.children].filter((el) => !el.classList.contains("dg-mainw"));
+const dgClip = (right, left = right) => `inset(0 ${right}px 0 ${left}px round 99px)`;
+/* the shadows through the change-over (25 October 2026, with his frames of Done: a clip cuts away all that is outside
+   the button, its shadow too, so every shadow went in one frame as a turn began and came back in one frame as it
+   ended). A side button's shadow: its clip starts 12px out all round (DG_SHADE, the button's own shape grown evenly,
+   wide enough for all of its shadow, so nothing shows that the button doesn't), and draws in to the button before it
+   narrows (DG_TOOL.hide); coming out, it goes back out once the button is whole (DG_TOOL.show). The main button's glow
+   is a layer of its own behind it (`.dg-glow`, the glow's shape blurred as a box shadow is), given the very same clip
+   as the button (dgMainClip), so it is always the glow of what shows: the Done pill's, the pencil's, and every shape
+   between, with nothing to switch at either end */
+const DG_SHADE = "inset(-12px round 99px)";
+const dgMainClip = (main, kf, o) => {
+  const g = main.parentElement && main.parentElement.querySelector(".dg-glow b");
+  if (g) g.animate(kf, o);
+  return main.animate(kf, o);
+};
+// a moment on the change-over's own clock (25 October 2026, his two frames of Done shrinking, one frame apart: "the circle
+// doesnt adjust smoothly and just cuts to a smaller size"). Each next stage was started by a plain timer, counted from
+// when the animations were asked for; but an animation starts only with the next frame drawn, so a busy spell just then
+// (a frame 150ms late) left the timer early by as much, and the pencil took Done's place with its shrink still a tenth
+// short. An empty animation started in the same go as the others starts with them, so its end is a moment on their clock
+const dgAt = (el, ms, then) => { el.animate([], { duration: Math.max(0, ms) }).finished.then(then, () => {}); };
+// the buttons beside the main one, tucked in behind it; `holds`: where each stood before the main one changed width
+// (it is drawn there until its turn). Hands back when the last has gone from sight, in ms from now
+const dgTuck = (els, m, start, holds = []) => {
+  const order = els.map((el, i) => ({ el, i, r: el.getBoundingClientRect() })).sort((a, b) => b.r.left - a.r.left);
+  let end = start;
+  order.forEach(({ el, i, r }, k) => {
+    const hold = holds[i] || 0, to = m.right - m.height / 2 - (r.left + r.width / 2), delay = start + k * DG_TOOL.gap, cut = Math.max(0, (r.width - r.height) / 2);
+    el.animate([{ transform: `translateX(${hold}px)`, opacity: 1 }, { offset: 0.5, opacity: 0.85 }, { offset: 0.85, opacity: 0 }, { transform: `translateX(${to}px) scale(0.78)`, opacity: 0 }],
+               { duration: DG_TOOL.tuck, delay, fill: "both", easing: "cubic-bezier(0.45, 0, 0.55, 1)" });
+    el.animate([{ clipPath: DG_SHADE, easing: "ease-in" }, { offset: DG_TOOL.hide / (DG_TOOL.hide + DG_TOOL.tuck * 0.55), clipPath: dgClip(0), easing: "cubic-bezier(0.4, 0, 0.2, 1)" }, { clipPath: dgClip(cut) }],
+               { duration: DG_TOOL.hide + DG_TOOL.tuck * 0.55, delay, fill: "both" });
+    const l = el.querySelector(".dg-lbl");
+    if (l && cut > 1) l.animate([{ opacity: 1 }, { opacity: 0 }], { duration: DG_TOOL.tuck * 0.3, delay, fill: "both" });
+    end = Math.max(end, delay + DG_TOOL.tuck * 0.85);
+  });
+  return end;
+};
+// the other set, out from behind the main one: a circle gliding to its place and widening into its pill on the way
+const dgSpill = (els, m) => {
+  const order = els.map((el) => ({ el, r: el.getBoundingClientRect() })).sort((a, b) => b.r.left - a.r.left);
+  order.forEach(({ el, r }, k) => {
+    const from = m.right - m.height / 2 - (r.left + r.width / 2), delay = k * DG_TOOL.gap, cut = Math.max(0, (r.width - r.height) / 2), S = DG_TOOL.spill;
+    el.animate([{ transform: `translateX(${from}px) scale(0.78)`, opacity: 0 }, { offset: 0.3, opacity: 1 }, { transform: "none", opacity: 1 }],
+               { duration: S, delay, fill: "backwards", easing: DG_EASE });
+    el.animate([{ clipPath: dgClip(cut), easing: "cubic-bezier(0.3, 0, 0.2, 1)" }, { offset: S * 0.6 / (S * 0.6 + DG_TOOL.show), clipPath: dgClip(0), easing: "ease-out" }, { clipPath: DG_SHADE }],
+               { duration: S * 0.6 + DG_TOOL.show, delay: delay + S * 0.35, fill: "backwards" });
+    const l = el.querySelector(".dg-lbl");
+    if (l && cut > 1) l.animate([{ opacity: 0 }, { opacity: 1 }], { duration: S * 0.5, delay: delay + S * 0.45, fill: "backwards" });
+  });
+  return (order.length - 1) * DG_TOOL.gap + Math.max(DG_TOOL.spill, DG_TOOL.spill * 0.95 + DG_TOOL.show);
+};
 /* A widget added from the gallery flies from its preview to its place on the board (20 October 2026: "fine tune
    animations when pressing the add widgets button. add animations make it smooth seamless"): a copy of the preview,
    above the sheet as it closes, glides and grows to the spot, and the widget itself shows the moment it lands. A spot
@@ -11072,6 +13010,12 @@ const dgFly = (src, k) => {
    each shown at the box's size, no sizes to pick, "Add to the stack" */
 const DgGallery = ({ M, market, ctx, pitch, full, onAdd, onClose, into, onAddTo }) => {
   const ids = useMemo(() => Object.keys(DG_W).filter((id) => dgHas(id, M, market) && (!into || (!dgPages(into).some((p) => p.id === id) && dgFits(id, into.w, into.h)))), []);
+  const [query, setQuery] = useState("");
+  const filter = (q) => {
+    const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return ids.filter((id) => { const it = dgInfo(id, M); return words.every((w) => `${it.name} ${it.desc}`.toLowerCase().includes(w)); });
+  };
+  const shown = filter(query);
   const first = ids[0] || null;
   const [sel, setSel] = useState(first);
   const [size, setSize] = useState(first ? DG_W[first].sizes[0] : "s");
@@ -11087,31 +13031,48 @@ const DgGallery = ({ M, market, ctx, pitch, full, onAdd, onClose, into, onAddTo 
     const z = DG_W[id].sizes.includes(now.current.size) ? now.current.size : DG_W[id].sizes[0];
     setSel(id); setSize(z); show(id, z);
   };
+  const searchWidgets = (q) => {
+    setQuery(q);
+    const next = filter(q);
+    if (next.length && !next.includes(now.current.sel)) pick(next[0]);
+  };
   const resize = (z) => { setSize(z); show(now.current.sel, z); };
   const now = useRef(null), list = useRef(null), pill = useRef(null), stage = useRef(null);
-  now.current = { sel, size };
+  now.current = { sel, size, shown };
   const [opening, setOpening] = useState(true);
   useEffect(() => { const t = setTimeout(() => setOpening(false), 700); return () => clearTimeout(t); }, []);
   // the highlight under the name picked: put in place the first time, then it slides (transform only)
   useLayoutEffect(() => {
     const el = list.current && list.current.querySelector(`[data-id="${sel}"]`), p = pill.current;
-    if (!el || !p) return;
+    if (!p) return;
+    p.style.opacity = el ? "1" : "0";
+    if (!el) return;
     p.style.height = `${el.offsetHeight}px`;
     p.style.transform = `translateY(${el.offsetTop}px)`;
     if (!p.classList.contains("go")) requestAnimationFrame(() => p.classList.add("go"));
     else el.scrollIntoView({ block: "nearest" });
-  }, [sel]);
+  }, [sel, query]);
   const sh = useSheet(onClose, (e) => {
+    if (e.isComposing) return;
+    if (e.target && e.target.closest && e.target.closest(".dg-gal-search")) {
+      if (e.key === "Enter") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        list.current?.querySelector(`[data-id="${now.current.sel}"]`)?.focus();
+        return;
+      }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    }
     if (e.key === "Enter") {
       if (e.target && e.target.closest && e.target.closest(".dg-gal-x")) return;      // Enter on the ✕ closes, as a press would
       e.preventDefault(); e.stopImmediatePropagation(); add();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault(); e.stopImmediatePropagation();
-      pick(ids[(ids.indexOf(now.current.sel) + (e.key === "ArrowDown" ? 1 : ids.length - 1)) % ids.length]);
+      const opts = now.current.shown;
+      if (opts.length) pick(opts[(opts.indexOf(now.current.sel) + (e.key === "ArrowDown" ? 1 : opts.length - 1)) % opts.length]);
     }
   });
   const add = () => {
-    if (sh.closing || !now.current.sel) return;
+    if (sh.closing || !now.current.sel || !now.current.shown.includes(now.current.sel)) return;
     if (into) { onAddTo(now.current.sel); sh.shut(); return; }
     if (full) return;
     const src = stage.current && stage.current.querySelector(".dg-gal-prev:not(.out) > .wdg");
@@ -11126,20 +13087,25 @@ const DgGallery = ({ M, market, ctx, pitch, full, onAdd, onClose, into, onAddTo 
       <div role="dialog" aria-modal="true" aria-label={into ? "Stack a widget in this box" : "Add a widget"} className="glass dg-gal" onClick={(e) => e.stopPropagation()} style={sh.pop}>
         <div className="dg-gal-list" ref={list}>
           <div className="dg-gal-h">{into ? "Fit this box" : "Widgets"}</div>
+          <label className="sd-search dg-gal-search">
+            <span className="msym" aria-hidden="true">search</span>
+            <input value={query} onChange={(e) => searchWidgets(e.target.value)} placeholder="Find a widget" aria-label="Find a widget" autoComplete="off" spellCheck={false} />
+          </label>
           <span className="dg-gal-pill" ref={pill} aria-hidden="true" />
-          {ids.map((id, i) => {
+          {shown.map((id, i) => {
             const it = dgInfo(id, M);
             return (
-              <button key={id} data-id={id} className={`dg-gal-it${id === sel ? " on" : ""}`} style={{ "--wc": it.hue, "--i": Math.min(i, 14) }} onClick={() => pick(id)}>
+              <button key={id} data-id={id} aria-pressed={id === sel} className={`dg-gal-it${id === sel ? " on" : ""}`} style={{ "--wc": it.hue, "--i": Math.min(i, 14) }} onClick={() => pick(id)}>
                 <span className="wd-ico msym" aria-hidden="true">{it.icon}</span>
                 <span><b>{it.name}</b><small>{it.sizes.map((s) => DG_SIZE_NAME[s]).join(" · ")}</small></span>
               </button>
             );
           })}
+          {!shown.length && <p className="sd-no-match" role="status">No matching widgets. Try a different name.</p>}
         </div>
         <div className={`dg-gal-main${opening ? " opening" : ""}`}>
           <button className="x-btn dg-gal-x" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
-          {!info ? (
+          {!shown.length && query.trim() ? <div className="dg-gal-none"><span className="msym" aria-hidden="true">search</span><b>No widgets found</b><small>Search by name or what you want to track.</small><button className="dg-btn" onClick={() => searchWidgets("")}>Show all widgets</button></div> : !info ? (
             <div className="dg-gal-none"><span className="msym" aria-hidden="true">layers</span><b>No other widget fits this box</b><small>Make the box bigger or smaller first, then stack another widget in it.</small></div>
           ) : <>
           <div className="dg-gal-name"><span key={sel} className="dg-gal-t">{info.name}</span></div>
@@ -11149,15 +13115,17 @@ const DgGallery = ({ M, market, ctx, pitch, full, onAdd, onClose, into, onAddTo 
               const [w, h] = into ? [into.w, into.h] : DG_SIZE[v.size], pw = w * P - DG_GAP, ph = h * P - DG_GAP;
               return (
                 <div key={v.n} className={`dg-gal-prev${v.out ? " out" : v.n ? " in" : ""}`}
-                     style={{ width: pw, height: ph, "--k": Math.min(1, 540 / pw, 320 / ph), "--u": `${P}px` }}
+                     style={{ width: pw, height: ph, "--k": Math.min(1, 540 / pw, 292 / ph), "--u": `${P}px` }}
                      onAnimationEnd={v.out ? (e) => { if (e.target === e.currentTarget) setViews((all) => all.filter((x) => x.n !== v.n)); } : undefined}>
                   <DashWidget it={{ k: "preview", id: v.sel, x: 0, y: 0, w, h }} cls={into ? dgCls({ id: v.sel, w, h }) : v.size} ctx={ctx} pitch={P} still />
+                  {/* its size in cells under it, rows × columns (25 October 2026, his words: "small … is 2X2, medium is 2X4") */}
+                  <span className="dg-gal-dim" title={`${h} cells tall, ${w} wide`}>{h}×{w}</span>
                 </div>
               );
             })}
           </div>
-          {into ? <div className="dg-gal-fit">At this box's size, {into.w} × {into.h} cells</div>
-            : <SlideSeg key={sel} value={size} onPick={resize} options={info.sizes.map((s) => [s, DG_SIZE_NAME[s], `${DG_SIZE[s][0]} × ${DG_SIZE[s][1]} cells`])} />}
+          {into ? <div className="dg-gal-fit">At this box's size, {into.h} × {into.w} cells</div>
+            : <SlideSeg key={sel} value={size} onPick={resize} options={info.sizes.map((s) => [s, DG_SIZE_NAME[s], `${DG_SIZE[s][1]} × ${DG_SIZE[s][0]} cells`])} />}
           <button className="dg-btn pri big" disabled={!into && full} onClick={add}>
             <span className="msym" aria-hidden="true">{into ? "library_add" : "add"}</span>{into ? "Add to the stack" : full ? `The dashboard holds ${DG_MAX_N} at most` : "Add widget"}
           </button>
@@ -11551,8 +13519,42 @@ const CalcPad = ({ api, box, pop }) => {
     </div>
   );
 };
+/* The way to the exchanger anybody can find (24 October 2026, his words: "i want the average user to easily know where it
+   is, how to find and use it and how to open it with the shortcut"): until then it opened only by a fast double click on
+   the currency pill, by ⌘E, or from Home's widgets. Now a button with its shortcut on it (⇄ ⌘E) stands beside the
+   currency pill on every side's month header (and a ⇄ on Home's toolbar, and Exchange money ⌘E in the sidebar's tools).
+   The first time it shows, a small note under it says what it does and how to open it from anywhere, once: Got it, or
+   opening the exchanger any way, puts it away for good (FX_TIP_KEY, the app's, nobody's data, as the look is) */
+const FX_TIP_KEY = "flow-tip-fx";
+const fxTipSeen = () => { try { localStorage.setItem(FX_TIP_KEY, "1"); } catch (e) { /* for this session only */ } window.dispatchEvent(new Event("flow-fx-tip")); };
+const FxDoor = ({ onOpen }) => {
+  const [tip, setTip] = useState(false);
+  useEffect(() => {
+    let seen = true;
+    try { seen = localStorage.getItem(FX_TIP_KEY) === "1"; } catch (e) { /* no storage: no note */ }
+    const off = () => setTip(false);
+    window.addEventListener("flow-fx-tip", off);
+    const t = seen ? 0 : setTimeout(() => setTip(true), 1400);      // once the month has come in
+    return () => { clearTimeout(t); window.removeEventListener("flow-fx-tip", off); };
+  }, []);
+  return (
+    <span className="fx-door">
+      <button className="cur-btn fx-door-b" style={S.currency} title={kbTx("Money exchanger: convert between currencies at live rates (⌘E)")} aria-label={kbTx("Money exchanger (⌘E)")}
+              onClick={(e) => { e.stopPropagation(); fxTipSeen(); onOpen(); }}>
+        <span className="msym" aria-hidden="true">currency_exchange</span>
+      </button>
+      {tip && (
+        <span className="fx-tip glass" role="note">
+          <b>Convert money</b> between any currencies at live rates. Press <kbd><Kb id="fx" /></kbd> from anywhere to open it.
+          <button className="fx-tip-ok" onClick={(e) => { e.stopPropagation(); fxTipSeen(); }}>Got it</button>
+        </span>
+      )}
+    </span>
+  );
+};
 const Exchanger = ({ from, pair, onClose }) => {
   const fx = useFx(false);                        // the rates, and whether some are on their way
+  useEffect(() => { fxTipSeen(); }, []);          // found: the note beside the currency pill is not needed any more
   const R = fx.rates || FX_R0, busy = !!fx.busy;
   const [P, setP] = useState(() => (fxMem.prefs ? fxStart(fxMem.prefs, from, pair) : null));
   const [pick, setPick] = useState(null);         // { id }: a row's currency being chosen · { add: true }: a row being added
@@ -11692,7 +13694,7 @@ const Exchanger = ({ from, pair, onClose }) => {
   const sh = useSheet(onClose, (e) => {
     e.stopPropagation();
     const k = e.key, mod = e.metaKey || e.ctrlKey;
-    if (mod && !e.shiftKey && !e.altKey && k.toLowerCase() === "e") { e.preventDefault(); sh.shut(); return true; }
+    if (kbIs(e, "fx")) { e.preventDefault(); if (!e.repeat) sh.shut(); return true; }
     if (k === "Escape") { e.preventDefault(); if (pick) closePick(); else sh.shut(); return true; }
     if (!pick && calcBox.current && calcBox.current.contains(document.activeElement)) { if (calcApi.current) calcApi.current.key(e); return true; }
     if (!P) return true;
@@ -11806,7 +13808,7 @@ const Exchanger = ({ from, pair, onClose }) => {
               <button className="fx-add" ref={rowRef("add")} onClick={() => openPick({ add: true })}><span className="msym" aria-hidden="true">add</span>Add currency</button>
             )}
           </div>
-          <div className="fx-foot" ref={rowRef("foot")}><span>Mid-market rates. Banks and money changers add their own margin.</span><kbd>⌘E</kbd></div>
+          <div className="fx-foot" ref={rowRef("foot")}><span>Mid-market rates. Banks and money changers add their own margin.</span><kbd><Kb id="fx" /></kbd></div>
         </div>
         {seen && (
           <div className={`fx-pick${pick ? " on" : ""}`} ref={(el) => { if (el) el.inert = !pick; }}>
@@ -11832,6 +13834,7 @@ const Exchanger = ({ from, pair, onClose }) => {
 };
 
 const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
+  useKbs();
   /* The layout is Home's own state (20 October 2026, the lag hunt: a period chip saved through the panel's state drew
      the whole trading panel again, 9 to 15ms in one go): an edit draws the board only, and the panel is told so it
      can keep it (api.save). A layout the panel hands over afresh (read from the prefs) is taken in */
@@ -11856,32 +13859,112 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
      they go (0.2s; they were gone in one frame), and the toast slides away instead of vanishing */
   const [leaving, setLeaving] = useState(false), [toastOut, setToastOut] = useState(false);
   const leaveT = useRef(0), toastT = useRef(0);
-  const editOn = () => { clearTimeout(leaveT.current); leaveT.current = 0; setLeaving(false); setEdit(true); };
+  const editOn = () => { if (board.current && !edit) boardTop.current = board.current.getBoundingClientRect().top + window.scrollY; clearTimeout(leaveT.current); leaveT.current = 0; setLeaving(false); setEdit(true); };
   const endEdit = () => {
     if (leaveT.current) return;
     setLeaving(true);
-    leaveT.current = setTimeout(() => { leaveT.current = 0; setLeaving(false); setEdit(false); }, 200);
+    // (editing ends before `leaving` is let go: were the two drawn one at a time, the board would take it for editing again)
+    leaveT.current = setTimeout(() => { leaveT.current = 0; setEdit(false); setLeaving(false); }, 200);
   };
-  /* (23 October 2026, his picture of Calendar, Log and the pencil: "make an animation on when i press the edit widget
-     button the other button has an animation") the toolbar's buttons change over in two beats: the set on show folds
-     away towards the right, where the button pressed is, one after another from the left (0.15s, 20ms apart); then the
-     other set comes in from the right, one after another (0.34s, 40ms apart). They swapped in one frame. Done starts the
-     change-over at once, alongside the handles fading (endEdit's `leaving`) */
+  /* the toolbar's change-over (dgTuck, dgSpill; 23 October 2026, the second version): `mainOn` is what the main button
+     says (Done or the pencil), `tools` which set stands beside it. Done starts it at once, alongside the handles fading
+     (endEdit's `leaving`). A change asked for while one is playing, and Reduce motion, go straight to the end */
   const toolsWant = edit && !leaving;
-  const [tools, setTools] = useState(toolsWant), [toolsOut, setToolsOut] = useState(false);
+  const [tools, setTools] = useState(toolsWant), [mainOn, setMainOn] = useState(toolsWant);
+  const toolsBox = useRef(null), swap = useRef({ seq: 0, busy: false, phase: null, before: null });
+  // (every stage waits on the animations' clock, dgAt; one asked for by a turn that has since been overtaken does nothing)
   useEffect(() => {
-    if (toolsWant === tools) { setToolsOut(false); return; }
-    setToolsOut(true);
-    const t = setTimeout(() => { setTools(toolsWant); setToolsOut(false); }, 150 + ((tools ? 5 : 3) - 1) * 20);
-    return () => clearTimeout(t);
+    const sw = swap.current, box = toolsBox.current;
+    const run = ++sw.seq;
+    if (toolsWant === tools && toolsWant === mainOn && !sw.busy) return;
+    const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!box || calm || sw.busy || !box.querySelector(".dg-main")) {
+      if (box) { box.querySelectorAll("*").forEach((el) => el.getAnimations().forEach((a) => a.cancel())); box.classList.remove("busy"); }
+      sw.busy = false; sw.phase = null; setMainOn(toolsWant); setTools(toolsWant);
+      return;
+    }
+    sw.busy = true; box.classList.add("busy", "swap");
+    const main = box.querySelector(".dg-main");
+    if (toolsWant) {
+      sw.before = { main: main.getBoundingClientRect(), side: dgSide(box).map((el) => el.getBoundingClientRect()) };
+      sw.phase = "grow"; setMainOn(true);
+      return;
+    }
+    const gone = dgTuck(dgSide(box), main.getBoundingClientRect(), 0);
+    dgAt(main, gone - 60, () => {
+      if (run !== sw.seq) return;
+      const m = main.getBoundingClientRect(), l = main.querySelector(".dg-lbl");
+      const cut = Math.max(0, m.width - m.height);
+      const shrink = dgMainClip(main, [{ clipPath: dgClip(0) }, { clipPath: dgClip(0, cut) }], { duration: DG_TOOL.grow, easing: DG_EASE, fill: "forwards" });
+      if (l) l.animate([{ transform: "none", opacity: 1 }, { offset: 0.45, opacity: 0 }, { transform: `translateX(${cut / 2}px)`, opacity: 0 }], { duration: DG_TOOL.grow, easing: DG_EASE, fill: "forwards" });
+      // the pencil takes its place only once the shrink has drawn its last frame, a circle exactly the pencil's (held there)
+      shrink.finished.then(() => { if (run !== sw.seq) return; sw.phase = "spill"; setMainOn(false); setTools(false); }, () => {});
+    });
   }, [toolsWant]);
+  useLayoutEffect(() => {
+    const sw = swap.current, box = toolsBox.current, main = box && box.querySelector(".dg-main");
+    if (!main || !sw.phase) return;
+    const run = sw.seq, l = main.querySelector(".dg-lbl");
+    if (sw.phase === "grow") {
+      sw.phase = null;
+      const b = sw.before, m = main.getBoundingClientRect(), els = dgSide(box);
+      const R = Math.max(0, m.right - b.main.right), L = Math.max(0, b.main.left - m.left);
+      dgMainClip(main, [{ clipPath: dgClip(R, L) }, { clipPath: dgClip(0) }], { duration: DG_TOOL.grow, easing: DG_EASE });
+      if (l) l.animate([{ transform: `translateX(${(L - R) / 2}px)`, opacity: 0 }, { offset: 0.5, opacity: 1 }, { transform: "none", opacity: 1 }], { duration: DG_TOOL.grow, easing: DG_EASE });
+      const gone = dgTuck(els, m, DG_TOOL.grow * 0.2, els.map((el, i) => (b.side[i] ? b.side[i].left - el.getBoundingClientRect().left : 0)));
+      dgAt(main, gone, () => { if (run !== sw.seq) return; sw.phase = "spill"; setTools(true); });
+      return;
+    }
+    sw.phase = null;
+    [main, main.parentElement.querySelector(".dg-glow b")].forEach((x) => x && x.getAnimations().forEach((a) => a.cancel()));
+    if (l) { l.getAnimations().forEach((a) => a.cancel()); if (!mainOn) l.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, fill: "backwards" }); }
+    // (each button has a key of its own, so the set that comes is new; what an interrupted turn left held is let go)
+    const els = dgSide(box);
+    els.forEach((el) => [el, el.querySelector(".dg-lbl")].forEach((x) => x && x.getAnimations().forEach((a) => a.cancel())));
+    dgAt(main, dgSpill(els, main.getBoundingClientRect()), () => { if (run !== sw.seq) return; sw.busy = false; box.classList.remove("busy"); });
+  }, [mainOn, tools]);
+  useEffect(() => () => { swap.current.seq++; }, []);
   const dropToast = () => { setToastOut(true); clearTimeout(toastT.current); toastT.current = setTimeout(() => { setToast(null); setToastOut(false); }, 220); };
   const [pop, setPop] = useState(null);           // { k, kind }: the widget just added ("pop") or resized ("bump") settles in
   const [pitch, setPitch] = useState(0);          // one cell and its gap, in px: a twelfth of the board's width and the gap
   const [enter, setEnter] = useState(true);
   const board = useRef(null), slot = useRef(null), nodes = useRef(new Map()), drag = useRef(null), hold = useRef(null), undoTo = useRef(null);
-  const today = ctx.today, fin = market === "finance";
-  const save = (list, sn = snap) => commit({ snap: sn, items: list });
+  /* the board slides when the editing hint comes and goes (23 October 2026, his words: "all of the widgets shift down
+     because the text 'drag a widget...' shows up, there should be a smooth animation for this and not just a sudden push
+     down"): the hint takes its room at once, and the board is drawn where it stood and eased into its new place
+     (transform only, so nothing is laid out again on the way). Leaving, it rises while the hint fades (`leaving`), so it
+     is already in place when the hint goes. boardTop: where the board stood (page px) when the change was asked for */
+  const boardTop = useRef(null), boardPre = useRef(0);
+  const boardShift = (from, to, ms, keep) => {
+    const el = board.current;
+    if (!el) return;
+    el.getAnimations().forEach((a) => { if (a.id === "dg-shift") a.cancel(); });
+    if (Math.abs(from - to) < 1 || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
+    const a = el.animate([{ transform: `translateY(${from}px)` }, { transform: `translateY(${to}px)` }],
+                         { duration: ms, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: keep ? "forwards" : "none" });
+    a.id = "dg-shift";
+  };
+  useLayoutEffect(() => {
+    const el = board.current;
+    if (!el) return;
+    el.getAnimations().forEach((a) => { if (a.id === "dg-shift") a.cancel(); });      // measured where it is laid out, not where it is drawn
+    const top = el.getBoundingClientRect().top + window.scrollY, was = boardTop.current, pre = boardPre.current;
+    boardTop.current = top; boardPre.current = 0;
+    if (was !== null) boardShift(was + pre - top, 0, 380);
+  }, [edit]);
+  useLayoutEffect(() => {
+    const el = board.current, hint = el && el.previousElementSibling;
+    if (!el) return;
+    if (!leaving) { if (edit && boardPre.current) { boardShift(boardPre.current, 0, 300); boardPre.current = 0; } return; }   // editing again before it ended
+    if (!hint || !hint.classList.contains("dg-hint")) return;
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(hint);
+    boardTop.current = r.top + window.scrollY;
+    boardPre.current = -(hint.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0));   // the room it takes, margins and all
+    boardShift(0, boardPre.current, 200, true);
+  }, [leaving]);
+  const today = ctx.today, fin = market === "finance", hl = market === "health";
+  const grid = DG_GRIDS.includes(lay.grid) ? lay.grid : DG_STEP, withGrid = (g) => (g !== DG_STEP ? { grid: g } : {});
+  const save = (list, sn = snap) => commit({ snap: sn, ...withGrid(grid), items: list });
   useEffect(() => {
     if (!loaded || !pitch || fill >= items.length) return;
     const id = requestAnimationFrame(() => setFill((n) => n + 3));
@@ -11889,7 +13972,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
   }, [loaded, pitch, fill, items.length]);
   // what the window's pointer listeners (set once) read: the latest of everything
   const live = useRef(null);
-  live.current = { items, snap, pitch, busy, save, bump: (k) => setPop({ k, kind: "bump" }) };
+  live.current = { items, snap, grid, pitch, busy, save, bump: (k) => setPop({ k, kind: "bump" }) };
 
   useLayoutEffect(() => {
     const el = board.current;
@@ -11922,7 +14005,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
   const step = () => {
     const d = drag.current;
     if (!d) return;
-    const { snap: sn, pitch: p } = live.current;
+    const { snap: sn, grid: gs, pitch: p } = live.current;
     const dx = d.cx - d.sx, dy = d.cy + window.scrollY - d.sy;
     if (!d.moved) {
       if (Math.hypot(dx, dy) < 4) return;
@@ -11951,24 +14034,34 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     if (d.mode === "move") {
       const px = Math.min(Math.max(0, it.x * p + dx), Math.max(0, W - (it.w * p - DG_GAP))), py = Math.max(0, it.y * p + dy);
       d.el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
-      let tx = sn ? dgQ(px / p) : Math.round((px / p) * 100) / 100;
-      const ty = sn ? dgQ(py / p) : Math.round((py / p) * 100) / 100;
+      let tx = sn ? dgQ(px / p, gs) : Math.round((px / p) * 100) / 100;
+      const ty = sn ? dgQ(py / p, gs) : Math.round((py / p) * 100) / 100;
       tx = Math.min(Math.max(0, tx), DG_COLS - it.w);
       if (d.out && tx === d.tx && ty === d.ty) return;
       d.tx = tx; d.ty = ty;
-      d.out = dgArrange(d.list, d.k, { x: tx, y: ty }, sn, true);
+      d.out = dgArrange(d.list, d.k, { x: tx, y: ty }, sn, true, gs);
       place(d.out, d.k);
       return;
     }
-    const { mw, mh, xw, xh } = dgLim(it), uw = it.w + dx / p, uh = it.h + dy / p;
-    const q = (v) => (sn ? dgQ(v) : Math.round(v * 100) / 100);
-    const r = { w: Math.min(DG_COLS - it.x, xw, Math.max(mw, q(uw))), h: Math.min(xh, Math.max(mh, q(uh))) };
-    if (d.out && r.w === d.rw && r.h === d.rh) return;
-    d.rw = r.w; d.rh = r.h;
-    d.out = dgArrange(d.list, d.k, r, sn, false);
+    /* (25 October 2026, his words: "make me be able to rescale widgets on all sides, but only on hover does it show the
+       edge lines") by the edge or corner it was taken by: the right and bottom ones grow the far side as the corner did;
+       the left and top ones move that side, the opposite one staying where it is */
+    const { mw, mh, xw, xh } = dgLim(it), g = d.edge, fix = (v) => Math.round(v * 1000) / 1000;
+    const q = (v) => (sn ? dgQ(v, gs) : Math.round(v * 100) / 100);
+    const r = { x: it.x, y: it.y, w: it.w, h: it.h };
+    if (g.includes("r")) r.w = Math.min(DG_COLS - it.x, xw, Math.max(mw, q(it.w + dx / p)));
+    if (g.includes("l")) { const R = it.x + it.w; r.w = Math.min(R, xw, Math.max(mw, q(it.w - dx / p))); r.x = fix(R - r.w); }
+    if (g.includes("b")) r.h = Math.min(xh, Math.max(mh, q(it.h + dy / p)));
+    if (g.includes("t")) { const B = it.y + it.h; r.h = Math.min(B, xh, Math.max(mh, q(it.h - dy / p))); r.y = fix(B - r.h); }
+    if (d.out && r.w === d.rw && r.h === d.rh && r.x === d.rx && r.y === d.ry) return;
+    d.rw = r.w; d.rh = r.h; d.rx = r.x; d.ry = r.y;
+    // the outline white while the size is one of the widget's own (small, medium, large …; in a stack, one every widget in it comes in)
+    slot.current.classList.toggle("preset", dgPages(it).every((pg) => DG_W[pg.id].sizes.some((z) => Math.abs(DG_SIZE[z][0] - r.w) < DG_E && Math.abs(DG_SIZE[z][1] - r.h) < DG_E)));
+    d.out = dgArrange(d.list, d.k, r, sn, false, gs);
     place(d.out, d.k);
+    // the widget keeps its size until the release (the outline shows the new one), held to the side that does not move
     const lead = d.out.find((o) => o.k === d.k);
-    d.el.style.transform = `translate3d(${lead.x * p}px, ${lead.y * p}px, 0)`;
+    d.el.style.transform = `translate3d(${(g.includes("l") ? lead.x + lead.w - it.w : lead.x) * p}px, ${(g.includes("t") ? lead.y + lead.h - it.h : lead.y) * p}px, 0)`;
   };
   const end = (e) => {
     const d = drag.current;
@@ -11976,20 +14069,33 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     drag.current = null;
     cancelAnimationFrame(d.raf);
     try { d.el.releasePointerCapture(d.pid); } catch (err) { /* already let go */ }
+    d.el.style.cursor = "";
     if (!d.moved) return;
     const { pitch: p } = live.current;
     d.el.classList.remove("lift", "sizing");
     board.current.classList.remove("dragging");
-    slot.current.classList.remove("on", "over");
+    slot.current.classList.remove("on", "over", "preset");
     const fin0 = e.type === "pointercancel" || !d.out ? d.list : d.out;
     // every widget to where it ends; React writes the same values when the layout is saved
     for (const o of fin0) { const el = nodes.current.get(o.k); if (el) el.style.transform = `translate3d(${o.x * p}px, ${o.y * p}px, 0)`; }
+    /* (31 October 2026, his words: "when a widget is hugging the right side of the grid, and i try scaling horizontally it
+       bugs out and the whole box glitches") a resized widget lands on its outline at once: its new size came in one frame
+       while its place slid there in 0.38s, so one taken by the left or top edge stood out past the far side (or short of
+       it) and slid back */
+    const lead = d.mode === "size" && fin0 !== d.list && fin0.find((o) => o.k === d.k);
+    if (lead) {
+      const el = d.el, at = dgPos(lead, p);
+      el.style.transition = "none";
+      el.style.width = `${at.width}px`; el.style.height = `${at.height}px`; el.style.transform = at.transform;
+      void el.offsetWidth;
+      el.style.transition = "";
+    }
     board.current.style.height = `${dgBoardH(fin0, p, true)}px`;
     if (fin0 !== d.list) { live.current.save(fin0); if (d.mode === "size") live.current.bump(d.k); }
   };
   const dropHold = () => { const h = hold.current; if (!h) return; clearTimeout(h.t); h.el.classList.remove("hold"); hold.current = null; };
-  const begin = (e, it, el, mode) => {
-    drag.current = { k: it.k, it, el, mode, pid: e.pointerId, sx: e.clientX, sy: e.clientY + window.scrollY, cx: e.clientX, cy: e.clientY, moved: false, list: items, out: null, raf: 0 };
+  const begin = (e, it, el, mode, edge = "br") => {
+    drag.current = { k: it.k, it, el, mode, edge, pid: e.pointerId, sx: e.clientX, sy: e.clientY + window.scrollY, cx: e.clientX, cy: e.clientY, moved: false, list: items, out: null, raf: 0 };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* the pointer is gone */ }
   };
   useEffect(() => {
@@ -12017,7 +14123,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     const el = nodes.current.get(it.k);
     if (!el) return;
     if (edit) {
-      if (e.target.closest(".dg-rm, .dg-rz, .dg-sk, .dg-dots")) return;
+      if (e.target.closest(".dg-rm, .dg-eg, .dg-sk, .dg-dots")) return;
       el.focus({ preventScroll: true });
       begin(e, it, el, "move");
       return;
@@ -12036,11 +14142,13 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     }, DG_HOLD_MS);
     hold.current = h;
   };
-  const pressSize = (e, it) => {
+  const pressSize = (e, it, edge) => {
     if (e.button !== 0) return;
     e.stopPropagation(); e.preventDefault();
     const el = nodes.current.get(it.k);
-    if (el) begin(e, it, el, "size");
+    if (!el) return;
+    el.style.cursor = DG_EDGE_CUR[edge];        // (the widget holds the pointer while it is dragged: its cursor is the one shown)
+    begin(e, it, el, "size", edge);
   };
 
   /* ---------- the other edits: each saved at once ---------- */
@@ -12077,9 +14185,9 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     if (el) el.classList.add("gone");
     const prev = lay;
     setTimeout(() => {
-      const { items: now, snap: sn, save: sv } = live.current;
+      const { items: now, snap: sn, grid: gs, save: sv } = live.current;
       if (!now.some((o) => o.k === k)) return;
-      sv(dgSettle(now.filter((o) => o.k !== k), sn, null));
+      sv(dgSettle(now.filter((o) => o.k !== k), sn, null, gs));
       undoTo.current = prev;
       setToast({ msg: "Widget removed", id: Date.now() });
     }, 190);
@@ -12099,11 +14207,13 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
   };
   const takePreset = (p) => {
     undoTo.current = lay;
-    commit({ snap: true, preset: p.id, items: dgBuild(market, M, p.items) });
+    commit({ snap: true, ...withGrid(grid), preset: p.id, items: dgBuild(market, M, p.items) });
     setEnter(true); setTimeout(() => setEnter(false), 1500);
     setToast({ msg: `Layout: ${p.name}`, id: Date.now() });
   };
-  const setSnap = (on) => { if (on !== snap) save(on ? dgSettle(items.map(dgSnapOne), true, null) : items, on); };
+  const setSnap = (on) => { if (on !== snap) save(on ? dgSettle(items.map((o) => dgSnapOne(o, grid)), true, null, grid) : items, on); };
+  // the grid's size: with snap on, every widget comes onto the new grid at once
+  const setGrid = (g) => { if (g === grid || !DG_GRIDS.includes(g)) return; commit({ snap, ...withGrid(g), items: snap ? dgSettle(items.map((o) => dgSnapOne(o, g)), true, null, g) : items }); };
   const reset = () => { undoTo.current = lay; commit(dgDefault(market, M)); setToast({ msg: "Widgets put back as they came", id: Date.now() }); };
   const undo = () => { if (undoTo.current) commit(undoTo.current); undoTo.current = null; dropToast(); };
   const keyCell = (e, it) => {
@@ -12112,7 +14222,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     const mv = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     if (mv) {
       e.preventDefault();
-      save(dgArrange(items, it.k, { x: Math.min(Math.max(0, it.x + mv[0] * DG_STEP), DG_COLS - it.w), y: Math.max(0, it.y + mv[1] * DG_STEP) }, snap, true));
+      save(dgArrange(items, it.k, { x: Math.min(Math.max(0, it.x + mv[0] * grid), DG_COLS - it.w), y: Math.max(0, it.y + mv[1] * grid) }, snap, true, grid));
       return;
     }
     if (k === "+" || k === "=" || k === "-") {
@@ -12121,7 +14231,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
       if (!sizes.length) return;
       const s = sizes[Math.min(sizes.length - 1, Math.max(0, sizes.indexOf(dgCls(it)) + (k === "-" ? -1 : 1)))], [w, h] = DG_SIZE[s];
       if (w === it.w && h === it.h) return;
-      save(dgArrange(items, it.k, { w, h, x: Math.min(it.x, DG_COLS - w) }, snap, false));
+      save(dgArrange(items, it.k, { w, h, x: Math.min(it.x, DG_COLS - w) }, snap, false, grid));
       setPop({ k: it.k, kind: "bump" });
     }
   };
@@ -12150,40 +14260,57 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
               a greeting and the date (20 October 2026: "Welcome back" in big plain type "looks very ugly and out of place") */}
           <div>
             <h1 className="dash-px" style={{ "--sh": DG_SIDE[market].hue }}>{DG_SIDE[market].name}</h1>
-            <div className="dash-sub"><span>{dgHello(new Date().getHours())}{who && who.first ? <>, <b>{who.first}</b></> : ""}</span><i aria-hidden="true" /><span>{date}</span></div>
+            <div className="dash-sub"><span>{dgHello(new Date().getHours())}{who && who.first ? <>, <b>{who.first}</b></> : ""}</span><i aria-hidden="true" />
+              <button className="dash-date" title="Open today" aria-label={`Open today, ${date}`} onClick={() => api.current.go("day", hl ? ctx.todayKey : today)}>{date}<span className="msym" aria-hidden="true">north_east</span></button>
+            </div>
           </div>
-          <div className={`dash-tools${toolsOut ? " out" : ""}`}>
+          <div className="dash-tools" ref={toolsBox}>
             {tools ? (
               <>
-                <button className="dg-btn" title="Ready-made arrangements to start from" onClick={() => setSheet("presets")}><span className="msym" aria-hidden="true">dashboard_customize</span>Layouts</button>
-                <button className="dg-btn" disabled={full} title={full ? `The dashboard holds ${DG_MAX_N} widgets at most` : "Add a widget"} onClick={() => { setInto(null); setSheet("add"); }}><span className="msym" aria-hidden="true">add</span>Add widget</button>
-                <button className={`dg-snap${snap ? " on" : ""}`} role="switch" aria-checked={snap} onClick={() => setSnap(!snap)}
+                <button key="lay" className="dg-btn" title="Ready-made arrangements to start from" onClick={() => setSheet("presets")}><span className="dg-lbl"><span className="msym" aria-hidden="true">dashboard_customize</span>Layouts</span></button>
+                <button key="add" className="dg-btn" disabled={full} title={full ? `The dashboard holds ${DG_MAX_N} widgets at most` : "Add a widget"} onClick={() => { setInto(null); setSheet("add"); }}><span className="dg-lbl"><span className="msym" aria-hidden="true">add</span>Add widget</span></button>
+                <button key="snap" className={`dg-snap${snap ? " on" : ""}`} role="switch" aria-checked={snap} onClick={() => setSnap(!snap)}
                         title={snap ? "Snap is on: widgets move and resize in half cells, and rise into the room above them" : "Snap is off: a widget stays where you put it, at any size"}>
-                  Snap to grid<i className="dg-tog" aria-hidden="true"><b /></i>
+                  <span className="dg-lbl">Snap to grid<i className="dg-tog" aria-hidden="true"><b /></i></span>
                 </button>
-                <button className="dg-btn ico" title="Put every widget back as it came" aria-label="Reset the widgets" onClick={reset}><span className="msym" aria-hidden="true">restart_alt</span></button>
-                <button className="dg-btn pri" onClick={() => endEdit()}><span className="msym" aria-hidden="true">check</span>Done</button>
+                {/* the grid's size: whole, half or quarter cells (25 October 2026: "make the grid bigger or smaller with more points") */}
+                <span key="grid" className={`dg-btn dg-gsz${snap ? "" : " off"}`} title={snap ? "The grid's size: whole, half or quarter cells. The smaller, the more points to snap to" : "The grid's size: turn Snap to grid on to use it"}>
+                  <span className="dg-lbl"><span className="msym" aria-hidden="true">grid_4x4</span>Grid
+                    <SlideSeg cls="dg-gseg" value={String(grid)} onPick={(v) => setGrid(Number(v))} tab={snap ? undefined : -1}
+                              options={DG_GRIDS.map((g) => [String(g), g === 1 ? "1" : g === 0.5 ? "½" : "¼", `${DG_GRID_WORD[g][0].toUpperCase()}${DG_GRID_WORD[g].slice(1)} cells`])} />
+                  </span>
+                </span>
+                <button key="reset" className="dg-btn ico" title="Put every widget back as it came" aria-label="Reset the widgets" onClick={reset}><span className="dg-lbl"><span className="msym" aria-hidden="true">restart_alt</span></span></button>
               </>
             ) : (
               <>
-                <button className="dg-btn ico" title="Calendar: the yearly panel" aria-label="Calendar" onClick={() => api.current.go("year")}><span className="msym" aria-hidden="true">calendar_month</span></button>
-                <button className="dg-btn" title={fin ? "Add an expense or an income to today (⌘N)" : "Log a trade to today (⌘N)"} onClick={() => api.current.go("quick")}><span className="msym" aria-hidden="true">add</span>Log<kbd>⌘N</kbd></button>
-                <button className="dg-btn pri ico" title="Edit widgets: move, resize, add and remove them, or pick a layout (or hold a widget)" aria-label="Edit widgets" onClick={() => editOn()}><span className="msym" aria-hidden="true">edit</span></button>
+                {/* (Health's: its day page in place of the calendar, a to-do in place of the quick log; 25 October 2026) */}
+                <button key="cal" className="dg-btn ico" title={hl ? "Your day: to-dos, the week, activity, body, diet, gym and the board" : "Calendar: the yearly panel"} aria-label={hl ? "Today" : "Calendar"} onClick={() => api.current.go(hl ? "day" : "year")}><span className="dg-lbl"><span className="msym" aria-hidden="true">{hl ? "today" : "calendar_month"}</span></span></button>
+                <button key="log" className="dg-btn action-log" title={kbTx(hl ? "Add a to-do to today (⌘N)" : fin ? "Add an expense or an income to today (⌘N)" : "Log a trade to today (⌘N)")} onClick={() => api.current.go(hl ? "addtodo" : "quick")}><span className="dg-lbl"><span className="msym" aria-hidden="true">add</span>{hl ? "To-do" : "Log"}<kbd><Kb id="quick" /></kbd></span></button>
+                {fin && <button key="worth" className="dg-btn ico" title={kbTx("Worth it? Check a purchase before you make it (⌘B)")} aria-label="Worth it?" onClick={() => api.current.go("worth")}><span className="dg-lbl"><span className="msym" aria-hidden="true">balance</span></span></button>}
+{!hl &&                 <button key="fx" className="dg-btn ico" title={kbTx("Money exchanger: convert between currencies at live rates (⌘E)")} aria-label={kbTx("Money exchanger (⌘E)")} onClick={() => api.current.go("fx")}><span className="dg-lbl"><span className="msym" aria-hidden="true">currency_exchange</span></span></button>}
               </>
             )}
+            <span key="mainw" className={`dg-mainw${mainOn ? " editing" : ""}`}><i className="dg-glow" aria-hidden="true"><b /></i>
+            {mainOn
+              ? <button key="main" className="dg-btn pri dg-main" onClick={() => endEdit()}><span className="dg-lbl"><span className="msym" aria-hidden="true">check</span>Done</span></button>
+              : <button key="main" className="dg-btn ico dg-main" title="Edit widgets: move, resize, add and remove them, or pick a layout (or hold a widget)" aria-label="Edit widgets" onClick={() => editOn()}><span className="dg-lbl"><span className="msym" aria-hidden="true">edit</span></span></button>}
+            </span>
           </div>
         </div>
       )}
       {edit && (
         <div className={`dg-hint${leaving ? " leaving" : ""}`}>
-          <span className="msym" aria-hidden="true">open_with</span>Drag a widget to move it, its corner to resize it; the round button takes it off, the one at the top of the widget under the pointer stacks another widget in its box.
-          <span>{snap ? "Snapping to the grid in half cells." : "Free placement: widgets stay where you put them."}</span>
+          <span className="dg-hint-part"><span className="msym" aria-hidden="true">open_with</span>Drag to move</span>
+          <span className="dg-hint-part"><span className="msym" aria-hidden="true">open_in_full</span>Edges to resize</span>
+          <span className="dg-hint-part"><span className="msym" aria-hidden="true">library_add</span>Hover to stack</span>
+          <span className="dg-hint-state">{snap ? `${DG_GRID_WORD[grid][0].toUpperCase()}${DG_GRID_WORD[grid].slice(1)}-cell grid` : "Free placement"}<kbd>Esc</kbd> to finish</span>
         </div>
       )}
       <div ref={board} className={`dg-board${edit ? " edit" : ""}${leaving ? " leaving" : ""}${enter ? " enter" : ""}`}
-           style={{ height: loaded && pitch > 0 && items.length ? dgBoardH(items, pitch, edit) : undefined, "--u": `${pitch || 100}px` }}
+           style={{ height: loaded && pitch > 0 && items.length ? dgBoardH(items, pitch, edit) : undefined, "--u": `${pitch || 100}px`, "--gs": grid }}
            onPointerDown={(e) => { if (edit && e.target === e.currentTarget) endEdit(); }}>
-        {edit && snap && <div className="dg-grid" aria-hidden="true" />}
+        {edit && snap && <div key={grid} className="dg-grid" aria-hidden="true" />}
         <div className="dg-slot" ref={slot} aria-hidden="true" />
         {loaded && pitch > 0 && items.map((it) => (
           <div key={it.k} ref={(el) => { if (el) nodes.current.set(it.k, el); else nodes.current.delete(it.k); }}
@@ -12197,7 +14324,7 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
               <button className="dg-sk" title="Stack another widget in this box (swipe up or down on it to go between them)" aria-label={`Stack another widget with ${dgInfo(it.id, M).name}`}
                       onClick={() => { setInto(it.k); setSheet("add"); }}><span className="msym" aria-hidden="true">library_add</span></button>
             )}
-            {edit && <span className="dg-rz" title="Drag to resize" onPointerDown={(e) => pressSize(e, it)} />}
+            {edit && <span className="dg-egs" aria-hidden="true">{DG_EDGES.map((g) => <i key={g} className={`dg-eg ${g}`} onPointerDown={(e) => pressSize(e, it, g)} />)}</span>}
           </div>
         ))}
         {loaded && !items.length && (
@@ -12224,9 +14351,12 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
   );
 });
 
-const FIN_PREFS_KEY = "pnl-finance-prefs";       // finance's Home: { home, dash }, the account's own, not in a backup
+const FIN_PREFS_KEY = "pnl-finance-prefs";
+// the month's cards, in the order he arranges them (CardArrange; kept in FIN_PREFS_KEY as `order`)
+const FIN_CARDS = [["weekly expenses", "weekly", "Weekly expenses", "show_chart"], ["money flow", "flow", "Money flow", "account_tree"], ["goals", "goals", "Goals", "flag"],
+                   ["subscriptions", "subs", "Subscriptions", "autorenew"]];       // finance's Home: { home, dash }, the account's own, not in a backup
 
-function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, who }) {
+function TradeTracker({ market, onHome, onApp, apps, onUsers, onReset, onRestore, onOther, who }) {
   const M = MARKETS[market];
   const dev = useDevOpt();
   const now = new Date();
@@ -12284,7 +14414,10 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
   const [homeOn, setHomeOn] = useState(true);             // Home first (the dashboard), or the classic yearly panel first
   const [ringLoss, setRingLoss] = useState(false);        // the ring on the Coins card: winnings, or losses
   const prefsRef = useRef({ cur: M.base, cur2: "IDR", fx: { live: null, manual: {} }, calc: null, fees: IDX_FEES, an: cleanAn(null), bal: null, test: cleanTradeTest(null, M.test),
-                            quotes: [], dataAt: 0, dash: null, home: true });
+                            quotes: [], dataAt: 0, dash: null, home: true, order: null });
+  const TR_CARDS = useMemo(() => trCards(M), [market]);
+  const [cardOrd, setCardOrd] = useState(() => trCards(M).map((c) => c[0]));       // the month's cards, in his order
+  const [arrOpen, setArrOpen] = useState(false);                                   // the pane that arranges them
   const savePrefs = (patch) => {
     prefsRef.current = { ...prefsRef.current, ...patch };
     store.set(M.prefsKey, JSON.stringify(prefsRef.current)).catch(() => {});
@@ -12401,13 +14534,14 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                                fx: { live, manual }, calc, fees: { buy: fee("buy"), sell: fee("sell") },
                                an: cleanAn(p.an), bal: cleanBal(p.bal) || fromBase(p.base, false),
                                test: cleanTradeTest(p.test, M.test),
-                               quotes: cleanQuotes(p.quotes), dataAt: p.dataAt > 0 ? Number(p.dataAt) : 0, dash: dgClean(p.dash, market, M), home: p.home !== false };
+                               quotes: cleanQuotes(p.quotes), dataAt: p.dataAt > 0 ? Number(p.dataAt) : 0, dash: dgClean(p.dash, market, M), home: p.home !== false, order: cardOrder(p.order, trCards(M)) };
           // his own balance, put aside while test data stands in for it
           if ("balKeep" in p) prefsRef.current.balKeep = cleanBal(p.balKeep);
           else if ("baseKeep" in p) prefsRef.current.balKeep = fromBase(p.baseKeep, true);
           setCur(prefsRef.current.cur); setCur2Pick(prefsRef.current.cur2); setFx(prefsRef.current.fx); setFees(prefsRef.current.fees);
           setAn(prefsRef.current.an); setBalMark(prefsRef.current.bal); setTestCfg(prefsRef.current.test); setDash(prefsRef.current.dash);
           setHomeOn(prefsRef.current.home); if (!prefsRef.current.home) setView((v) => (v === "home" ? "year" : v));
+          setCardOrd(prefsRef.current.order);
           if (calc) calcDraft.current = calc;
         }
       } catch (e) {}
@@ -12770,13 +14904,18 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
   const sideApi = useRef(null);
   sideApi.current = {
     go: (id) => {
+      if (id === "settings") { setSettingsOpen(true); return; }
       if (id === "calc") { setCalcOpen(true); return; }
+      if (id === "fx") { setFxOpen(fxFrom.current); return; }
+      if (id === "plan") { setTpOpen(true); return; }
+      if (id === "cur") { if (M.base === "USDT") curKey.current(); return; }
       if (id === "quick") { setQuickOpen(true); return; }
       if (id === "home") { onHome(); return; }
       if (id === "users") { onUsers(); return; }
       if (id === "reset") { onReset(); return; }
       if (id === "restore") { onRestore(); return; }
       if (id === "wrap") { openRecap(view === "month" ? { kind: "month", y: year, m: month } : { kind: "year", y: year }); return; }
+      if (id === "arrange") { setArrOpen((v) => !v); return; }        // the button under Home: the month's cards in his order
       if (id === "dash") { setSelected(null); setView("home"); window.scrollTo({ top: 0 }); return; }
       if (id === "year") {
         if (view === "month") { setYearRise(true); setSelected(null); setView("year"); setTimeout(() => setYearRise(false), 700); }
@@ -13149,8 +15288,8 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
   };
   useEffect(() => {
     const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "n") return;
-      e.preventDefault(); setQuickOpen(true);
+      if (!kbIs(e, "quick")) return;
+      e.preventDefault(); if (!e.repeat) setQuickOpen(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -13160,14 +15299,23 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
   fxFrom.current = M.base === "USDT" ? (cur === "USDT" ? M.unit : cur) : M.base;
   useEffect(() => {
     const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      const k = e.key.toLowerCase();
-      if (k === "e") { e.preventDefault(); setFxOpen((o) => o || fxFrom.current); }
-      else if (k === "t") { e.preventDefault(); setTpOpen(true); }      // ⌘T: the time plan (it closes itself on ⌘T)
+      const k = kbIs(e, "fx") ? "fx" : kbIs(e, "plan") ? "plan" : null;
+      if (!k) return;
+      e.preventDefault();
+      if (e.repeat) return;       // held: once
+      if (k === "fx") setFxOpen((o) => o || fxFrom.current);
+      else setTpOpen(true);      // ⌘T: the time plan (it closes itself on ⌘T)
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  /* ⌘K: the next currency, at once, also with a pop-up open (24 October 2026, his words: "a shortcut for changing
+     currencies quickly and this works changing immediately when im in a ui"). Heard first: on the window while it
+     captures, set up before any pop-up sets up its own, and kept from them (a sheet keeps every key to itself). What it
+     does is the latest render's (curKey), so nothing it writes is out of date */
+  const curKey = useRef(null);
+  curKey.current = () => { const next = CUR_LIST[(CUR_LIST.indexOf(cur) + 1) % CUR_LIST.length]; setCur(next); savePrefs({ cur: next }); refreshFx(); };
+  useCmdKey("cur", curKey, M.base === "USDT");
   // a digit typed on the yearly panel, with nothing else open, opens the quick log with it (it went into the quick-add
   // row's amount until that row left the panel on 14 October 2026)
   useEffect(() => {
@@ -13630,10 +15778,8 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
               {/* hero */}
               <div {...tile("wr-hero", r.tot.pnl >= 0 ? "#3ddc97" : "#ff5d6c", null)}>
                 <div style={S.wrLabel}>{title}</div>
-                <div className="wr-hero-num" style={{ ...S.wrHeroNum,
-                     backgroundImage: r.tot.pnl >= 0 ? "linear-gradient(100deg, #ffffff 10%, #9ff2cb 55%, #3ddc97)" : "linear-gradient(100deg, #ffffff 10%, #ffb3ba 55%, #ff5d6c)" }}>
-                  <CountNum value={r.tot.pnl} duration={900} render={moneyLive} />
-                </div>
+                <WrHeroNum value={r.tot.pnl} render={moneyLive}
+                     grad={{ backgroundImage: r.tot.pnl >= 0 ? "linear-gradient(100deg, #ffffff 10%, #9ff2cb 55%, #3ddc97)" : "linear-gradient(100deg, #ffffff 10%, #ffb3ba 55%, #ff5d6c)" }} />
                 <div style={S.wrHeroSub}>
                   Realised PnL for the {isYear ? "year" : "month"}
                   <br /><span style={{ color: "#e8eaec" }}>You closed <b>{tradesWord(r.tot.n)}</b> and won <b>{wr}%</b> of them.</span>
@@ -13840,8 +15986,8 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                   </span>
                 </div>
               </div>
-              <button className="log-pill" style={S.yearLog} title="Log a trade to today (⌘N)" onClick={() => setQuickOpen(true)}>
-                <span className="msym">add</span>Log<kbd>⌘N</kbd>
+              <button className="log-pill" style={S.yearLog} title={kbTx("Log a trade to today (⌘N)")} onClick={() => setQuickOpen(true)}>
+                <span className="msym">add</span>Log<kbd><Kb id="quick" /></kbd>
               </button>
               <div style={S.yearBarRow}>
                 <div style={{ flex: 1 }}>{grossBar(ys, "cy")}</div>
@@ -13932,11 +16078,12 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
                 <button className="nav-arrow" disabled={!monthAfter(year, month, 1)} title="Next month (→)" onClick={() => nav(1)}>›</button>
               </span>
               {M.base === "USDT" ? (
-                <button className="cur-btn" style={S.currency} title={`Click: ${M.unit} ⇄ IDR · three quick clicks: MYR · double-click: the money exchanger (⌘E)`} onClick={onCurClick}>
+                <button className="cur-btn" style={S.currency} title={`Click: ${M.unit} ⇄ IDR · three quick clicks: MYR · ${kbL("cur")}: the next currency · double-click: the money exchanger (${kbL("fx")})`} onClick={onCurClick}>
                   <CurRoll idx={CUR_LIST.indexOf(cur)} usd={M.unit} />
                 </button>
-              ) : <span className="cur-tag" style={{ ...S.currency, cursor: "default" }} title={"Realised PnL, in rupiah · double-click: the money exchanger (⌘E)"}
+              ) : <span className="cur-tag" style={{ ...S.currency, cursor: "default" }} title={kbTx("Realised PnL, in rupiah · double-click: the money exchanger (⌘E)")}
                       onClick={(e) => { const fast = e.timeStamp - fxTap.current <= CUR_TRIPLE_MS; fxTap.current = fast ? 0 : e.timeStamp; if (fast) setFxOpen(M.base); }}>{M.base}</span>}
+              <FxDoor onOpen={() => setFxOpen(fxFrom.current)} />
             </div>
           </div>
 
@@ -14003,7 +16150,6 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
               {cells.map((d, i) => {
                 if (d === null) return <div key={"e" + i} />;
                 const day = ms.days[d - 1];
-                const list = trades[keyOf(year, month, d)] || [];
                 // green above zero, red below, yellow at exactly zero (a day that held a win can still come to nothing);
                 // the tile itself only carries a faint wash of it
                 const net = !day ? 0 : day.pnl > 0 ? 1 : day.pnl < 0 ? -1 : 0;
@@ -14108,24 +16254,32 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
             </div>
           </div>
 
-          <FoldCard title="PnL analysis" name="PnL analysis" runKey="an" flask={partFlask("an")}
+          {(() => {
+            const cards = { "PnL analysis": (
+          <FoldCard key="PnL analysis" title="PnL analysis" name="PnL analysis" runKey="an" flask={partFlask("an")}
                       sub={<><span style={{ color: anTot.n ? (anTot.pnl >= 0 ? "#5ee3a9" : "#ff8d97") : undefined }}>{money(anTot.pnl)}</span> · {dayText(anFrom)} – {dayText(anTo)}</>}>
             <PnlAnalysis trades={trades} deps={deps} an={an} start={anFrom} end={anTo} cur={cur} rate={rate} base={eqBase} allPnl={allPnl} allDep={allDep} unit={M.base} unitName={M.unit} dp={M.dp} api={anApi} />
           </FoldCard>
-          <FoldCard title="Performance" name="performance" runKey={`${year}-${month}`} sub={monthLabel} flask={partFlask("perf")}>
+            ), performance: (
+          <FoldCard key="performance" title="Performance" name="performance" runKey={`${year}-${month}`} sub={monthLabel} flask={partFlask("perf")}>
             {renderPerf()}
           </FoldCard>
-          <FoldCard title={M.things} name={M.things.toLowerCase()} runKey={`${year}-${month}`} flask={partFlask("names")} sub={detail.coins.length ? `${detail.coins.length} traded · ${monthLabel}` : monthLabel}>
+            ), [M.things.toLowerCase()]: (
+          <FoldCard key="names" title={M.things} name={M.things.toLowerCase()} runKey={`${year}-${month}`} flask={partFlask("names")} sub={detail.coins.length ? `${detail.coins.length} traded · ${monthLabel}` : monthLabel}>
             {renderCoins()}
           </FoldCard>
-          {M.journal === "idx" && (
-            <FoldCard title="Breakdown" name="breakdown" runKey={`${year}-${month}`} sub="By sector and trade style">
+            ), breakdown: M.journal === "idx" && (
+            <FoldCard key="breakdown" title="Breakdown" name="breakdown" runKey={`${year}-${month}`} sub="By sector and trade style">
               <IdxBreakdown trades={trades} year={year} month={month} api={jrApi} />
             </FoldCard>
-          )}
+            ) };
+            return cardOrd.map((n) => cards[n]);
+          })()}
         </div>
       )}
 
+      {arrOpen && view === "month" && <CardArrange cards={TR_CARDS} order={cardOrd} solo={!(homeOn && view !== "home")}
+                                                   onOrder={(next) => { setCardOrd(next); savePrefs({ order: next }); }} onClose={() => setArrOpen(false)} />}
       {chartOpen && (
         <div ref={chartWrapRef} style={{ ...S.backdrop, animation: chartClosing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={() => closeChart()}>
           <div role="dialog" aria-modal="true" aria-label="Chart" ref={chartModalRef} className="glass" style={{ ...S.modal, animation: chartClosing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }} onClick={(e) => e.stopPropagation()}>
@@ -14229,21 +16383,18 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
       )}
 
       <SideNav api={sideApi} foot={sideFoot} spy={SIDE_SPY[market]} spyKey={view === "month" ? `${market}-${year}-${month}` : ""} home={homeOn && view !== "home"}
-               act={SIDE_ACT.trade}
+               act={M.base === "USDT" ? SIDE_ACT.trade : SIDE_ACT.trade.filter((a) => a.id !== "cur")} arrange={view === "month" ? (arrOpen ? "on" : "off") : undefined}
                rows={[
                  { head: "Overview" },
                  ...(homeOn ? [{ id: "dash", icon: "home", text: "Home", on: view === "home" }] : []),
                  { id: "year", icon: "grid_view", text: "Year", tail: year, on: view === "year" },
                  { id: "month", icon: "calendar_month", text: "Month", tail: MONTHS_SHORT[sideMonth], on: view === "month" },
+                 { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
                  { head: MONTHS_FULL[sideMonth] },
                  { id: "cal", icon: "calendar_today", text: "Calendar", sub: true },
-                 { id: "an", icon: "show_chart", text: "PnL analysis", sub: true },
-                 { id: "perf", icon: "speed", text: "Performance", sub: true },
-                 { id: "names", icon: "paid", text: M.things, sub: true },
-                 ...(market === "idx" ? [{ id: "kinds", icon: "category", text: "Breakdown", sub: true }] : []),
-                 { head: "Recap" },
-                 { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
+                 ...cardOrd.map((n) => { const c = TR_CARDS.find((q) => q[0] === n); return { id: c[1], icon: c[3], text: c[2], sub: true }; }),
                  { head: "Account" },
+                 { id: "settings", icon: "settings", text: "Settings", tip: "Appearance, liquid glass, keyboard shortcuts and preferences" },
                  { id: "users", pic: who ? who.pic : "", img: who ? who.img : undefined, bg: who ? who.bg : undefined, bgImg: who ? who.bgImg : undefined, text: who ? who.first : "", tail: "Switch", tip: "Change account", dev: !!who && who.id === DEV_ID },
                  ...(dev ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." }] : []),
                  ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : []),
@@ -14269,7 +16420,7 @@ function TradeTracker({ market, onHome, onUsers, onReset, onRestore, onOther, wh
           <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the trades you had before this import">Undo</button>} />
           {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
-        <button className="foot-logo" onClick={onHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
+        <FootLogo side="trade" onHome={onHome} onApp={onApp} apps={apps} />
       </div>
     </>
   );
@@ -14366,19 +16517,26 @@ const hlRun = (t, k) => {
 /* ---------- health: the maths end ---------- */
 
 const HL_KEY = "flow-health";
+const HL_PREFS_KEY = "flow-health-prefs";      // Health's Home: { home, dash }, the account's own, not in a backup (as finance's)
 const HL_PIC = "hl-";               // a board picture's id begins so (SHOT_SIDES): no trading side's sweep takes it
 const HL_SEE = { steps: 8000, move: 500 };       // a day's goals until he sets his own: steps, and kcal burned moving
 // the rings' colours, outer to inner (Apple's order, in this app's colours): steps, kcal moved, to-dos
 const HL_TINT = [["#2fd08a", "#9cf0c8"], ["#ff8a4c", "#ffcf7a"], ["#4fb3ff", "#a8e1ff"]];
 // a class's colour on the timetable: soft tones that read on the dark
 const HL_CLS = ["#7fb6e0", "#8fd7a4", "#e3c477", "#e2808c", "#b7a4e6", "#7fd8d0", "#f0a77a"];
+const HL_HEX = /^#[0-9a-f]{6}$/i;
+// a class's colour: one of his own (any colour, `col`), else one of the timetable's seven
+const hlClsCol = (c) => (c && HL_HEX.test(c.col || "") ? c.col : HL_CLS[(c && c.tint) || 0] || HL_CLS[0]);
+// where a class ends, in minutes from the start of its first day: one that ends at or before it starts runs past midnight
+// into the next day (28 October 2026: "if i have an event from 11pm saturday until 4am sunday i can add that")
+const hlClsEnd = (c) => { const a = hlMin(c.from), b = hlMin(c.to); return b <= a ? b + 1440 : b; };
 const HL_SPLITS = ["Push", "Pull", "Legs", "Upper", "Lower", "Full body", "Cardio"];
 // what the exercise box offers while it is typed in (any other name can be typed)
 const HL_LIFTS = ["Bench press", "Incline bench press", "Overhead press", "Lateral raise", "Triceps pushdown", "Chest fly", "Dips",
   "Pull-up", "Lat pulldown", "Barbell row", "Seated row", "Face pull", "Biceps curl", "Hammer curl", "Deadlift", "Romanian deadlift",
   "Squat", "Front squat", "Leg press", "Leg curl", "Leg extension", "Hip thrust", "Calf raise", "Lunge", "Plank", "Treadmill", "Cycling"];
 const hlBlank = () => ({ version: 1, profile: { cm: 0, kg: 0, age: 21, sex: "m", act: 1.375, steps: HL_SEE.steps, move: HL_SEE.move },
-  goal: null, weights: {}, steps: {}, typed: {}, food: {}, todos: [], classes: [], gym: [], board: [], tests: { steps: {}, weights: {}, profile: 0 }, phone: null });
+  goal: null, weights: {}, steps: {}, typed: {}, typedKg: {}, food: {}, sleep: {}, todos: [], classes: [], clsLib: [], mine: null, clsCols: [], clsNotes: {}, asg: [], gym: [], board: [], shop: [], tests: { steps: {}, weights: {}, profile: 0 }, phone: null });
 const hlNum = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
 const hlDayOk = (k) => typeof k === "string" && /^\d{4}-\d{2}-\d{2}$/.test(k);
 const hlTimeOk = (t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
@@ -14389,6 +16547,18 @@ const hlMap = (o, lo, hi) => {
   return out;
 };
 const hlDays01 = (o) => { const out = {}; if (o && typeof o === "object") for (const k in o) if (hlDayOk(k) && o[k]) out[k] = 1; return out; };
+// a class's notes are kept under its name, so every week of it shares them (a week read off a picture is a class of its own)
+const hlNoteKey = (name) => String(name || "").trim().toLowerCase().slice(0, 60);
+const hlNoteUrl = (u) => { if (typeof u !== "string" || u.length > 2000 || !/^https?:\/\//i.test(u)) return false; try { return !!new URL(u).host; } catch (e) { return false; } };
+const hlNotePath = (p) => typeof p === "string" && p.length < 1024 && p.startsWith("/") && !p.includes("\0");
+// a class's notes with nothing left in them (no words, nothing kept, no lessons) are let go
+const hlNoteEmpty = (n) => !n || (!String(n.about || "").trim() && !(n.items || []).length && !(n.lessons || []).length);
+// a change to one class's lessons (nothing when the class has no notes)
+const hlLesUp = (x, key, f) => { const n = x.clsNotes[key]; return n ? { ...x, clsNotes: { ...x.clsNotes, [key]: { ...n, lessons: f(n.lessons || []) } } } : x; };
+// what a class's notes hold, in a few words ("3 kept · 10 lessons")
+const hlKeptSay = (n) => { const a = (n.items || []).length, b = (n.lessons || []).length; return [a ? `${a} kept` : "", b ? `${b} ${b === 1 ? "lesson" : "lessons"}` : ""].filter(Boolean).join(" · ") || "empty"; };
+// the next free "Week n"
+const hlLesName = (ls) => { let i = ls.length + 1; while (ls.some((l) => (l.t || "").trim().toLowerCase() === `week ${i}`)) i++; return `Week ${i}`; };
 // what is read from the store or a backup, made safe: anything that does not fit is dropped, never guessed
 const cleanHealth = (d) => {
   const b = hlBlank();
@@ -14404,6 +16574,7 @@ const cleanHealth = (d) => {
   b.weights = hlMap(d.weights, 25, 400);
   b.steps = hlMap(d.steps, 0, 200000);
   b.typed = hlDays01(d.typed);
+  b.typedKg = hlDays01(d.typedKg);
   b.food = hlMap(d.food, 0, 20000);
   const test = (x) => (x.test ? { test: true } : {});
   b.todos = (Array.isArray(d.todos) ? d.todos : []).filter((t) => t && t.id && hlText(t.text, 200).trim() && hlDayOk(t.from)).map((t) => ({
@@ -14411,20 +16582,70 @@ const cleanHealth = (d) => {
     dows: (Array.isArray(t.dows) ? t.dows : []).filter((w) => Number.isInteger(w) && w >= 0 && w < 7), len: hlNum(t.len, 0, 3650) || 0,
     done: hlDays01(t.done), skip: hlDays01(t.skip), ...test(t) }));
   b.classes = (Array.isArray(d.classes) ? d.classes : []).filter((c) => c && c.id && hlText(c.name, 60).trim() && Number.isInteger(c.dow) && c.dow >= 0 && c.dow < 7
-      && hlTimeOk(c.from) && hlTimeOk(c.to) && c.to > c.from).map((c) => ({
-    id: String(c.id), name: hlText(c.name, 60), room: hlText(c.room, 40), dow: c.dow, from: c.from, to: c.to,
-    tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0, ...test(c) }));
+      && hlTimeOk(c.from) && hlTimeOk(c.to) && c.to !== c.from).map((c) => ({
+    id: String(c.id), name: hlText(c.name, 60), room: hlText(c.room, 40), dow: hlDayOk(c.once) ? hlDow(c.once) : c.dow, from: c.from, to: c.to,
+    tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
+    ...(HL_HEX.test(c.col || "") ? { col: c.col.toLowerCase() } : {}),
+    ...(hlDayOk(c.once) ? { once: c.once } : {}), ...(hlDayOk(c.since) ? { since: c.since } : {}), ...(hlDayOk(c.until) ? { until: c.until } : {}),
+    ...(c.skip && Object.keys(hlDays01(c.skip)).length ? { skip: hlDays01(c.skip) } : {}), ...test(c) }));
+  // the classes he keeps for quick picking (the form's list): a name, its room and colour
+  // sleep: the night before each day, when he went to sleep and woke (28 October 2026: "make a sleep and wake up feature")
+  if (d.sleep && typeof d.sleep === "object" && !Array.isArray(d.sleep)) for (const k in d.sleep) {
+    const q = d.sleep[k];
+    const feel = q && Number.isInteger(q.feel) && q.feel >= 1 && q.feel <= 5 ? q.feel : 0;
+    if (hlDayOk(k) && q && (hlTimeOk(q.bed) || hlTimeOk(q.wake) || feel)) b.sleep[k] = { ...(hlTimeOk(q.bed) ? { bed: q.bed } : {}), ...(hlTimeOk(q.wake) ? { wake: q.wake } : {}),
+      ...(feel ? { feel } : {}), ...(q.ph && hlTimeOk(q.bed) && hlTimeOk(q.wake) ? { ph: 1 } : {}) };
+  }
+  b.clsLib = (Array.isArray(d.clsLib) ? d.clsLib : []).filter((c) => c && hlText(c.name, 60).trim()).slice(0, 60)
+    .map((c) => ({ name: hlText(c.name, 60).trim(), room: hlText(c.room, 40), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
+                   ...(HL_HEX.test(c.col || "") ? { col: c.col.toLowerCase() } : {}) }));
+  // the classes he takes this semester (30 October 2026): the names, as keys; null until he has chosen (hlMineList then guesses)
+  b.mine = Array.isArray(d.mine) ? [...new Set(d.mine.map((k) => hlNoteKey(k)).filter(Boolean))].slice(0, 40) : null;
+  // the colours of his own he kept for the timetable (any colour, picked with the pencil): quick to pick again
+  b.clsCols = [...new Set((Array.isArray(d.clsCols) ? d.clsCols : []).filter((x) => HL_HEX.test(x || "")).map((x) => x.toLowerCase()))].slice(0, 12);
+  // what he keeps about each class (29 October 2026): a few words about it, and links, notes and files, by the class's name
+  if (d.clsNotes && typeof d.clsNotes === "object" && !Array.isArray(d.clsNotes)) for (const key of Object.keys(d.clsNotes).slice(0, 200)) {
+    const n = d.clsNotes[key];
+    if (!n || typeof n !== "object" || !hlText(key, 60).trim()) continue;
+    const items = (Array.isArray(n.items) ? n.items : []).filter((q) => q && q.id && (hlText(q.t, 300).trim() || hlNoteUrl(q.url) || hlNotePath(q.file))).slice(0, 300).map((q) => ({
+      id: String(q.id), t: hlText(q.t, 300), ...(hlNoteUrl(q.url) ? { url: q.url } : {}), ...(hlNotePath(q.file) ? { file: q.file } : {}),
+      ...(q.star ? { star: 1 } : {}), ...(hlDayOk(q.k) ? { k: q.k } : {}), at: Number.isFinite(q.at) ? q.at : 0 }));
+    const about = hlText(n.about, 20000), aboutH = about.trim() ? rtClean(n.aboutH) : "";
+    // its lessons (30 October 2026): Week 1, Week 2 …, each with its words and its own links, files and notes, each of those
+    // with words of its own
+    const lessons = (Array.isArray(n.lessons) ? n.lessons : []).filter((l) => l && l.id).slice(0, 80).map((l) => ({
+      id: String(l.id), t: hlText(l.t, 80), about: hlText(l.about, 20000), ...(hlDayOk(l.k) ? { k: l.k } : {}), at: Number.isFinite(l.at) ? l.at : 0,
+      items: (Array.isArray(l.items) ? l.items : []).filter((q) => q && q.id && (hlText(q.t, 300).trim() || hlNoteUrl(q.url) || hlNotePath(q.file))).slice(0, 200).map((q) => ({
+        id: String(q.id), t: hlText(q.t, 300), ...(hlNoteUrl(q.url) ? { url: q.url } : {}), ...(hlNotePath(q.file) ? { file: q.file } : {}),
+        about: hlText(q.about, 4000), at: Number.isFinite(q.at) ? q.at : 0 })), ...(hlText(l.about, 20000).trim() && rtClean(l.aboutH) ? { aboutH: rtClean(l.aboutH) } : {}) }));
+    if (about.trim() || items.length || lessons.length) b.clsNotes[hlText(key, 60).trim().toLowerCase()] = { about, ...(aboutH ? { aboutH } : {}), items, ...(lessons.length ? { lessons } : {}) };
+  }
+  // assignments and assessments (29 October 2026): a title, a subheading, its class, its kind, when it is due, notes, and
+  // what is kept for it (links, files of his Mac, pictures in the picture store, notes)
+  b.asg = (Array.isArray(d.asg) ? d.asg : []).filter((a) => a && a.id && hlDayOk(a.due)).slice(0, 400).map((a) => ({
+    id: String(a.id), title: hlText(a.title, 120), sub: hlText(a.sub, 200), cls: hlText(a.cls, 60), kind: HL_ASG_KINDS.some((q) => q[0] === a.kind) ? a.kind : "assignment",
+    due: a.due, at: hlTimeOk(a.at) ? a.at : "23:59", about: hlText(a.about, 20000),
+    ...(hlWtNum(a.weight) != null ? { weight: hlWtNum(a.weight) } : {}),
+    ...(Number.isInteger(a.wk) && a.wk >= 0 && a.wk <= 60 ? { wk: a.wk } : {}), ...(hlText(a.how, 120).trim() ? { how: hlText(a.how, 120) } : {}),
+    items: (Array.isArray(a.items) ? a.items : []).filter((q) => q && q.id && (hlText(q.t, 300).trim() || hlNoteUrl(q.url) || hlNotePath(q.file) || (shotIdOk(q.img) && q.img.startsWith(HL_PIC)))).slice(0, 100).map((q) => ({
+      id: String(q.id), t: hlText(q.t, 300), ...(hlNoteUrl(q.url) ? { url: q.url } : {}), ...(hlNotePath(q.file) ? { file: q.file } : {}),
+      ...(shotIdOk(q.img) && q.img.startsWith(HL_PIC) ? { img: q.img } : {}), at: Number.isFinite(q.at) ? q.at : 0 })),
+    ...(a.done ? { done: 1 } : {}), ...test(a) }));
   b.gym = (Array.isArray(d.gym) ? d.gym : []).filter((s) => s && s.id && hlDayOk(s.day)).map((s) => ({
     id: String(s.id), day: s.day, name: hlText(s.name, 40) || "Workout", min: hlNum(s.min, 0, 600) || 0, note: hlText(s.note, 400),
     ex: (Array.isArray(s.ex) ? s.ex : []).filter((e) => e && hlText(e.name, 60).trim()).slice(0, 30).map((e) => ({
       name: hlText(e.name, 60), sets: (Array.isArray(e.sets) ? e.sets : []).slice(0, 30).map((x) => ({ kg: hlNum(x && x.kg, 0, 1000) || 0, reps: hlNum(x && x.reps, 0, 1000) || 0 })) })),
     ...(s.src === "apple" ? { src: "apple", kcal: hlNum(s.kcal, 0, 10000) || 0 } : {}), ...test(s) }));
   const ph = d.phone;     // the iPhone's file last taken in: when it was saved, how many days it held, its last day
-  if (ph && hlNum(ph.at, 1, 1e14)) b.phone = { at: +ph.at, days: hlNum(ph.days, 0, 400) || 0, to: hlDayOk(ph.to) ? ph.to : "" };
+  if (ph && hlNum(ph.at, 1, 1e14)) b.phone = { at: +ph.at, days: hlNum(ph.days, 0, 400) || 0, nights: hlNum(ph.nights, 0, 400) || 0, to: hlDayOk(ph.to) ? ph.to : "" };
   b.board = (Array.isArray(d.board) ? d.board : []).filter((c) => c && c.id && (c.kind === "note" || (c.kind === "pic" && shotIdOk(c.img)))).slice(0, 200).map((c) => ({
     id: String(c.id), kind: c.kind, x: hlNum(c.x, 0, 4000) || 0, y: hlNum(c.y, 0, 4000) || 0, w: hlNum(c.w, 120, 640) || 220, z: hlNum(c.z, 0, 1e9) || 0,
     text: hlText(c.text, 2000), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
     ...(c.kind === "pic" ? { img: c.img } : {}), ...test(c) }));
+  b.shop = (Array.isArray(d.shop) ? d.shop : []).filter((q) => q && q.id && hlText(q.place, 60).trim()).slice(0, 60).map((q) => ({
+    id: String(q.id), place: hlText(q.place, 60), ...test(q),
+    items: (Array.isArray(q.items) ? q.items : []).filter((t) => t && t.id && hlText(t.text, 120).trim()).slice(0, 300)
+      .map((t) => ({ id: String(t.id), text: hlText(t.text, 120), ...(t.got ? { got: 1 } : {}) })) }));
   return b;
 };
 // a backup holds what he entered himself: generated test entries stay behind (the test steps and weights, and a profile
@@ -14435,9 +16656,9 @@ const hlOwn = (h) => {
   const { tests, ...rest } = h;
   return { ...rest, profile: t.profile ? hlBlank().profile : h.profile, goal: h.goal && !h.goal.test ? h.goal : null,
            steps: strip(h.steps, "steps"), weights: strip(h.weights, "weights"), todos: h.todos.filter((x) => !x.test),
-           classes: h.classes.filter((x) => !x.test), gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test) };
+           classes: h.classes.filter((x) => !x.test), asg: h.asg.filter((x) => !x.test), gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test), shop: (h.shop || []).filter((x) => !x.test) };
 };
-const HL_EMPTY = (h) => !Object.keys(h.steps).length && !Object.keys(h.weights).length && !h.todos.length && !h.classes.length && !h.gym.length && !h.board.length && !h.goal && !h.profile.kg;
+const HL_EMPTY = (h) => !Object.keys(h.steps).length && !Object.keys(h.sleep || {}).length && !Object.keys(h.weights).length && !h.todos.length && !h.classes.length && !(h.asg || []).length && !h.gym.length && !h.board.length && !(h.shop || []).length && !h.goal && !h.profile.kg;
 
 /* ---------- Apple Health: the export of the Health app on his iPhone (Health → his picture → Export All Health Data), a
    zip with one big XML file in it. It is read as a stream, a piece at a time, and never all at once: a few years of data
@@ -14545,13 +16766,51 @@ const hlPhoneDay = (s) => {
   const k = `${m[1]}-${m[2]}-${m[3]}`, d = hlDate(k);
   return !Number.isNaN(+d) && hlKey(d) === k ? k : null;
 };
-// { steps: { day: n }, weights: { day: kg }, days, from, to }, or null when there is nothing in it. Lines of one day add up
-// (the shortcut groups them by day; without that a day comes in pieces)
+// a moment of a line, on this Mac's clock: "2026-10-27 23:41" as it stands, or with its zone (…T23:41:00+08:00, …Z)
+const hlPhoneAt = (s) => {
+  const m = /(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2})[:.](\d{2})(?::\d{2}(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?/.exec(String(s));
+  if (!m) return null;
+  const d = m[6] ? new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4].padStart(2, "0")}:${m[5]}:00${m[6] === "Z" ? "Z" : `${m[6].slice(0, 3)}:${m[6].slice(-2)}`}`)
+    : new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  return Number.isNaN(+d) ? null : d;
+};
+/* the nights in the iPhone's sleep lines (29 October 2026: "include sleep data"): "sleep;2026-10-27 23:41;2026-10-28 07:12;Core",
+   one a piece of sleep as Health keeps it (a watch writes a piece per stage: Core, Deep, REM, Awake; a phone alone writes
+   In Bed / Asleep). The pieces with less than three hours between them are one sleep; it went to bed at its first piece
+   asleep and woke at its last (In Bed only when it has nothing else), and it is the night before the day it ended on. A
+   day with two sleeps keeps the longer, so a nap is no night; under an hour and a half is none */
+const hlPhoneNights = (list) => {
+  // (a value written as HealthKit's number: 0 in bed, 2 awake, the rest asleep)
+  const awake = (v) => /awake|bangun|terjaga|réveil|despiert|wach/i.test(v) || v.trim() === "2", bed = (v) => /in\s?bed|di tempat tidur|au lit|en cama|im bett/i.test(v) || v.trim() === "0";
+  const ps = list.filter((p) => p.b > p.a && p.b - p.a < 20 * 3600000 && !awake(p.v)).sort((p, q) => p.a - q.a), runs = [];
+  for (const p of ps) {
+    const r = runs[runs.length - 1];
+    if (r && p.a - r.end < 3 * 3600000) { r.ps.push(p); r.end = Math.max(r.end, p.b); } else runs.push({ ps: [p], end: p.b });
+  }
+  const out = {};
+  for (const r of runs) {
+    const sl = r.ps.filter((p) => !bed(p.v)), use = sl.length ? sl : r.ps;
+    const a = Math.min(...use.map((p) => p.a)), b = Math.max(...use.map((p) => p.b));
+    if (b - a < 90 * 60000) continue;
+    const k = hlKey(new Date(b)), was = out[k];
+    const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+    if (!was || b - a > was.len) out[k] = { bed: hm(a), wake: hm(b), len: b - a };
+  }
+  for (const k in out) delete out[k].len;
+  return out;
+};
+// { steps: { day: n }, weights: { day: kg }, sleep: { day: { bed, wake } }, days, from, to }, or null when there is nothing
+// in it. Lines of one day add up (the shortcut groups them by day; without that a day comes in pieces)
 const hlPhoneRead = (text) => {
   if (typeof text !== "string") return null;
-  const steps = {}, weights = {};
+  const steps = {}, weights = {}, naps = [];
   for (const raw of text.slice(0, 400000).split(/\r?\n/)) {
     const parts = raw.split(";").map((x) => x.trim());
+    if (/^sleep$/i.test(parts[0])) {
+      const a = hlPhoneAt(parts[1] || ""), b = hlPhoneAt(parts[2] || "");
+      if (a && b) naps.push({ a: +a, b: +b, v: parts.slice(3).join(";") });
+      continue;
+    }
     if (/^weight$/i.test(parts[0])) {
       const day = hlPhoneDay(parts[1] || ""), v = hlNumText(parts[2] || "", false), unit = (parts[3] || "kg").toLowerCase();
       const kg = /lb|pound/.test(unit) ? v * 0.453592 : /st/.test(unit) ? v * 6.35029 : v;
@@ -14562,9 +16821,9 @@ const hlPhoneRead = (text) => {
     const day = hlPhoneDay(parts[0]), n = hlNumText(parts[1], true);
     if (day && n >= 0 && n <= 200000) steps[day] = Math.min(200000, (steps[day] || 0) + Math.round(n));
   }
-  const days = Object.keys(steps).sort();
-  if (!days.length && !Object.keys(weights).length) return null;
-  return { steps, weights, days: days.length, from: days[0] || "", to: days[days.length - 1] || "" };
+  const days = Object.keys(steps).sort(), sleep = hlPhoneNights(naps);
+  if (!days.length && !Object.keys(weights).length && !Object.keys(sleep).length) return null;
+  return { steps, weights, sleep, days: days.length, nights: Object.keys(sleep).length, from: days[0] || "", to: days[days.length - 1] || "" };
 };
 
 /* ---------- health: what the page shows, worked out from the data ---------- */
@@ -14581,6 +16840,33 @@ const hlWeightOn = (h, k) => {
   for (const d in h.weights) if (d <= k && (!best || d > best)) best = d;
   return best ? h.weights[best] : h.profile.kg || 0;
 };
+/* A class on the timetable (28 October 2026, his words: "make it repeatable until i change or delete just like apple's
+   calendar"): every week on its day (dow), from `since` (the week it was put in) to `until` when he ended it, but not on
+   the days in `skip` (taken off that one week); or on one date only (`once`). Is it on day k */
+// a night's sleep in minutes: from going to sleep to waking, over midnight when it ends earlier than it began
+const hlSleepMin = (q) => (q && hlTimeOk(q.bed) && hlTimeOk(q.wake) ? (hlMin(q.wake) - hlMin(q.bed) + 1440) % 1440 || null : null);
+/* a night's sleep, rated (29 October 2026: "rate my sleep for today"): out of 100, 70 for how long (7 to 9 hours is all of
+   it; less falls away to nothing at 4 hours, more costs a little) and 30 for going to bed at his usual time (the middle of
+   up to 14 nights before; with fewer than 3 logged, between half past nine and half past twelve). { score, min, word, why } */
+const HL_SLEEP_WORD = [[85, "Great"], [70, "Good"], [50, "Fair"], [0, "Poor"]];
+const hlSleepScore = (sleep, k) => {
+  const q = sleep[k], m = hlSleepMin(q);
+  if (!m) return null;
+  const late = (t) => { const x = hlMin(t); return x < 720 ? x + 1440 : x; };      // a bedtime after midnight is that night's
+  const dur = m < 420 ? Math.max(0, (m - 240) / 180) * 70 : m <= 540 ? 70 : Math.max(40, 70 - ((m - 540) / 120) * 30);
+  const prev = [];
+  for (let i = 1; i <= 21 && prev.length < 14; i++) { const p = sleep[hlAddDays(k, -i)]; if (p && hlTimeOk(p.bed) && hlTimeOk(p.wake)) prev.push(late(p.bed)); }
+  const b = late(q.bed), usual = prev.length >= 3 ? prev.sort((x, y) => x - y)[prev.length >> 1] : null;
+  const off = usual === null ? (b < 1290 ? 1290 - b : b > 1470 ? b - 1470 : 0) : Math.abs(b - usual);
+  const reg = usual === null ? Math.max(0, 30 - (off / 120) * 30) : off <= 30 ? 30 : Math.max(0, 30 - ((off - 30) / 90) * 30);
+  const score = Math.round(dur + reg), word = HL_SLEEP_WORD.find(([n]) => score >= n)[1];
+  const long = m < 420 ? `${hlDur(420 - m)} short of 7 hours` : m <= 540 ? "Within the 7 to 9 hours that rest you" : `${hlDur(m - 540)} over 9 hours`;
+  const when = usual === null ? (off <= 30 ? "a good time to sleep" : b > 1470 ? "a late night" : "an early night")
+    : off <= 30 ? "near your usual bedtime" : `${hlDur(Math.round(off / 5) * 5)} ${b > usual ? "later" : "earlier"} than usual`;
+  return { score, min: m, word, why: `${long}, ${when}` };
+};
+const HL_FEEL = [["sentiment_very_dissatisfied", "Awful"], ["sentiment_dissatisfied", "Tired"], ["sentiment_neutral", "Okay"], ["sentiment_satisfied", "Rested"], ["sentiment_very_satisfied", "Great"]];
+const hlClsOn = (c, k) => (c.once ? c.once === k : c.dow === hlDow(k) && (!c.since || k >= c.since) && (!c.until || k <= c.until) && !(c.skip && c.skip[k]));
 // one day: its steps, what moving burned (the steps, and each gym session at HL_GYM_MET), its to-dos
 const hlDayOf = (h, k) => {
   const kg = hlWeightOn(h, k) || 70, steps = h.steps[k] || 0;
@@ -14703,7 +16989,7 @@ const HlTodos = memo(({ todos, day, today, api }) => {
               {ask === t.id ? (
                 <span className="hl-ask">
                   <button className="bk-btn" onClick={() => { setAsk(null); api.current.skip(t.id); }}>Only {day === today ? "today" : hlNice(day)}</button>
-                  <button className="bk-btn danger" onClick={() => { setAsk(null); api.current.del(t.id); }}>Every day</button>
+                  <button className="bk-btn danger" onClick={() => { setAsk(null); api.current.end(t.id); }}>From {day === today ? "today" : hlNice(day)} on</button>
                   <button className="x-btn hl-x" onClick={() => setAsk(null)} aria-label="Keep it">✕</button>
                 </span>
               ) : (
@@ -14742,15 +17028,384 @@ const HlTodos = memo(({ todos, day, today, api }) => {
   );
 });
 
+/* ---------- health: the shopping list (31 October 2026, his words: "make a shopping list feature for me to keep track of
+   what i wanna buy on where, eg the mall: i wanna buy shoes, rack, water bottles, medicines, etc."). A list per place.
+   Several things go in at once with commas ("shoes, rack, water bottles"; a last "etc." or "and" is left out), and
+   "The mall: shoes, rack" in the place's box adds the place with its list. A tick marks a thing bought: struck through
+   and kept until Clear bought, so a slip at the shop is one more tick. Home's Shopping widget ticks the same things. ---------- */
+const hlShopSplit = (t) => String(t || "").split(/[,;\n]+/).map((w) => w.trim().replace(/^(and|&|dan)\s+/i, "").replace(/[.\s]+$/, "").trim().slice(0, 120))
+  .filter((w) => w && !/^(etc|dll|and so on|and more)$/i.test(w));
+const hlShopLine = (t) => { const i = t.indexOf(":"); return i > 0 ? { place: t.slice(0, i).trim(), items: hlShopSplit(t.slice(i + 1)) } : { place: t.trim(), items: [] }; };
+// new things onto a place's list (one already waiting there is not put twice)
+const hlShopPut = (q, items) => {
+  const have = new Set(q.items.filter((t) => !t.got).map((t) => t.text.toLowerCase())), add = [];
+  for (const text of items) { const k = text.toLowerCase(); if (!have.has(k)) { have.add(k); add.push({ id: uid(), text }); } }
+  return add.length ? { ...q, items: [...q.items, ...add].slice(0, 300) } : q;
+};
+const hlShopTick = (shop, tid) => shop.map((q) => (q.items.some((t) => t.id === tid) ? { ...q, items: q.items.map((t) => (t.id === tid ? { ...t, got: t.got ? 0 : 1 } : t)) } : q));
+// the box under a place's list
+const HlShopAdd = memo(({ pid, place, api }) => {
+  const [text, setText] = useState("");
+  const box = useRef(null);
+  const add = () => { const list = hlShopSplit(text); if (!list.length) { nudge(box.current); return; } api.current.shopAdd(pid, list); setText(""); };
+  return (
+    <div className="hl-add hl-shp-add">
+      <input ref={box} className="jr-in hl-add-t" placeholder={`Add to ${place}… (commas for several)`} value={text} maxLength={600} aria-label={`What to buy at ${place}`}
+             onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+      <button className="hl-plus" onClick={add} aria-label={`Add to ${place}`}><span className="msym">add</span></button>
+    </div>
+  );
+});
+// a place's name, changed where it stands: kept when the box is left or Enter is pressed, Esc puts it back
+const HlShopName = ({ q, api }) => {
+  const [v, setV] = useState(q.place);
+  useEffect(() => setV(q.place), [q.place]);
+  const keep = () => { const t = v.trim().slice(0, 60); if (t && t !== q.place) api.current.shopName(q.id, t); else setV(q.place); };
+  return <input className="hl-shp-name" value={v} maxLength={60} aria-label="The place's name" onChange={(e) => setV(e.target.value)} onBlur={keep}
+                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); else if (e.key === "Escape") { setV(q.place); setTimeout(() => e.target.blur()); } }} />;
+};
+const HlShop = memo(({ shop, api }) => {
+  const [text, setText] = useState("");
+  const box = useRef(null);
+  const all = shop.reduce((n, q) => n + q.items.length, 0), got = shop.reduce((n, q) => n + q.items.filter((t) => t.got).length, 0);
+  const add = () => {
+    const { place, items } = hlShopLine(text);
+    if (!place) { nudge(box.current); return; }
+    api.current.shopPlace(place.slice(0, 60), items);
+    setText("");
+  };
+  return (
+    <div className="hl-shop">
+      {all > 0 && (
+        <div className="hl-prog">
+          <span className="hl-prog-t"><b>{got}</b> of {all} bought</span>
+          <span className="hl-prog-bar"><i style={{ transform: `scaleX(${got / all})` }} /></span>
+        </div>
+      )}
+      {!shop.length && <div className="hl-empty">Nothing on the list yet. Add a place below, then what you want to buy there. “The mall: shoes, rack, water bottles” adds the place and its list in one go.</div>}
+      {shop.length > 0 && (
+        <div className="hl-shps">
+          {shop.map((q) => {
+            const left = q.items.filter((t) => !t.got).length;
+            return (
+              <section key={q.id} className="hl-shp">
+                <div className="hl-shp-head">
+                  <span className="msym" aria-hidden="true">storefront</span>
+                  <HlShopName q={q} api={api} />
+                  <span className="hl-tag">{!q.items.length ? "Empty" : left ? `${left} to buy` : "All bought"}</span>
+                  {left < q.items.length && <button className="bk-btn" onClick={() => api.current.shopClear(q.id)}>Clear bought</button>}
+                  <button className="x-btn hl-x" title={`Remove ${q.place}`} aria-label={`Remove ${q.place}`} onClick={() => api.current.shopDel(q.id)}>✕</button>
+                </div>
+                {q.items.length > 0 && (
+                  <div className="hl-list">
+                    {q.items.map((t, i) => (
+                      <div key={t.id} className={`hl-todo${t.got ? " done" : ""}`} style={{ animationDelay: `${i * 35}ms` }}>
+                        <button className="hl-check" onClick={() => api.current.shopTick(t.id)} aria-label={t.got ? `${t.text}: not bought yet` : `${t.text}: bought`}>
+                          <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
+                        </button>
+                        <span className="hl-todo-t"><span>{t.text}</span></span>
+                        <button className="x-btn hl-x" title="Remove" aria-label={`Remove ${t.text}`} onClick={() => api.current.shopItemDel(q.id, t.id)}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <HlShopAdd pid={q.id} place={q.place} api={api} />
+              </section>
+            );
+          })}
+        </div>
+      )}
+      <div className="hl-add">
+        <input ref={box} className="jr-in hl-add-t" placeholder="Add a place: the mall, a pharmacy, online…" value={text} maxLength={600} aria-label="Add a place"
+               onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+        <button className="hl-plus" onClick={add} aria-label="Add the place"><span className="msym">add_business</span></button>
+      </div>
+    </div>
+  );
+});
+
 /* ---------- health: the week at campus. A timetable of the classes (and anything else that comes back every week),
    Monday to Sunday, the hours down the side. A press on an empty hour adds something there; on a class, edits it ---------- */
 const HL_HOUR = 46;            // px an hour
 const hlNewCls = (dow, from) => ({ name: "", room: "", dow, from, to: hlHm(Math.min(23 * 60 + 59, hlMin(from) + 100)), tint: 0 });
-const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
-  const [form, setForm] = useState(null);     // { id?, name, room, dow, from, to, tint } while one is being added or edited
+/* A colour picked by hand (28 October 2026, his picture of the Mac's own colour box: "this color ui is horrid, make it match
+   the whole apps liquid glass theme and overall make it better"). The app's own, as a small glass pane under the pencil: a
+   field of the colour's strength and lightness, a bar of its hue, its hex to type, the screen's eyedropper when the engine
+   has one, soft swatches, and his kept colours. Dragging only draws this pane again; the colour is handed on when the
+   pointer is let go (or the hex is typed whole), so the week behind it is not drawn again on every move */
+const hexHsv = (hex) => {
+  const n = parseInt(String(hex).slice(1), 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+  let h = 0;
+  if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: (h * 60 + 360) % 360, s: mx ? d / mx : 0, v: mx };
+};
+const hsvHex = ({ h, s, v }) => {
+  const f = (k) => { const x = (k + h / 60) % 6; return v - v * s * Math.max(0, Math.min(x, 4 - x, 1)); };
+  return `#${[f(5), f(3), f(1)].map((c) => Math.round(c * 255).toString(16).padStart(2, "0")).join("")}`;
+};
+const CPK_SWATCHES = ["#ff8d97", "#ffa497", "#ffc07e", "#f0d88a", "#c5ea8a", "#8fe2b6", "#84dcd4", "#8ec8f8", "#a6b3ff", "#c3a8ff", "#eba6e6", "#ffa3bd"];
+const ColorPick = ({ value, kept = [], onPick, onKeep, onClose }) => {
+  const [hsv, setHsv] = useState(() => hexHsv(HL_HEX.test(value || "") ? value : "#8ec8f8"));
+  const [text, setText] = useState(null);
+  const box = useRef(null), now = useRef(hsv);
+  now.current = hsv;
+  const cur = hsvHex(hsv), saved = kept.includes(cur);
+  // Done's words dark on a light colour, white on a dark one
+  const lum = (() => { const n = parseInt(cur.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; })();
+  // Esc or a press outside closes it (and only it)
+  useEffect(() => {
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    const away = (e) => { if (box.current && !box.current.contains(e.target) && !(e.target.closest && e.target.closest(".hl-dot-pick"))) onClose(); };
+    window.addEventListener("keydown", key, true); window.addEventListener("pointerdown", away, true);
+    return () => { window.removeEventListener("keydown", key, true); window.removeEventListener("pointerdown", away, true); };
+  }, []);
+  const take = (hex) => { if (!HL_HEX.test(hex)) return; const q = hexHsv(hex); setHsv(q); setText(null); onPick(hsvHex(q)); };
+  const drag = (field) => (e) => {
+    if (e.button !== 0) return;
+    const el = e.currentTarget, r = el.getBoundingClientRect();
+    const at = (ev) => {
+      const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+      setHsv((q) => (field ? { ...q, s: x, v: 1 - y } : { ...q, h: x * 359.9 }));
+      setText(null);
+    };
+    at(e);
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+    const up = () => { el.removeEventListener("pointermove", at); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up); onPick(hsvHex(now.current)); };
+    el.addEventListener("pointermove", at); el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+  };
+  const eye = typeof window !== "undefined" && "EyeDropper" in window;
+  return (
+    <div ref={box} className="cpk glass lg-float" role="dialog" aria-label="Pick a colour" style={{ "--h": hsv.h, "--cur": cur, "--ink": lum > 0.6 ? "#0d1a26" : "#ffffff" }}>
+      <div className="cpk-sv" onPointerDown={drag(true)} role="slider" aria-label="Strength and lightness" aria-valuetext={cur}>
+        <i className="cpk-knob" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
+      </div>
+      <div className="cpk-row">
+        <span className="cpk-prev" aria-hidden="true" />
+        <div className="cpk-hue" onPointerDown={drag(false)} role="slider" aria-label="Hue" aria-valuenow={Math.round(hsv.h)} aria-valuemin={0} aria-valuemax={360}>
+          <i className="cpk-knob" style={{ left: `${(hsv.h / 360) * 100}%` }} />
+        </div>
+      </div>
+      <div className="cpk-row">
+        <span className="cpk-hex"><b>#</b><input value={text ?? cur.slice(1)} maxLength={7} spellCheck={false} aria-label="Hex colour"
+               onChange={(e) => { const t = e.target.value.replace(/[^0-9a-f]/gi, "").slice(0, 6); setText(t); if (t.length === 6) take(`#${t.toLowerCase()}`); }}
+               onBlur={() => setText(null)} onKeyDown={(e) => { if (e.key === "Enter") onClose(); }} /></span>
+        {eye && (
+          <button className="cpk-ico" title="Pick a colour from the screen" aria-label="Pick a colour from the screen"
+                  onClick={() => { try { new window.EyeDropper().open().then((r) => take(String(r.sRGBHex).toLowerCase())).catch(() => {}); } catch (err) { /* not here */ } }}>
+            <span className="msym" aria-hidden="true">colorize</span>
+          </button>
+        )}
+      </div>
+      <div className="cpk-sw">
+        {[...kept, ...CPK_SWATCHES.filter((c) => !kept.includes(c))].slice(0, 18).map((c) => (
+          <button key={c} className={c === cur ? "on" : ""} style={{ "--c": c }} title={c} aria-label={`Colour ${c}`} onClick={() => take(c)} />
+        ))}
+      </div>
+      <div className="cpk-go">
+        <button className="cpk-keep" disabled={saved} onClick={() => onKeep(cur)}><span className="msym" aria-hidden="true">{saved ? "check" : "bookmark_add"}</span>{saved ? "Kept" : "Keep as preset"}</button>
+        <button className="cpk-done" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+};
+/* A part that slides open and shut instead of appearing and vanishing (30 October 2026, his words on the class form: "this
+   doesnt have a closing animation when closed, make one, also when opened its not as smooth. make the animations smooth
+   and seamless"). The form was put into the page and taken out again in one frame, and the week under it jumped by its
+   whole height both ways. Now the box's height runs between nothing and its own, its words fading and sliding in it, and
+   what is under it goes along; shutting is the same the other way round and keeps the last form on show until it is gone.
+   Played from script on the box (height; transform and opacity on what is in it). While it plays the box cuts off top and
+   bottom only; at rest nothing is cut (the list of his classes hangs out of the form). A press while it leaves reaches
+   nothing (inert); opened again while it leaves, it turns round from where it stands. */
+const HL_SLIDE = { in: 420, out: 320 };
+const HlSlide = ({ open, children }) => {
+  const [mounted, setMounted] = useState(open);
+  const box = useRef(null), inner = useRef(null), keep = useRef(children), runs = useRef([]), phase = useRef("none");
+  if (open) { keep.current = children; if (!mounted) setMounted(true); }
+  useLayoutEffect(() => {
+    const el = box.current, inn = inner.current;
+    if (!el || !inn) { phase.current = "none"; return; }
+    const calm = !el.animate || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    // where it stands now: nothing yet when it has only just been put in, else wherever an entrance or an exit has got to
+    const fresh = phase.current === "none";
+    const h0 = fresh ? 0 : el.getBoundingClientRect().height, o0 = fresh ? 0 : parseFloat(getComputedStyle(inn).opacity) || 0;
+    runs.current.forEach((a) => a.cancel());
+    runs.current = [];
+    if (open) {
+      el.inert = false;
+      const to = el.getBoundingClientRect().height;
+      phase.current = "rest";
+      if (calm || Math.abs(to - h0) < 1) return;
+      phase.current = "in";
+      el.style.overflowY = "clip";
+      const a = el.animate([{ height: `${h0}px` }, { height: `${to}px` }], { duration: HL_SLIDE.in, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" });
+      const b = inn.animate([{ opacity: o0, transform: `translateY(${-8 * (1 - o0)}px)` }, { opacity: 1, transform: "none" }], { duration: HL_SLIDE.in * 0.75, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" });
+      runs.current = [a, b];
+      a.onfinish = () => { if (phase.current !== "in") return; phase.current = "rest"; el.style.overflowY = ""; };
+    } else {
+      if (calm) { phase.current = "none"; setMounted(false); return; }
+      phase.current = "out";
+      el.inert = true;
+      el.style.overflowY = "clip";
+      const a = el.animate([{ height: `${h0}px` }, { height: "0px" }], { duration: HL_SLIDE.out, easing: "cubic-bezier(0.32, 0.72, 0.24, 1)", fill: "forwards" });
+      const b = inn.animate([{ opacity: o0, transform: "none" }, { opacity: 0, transform: "translateY(-6px)" }], { duration: HL_SLIDE.out * 0.7, easing: "cubic-bezier(0.32, 0.72, 0.24, 1)", fill: "forwards" });
+      runs.current = [a, b];
+      a.onfinish = () => { if (phase.current !== "out") return; phase.current = "none"; setMounted(false); };
+    }
+  }, [open, mounted]);
+  useEffect(() => () => runs.current.forEach((a) => a.cancel()), []);
+  return mounted ? <div className="hl-fw" ref={box}><div className="hl-fw-in" ref={inner}>{open ? children : keep.current}</div></div> : null;
+};
+/* The class form's name box takes the focus without the browser's own scroll (29 October 2026: "when pressing a box on the
+   timetable, it scrolls up to the to do on top and week ui on middle … make it scroll up to just the beginning of the week
+   ui"): the browser put the box in the middle of the screen, which threw the page up past the week when it had been
+   scrolled down. Now, with the week's top above the screen, the page goes to the top of the week's card; with it in
+   sight, nothing moves. A stable function, so it is only asked once when the form opens */
+const hlFocusForm = (el) => {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  const card = el.closest('[data-card="week"]') || el.closest(".hl-week");
+  if (card && card.getBoundingClientRect().top < 0) card.scrollIntoView({ block: "start", behavior: "smooth" });
+};
+/* The time box (29 October 2026: "the ui for selecting hours doesnt match the rest of the app"): the browser's own time box and
+   its grey list gave way to a glass pane, like the colour picker's. The box shows the time as the clock setting says (24-hour
+   or AM / PM); the pane has the time to type ("830", "8:30", "2:30 pm"), the hours, the minutes in fives and, on the 12-hour
+   clock, AM / PM. What is picked is set at once; Esc, Done or a press outside shuts it. The pane stands on the page's body
+   (fixed), under the box or over it when there is no room, so a card that folds can't cut it off. The time stays "HH:MM" */
+const hlParseTime = (txt, pmNow) => {
+  const m = /^\s*(\d{1,2})(?:[:.]?(\d{2}))?\s*([ap])?\.?m?\.?\s*$/i.exec(txt);
+  if (!m) return null;
+  let h = +m[1];
+  const n = m[2] ? +m[2] : 0;
+  const mer = m[3] ? m[3].toLowerCase() === "p" : (pmNow === true || pmNow === false) && h >= 1 && h <= 12 ? pmNow : null;
+  if (mer !== null) { if (h < 1 || h > 12) return null; h = (h % 12) + (mer ? 12 : 0); }
+  if (h > 23 || n > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(n).padStart(2, "0")}`;
+};
+const TPK_HOURS_24 = Array.from({ length: 24 }, (_, i) => i), TPK_HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1), TPK_MINS = Array.from({ length: 12 }, (_, i) => i * 5);
+const TimeField = ({ value, onChange, label, cls = "" }) => {
+  const h12 = useClock12();
+  const [at, setAt] = useState(null);                 // null: shut; otherwise where the pane stands
+  const [text, setText] = useState(null);             // what is being typed (null: the time as it is)
+  const btn = useRef(null), pane = useRef(null), inp = useRef(null);
+  const ok = hlTimeOk(value);
+  const hh = ok ? +value.slice(0, 2) : null, mm = ok ? +value.slice(3) : null;
+  const two = (n) => String(n).padStart(2, "0");
+  const put = (h, m) => onChange(`${two(h)}:${two(m)}`);
+  const shut = () => { setAt(null); setText(null); };
+  useEffect(() => {
+    if (!at) return;
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); shut(); if (btn.current) btn.current.focus({ preventScroll: true }); } };
+    const away = (e) => { if (pane.current && !pane.current.contains(e.target) && !(btn.current && btn.current.contains(e.target))) shut(); };
+    const moved = (e) => { if (!pane.current || !pane.current.contains(e.target)) shut(); };
+    window.addEventListener("keydown", key, true); window.addEventListener("pointerdown", away, true);
+    window.addEventListener("scroll", moved, true); window.addEventListener("resize", shut);
+    if (inp.current) { inp.current.focus({ preventScroll: true }); inp.current.select(); }
+    return () => { window.removeEventListener("keydown", key, true); window.removeEventListener("pointerdown", away, true); window.removeEventListener("scroll", moved, true); window.removeEventListener("resize", shut); };
+  }, [!!at]);
+  const toggle = () => {
+    if (at) { shut(); return; }
+    const r = btn.current.getBoundingClientRect(), W = 244, H = 360;
+    const left = Math.max(8, Math.min(window.innerWidth - W - 8, r.left));
+    setAt(r.bottom + 8 + H > window.innerHeight && r.top - 8 - H > 0 ? { left, bottom: window.innerHeight - r.top + 8 } : { left, top: r.bottom + 8 });
+  };
+  const hours = h12 ? TPK_HOURS_12 : TPK_HOURS_24;
+  const pickH = (n) => put(h12 ? (n % 12) + (ok && hh >= 12 ? 12 : 0) : n, ok ? mm : 0);
+  const pickM = (n) => put(ok ? hh : new Date().getHours(), n);
+  return (
+    <>
+      <button type="button" ref={btn} className={`jr-in hl-tf${at ? " open" : ""}${cls ? ` ${cls}` : ""}`} aria-label={label} aria-haspopup="dialog" aria-expanded={!!at} onClick={toggle}>
+        <span>{ok ? clk(value) : "--:--"}</span><span className="msym" aria-hidden="true">schedule</span>
+      </button>
+      {at && createPortal(
+        <div ref={pane} className="tpk glass lg-float" role="dialog" aria-label={label} style={at}>
+          <div className="tpk-top">
+            <input ref={inp} className="tpk-in" value={text ?? (ok ? clk(value) : "")} spellCheck={false} maxLength={9} aria-label="Type the time" placeholder={h12 ? "8:30 AM" : "08:30"}
+                   onChange={(e) => { setText(e.target.value); const t = hlParseTime(e.target.value, h12 && ok ? hh >= 12 : h12 ? false : null); if (t) onChange(t); }}
+                   onBlur={() => setText(null)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); shut(); } }} />
+            {h12 && <SlideSeg value={ok && hh >= 12 ? "pm" : "am"} onPick={(v) => put(ok ? (hh % 12) + (v === "pm" ? 12 : 0) : v === "pm" ? 12 : 0, ok ? mm : 0)} options={[["am", "AM"], ["pm", "PM"]]} />}
+          </div>
+          <span className="tpk-cap">Hour</span>
+          <div className="tpk-g">
+            {hours.map((n) => <button key={n} type="button" className={ok && (h12 ? (hh % 12 || 12) === n : hh === n) ? "on" : ""} onClick={() => pickH(n)}>{h12 ? n : two(n)}</button>)}
+          </div>
+          <span className="tpk-cap">Minute</span>
+          <div className="tpk-g">
+            {TPK_MINS.map((n) => <button key={n} type="button" className={ok && mm === n ? "on" : ""} onClick={() => pickM(n)}>{two(n)}</button>)}
+          </div>
+          <button type="button" className="tpk-done" onClick={shut}>Done</button>
+        </div>, document.body)}
+    </>
+  );
+};
+// a class of his in the quick list, being changed in place (30 October 2026: "edit already made class presets from the
+// drop down, but make the button hidden or out of the way or just small"): its name, room and colour, and, when classes
+// on the timetable go by its name, whether they change with it
+const HlLibEdit = ({ ed, set, cols, n, taken, onSave, onCancel }) => {
+  const ok = !!ed.name.trim() && !taken;
+  const key = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); if (ok) onSave(); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancel(); }
+  };
+  return (
+    <span className="hl-lib-edit" style={{ "--c": hlClsCol(ed) }} onKeyDown={key}>
+      <span className="hl-lib-ed-in">
+        <input className="jr-in" value={ed.name} maxLength={60} autoFocus placeholder="Class name" aria-label="Class name" onChange={(e) => set({ name: e.target.value })} />
+        <input className="jr-in" value={ed.room} maxLength={40} placeholder="Where (room)" aria-label="Room" onChange={(e) => set({ room: e.target.value })} />
+      </span>
+      <span className="hl-dots">
+        {HL_CLS.map((c, i) => <button key={c} className={!ed.col && ed.tint === i ? "on" : ""} style={{ "--c": c }} onClick={() => set({ tint: i, col: undefined })} aria-label={`Colour ${i + 1}`} />)}
+        {cols.map((hx) => <button key={hx} className={ed.col === hx ? "on" : ""} style={{ "--c": hx }} onClick={() => set({ col: hx })} aria-label={`Your colour ${hx}`} />)}
+      </span>
+      {n > 0 && (
+        <label className="hl-lib-also">
+          <input type="checkbox" checked={ed.also} onChange={(e) => set({ also: e.target.checked })} />
+          Change the {n === 1 ? "1 class" : `${n} classes`} on the timetable too
+        </label>
+      )}
+      {taken && <small className="hl-lib-taken">Another of your classes has that name</small>}
+      <span className="hl-lib-ed-go">
+        <button className="bk-btn" onClick={onCancel}>Cancel</button>
+        <button className="hl-save" disabled={!ok} onClick={onSave}>Save</button>
+      </span>
+    </span>
+  );
+};
+const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, nowMin, api }) => {
+  useClock12();
+  // the form while a class is added or changed: { id?, name, room, dow, from, to, tint, rep: "week" | "once", once? }
+  const [form, setForm] = useState(null);
+  // the week on show, by its Monday (28 October 2026: "make me be able to go to next week and next week and so on")
+  const thisWk = hlAddDays(today, -hlDow(today));
+  const [wk, setWk] = useState(thisWk);
+  const [ask, setAsk] = useState(false);          // a repeating class's delete: only this week, from this week on, every week
+  const [libOpen, setLibOpen] = useState(false);  // the quick list of his classes, under the name
+  const [libEd, setLibEd] = useState(null);       // one of them being changed: { from (its name as it stands), name, room, tint, col, also }
+  const [pickOpen, setPickOpen] = useState(false); // the colour picker, under the pencil
+  const [nt, setNt] = useState(null);             // a class's notes, open: { c, k (the lesson's date) }
+  const [mv, setMv] = useState(null);             // a weekly class dropped somewhere new, asking which weeks: { left, top, up, k, k0 }
   // a timetable read off a picture (HL_OCR_OK): { busy } while it is read, { err }, or { found } to be checked
   const [scan, setScan] = useState(null);
-  const fileIn = useRef(null), over = useRef(false), sayT = useRef(0);
+  const fileIn = useRef(null), over = useRef(false), sayT = useRef(0), body = useRef(null), drag = useRef(null), held = useRef(null), tap = useRef(null);
+  const ntOpen = useRef(false);
+  ntOpen.current = !!nt;
+  // a day's width on screen, so a block can tell how many lines its words will take (the week is a grid of 7 columns)
+  const [colW, setColW] = useState(110);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (!el) return;
+    const fit = () => { const w = Math.round((el.clientWidth - 52 - 24) / 7); setColW((o) => (Math.abs(o - w) > 2 && w > 20 ? w : o)); };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // the blocks come in when the week is first shown or another week is (not when one is moved or added: it is just there)
+  const enter = useRef({ wk: null, at: 0 });
+  if (enter.current.wk !== wk) enter.current = { wk, at: performance.now() };
+  const fresh = performance.now() - enter.current.at < 1400;
+  const dates = Array.from({ length: 7 }, (_, w) => hlAddDays(wk, w));
   const scanFile = async (f) => {
     if (!f) return;
     if (!/^image\//.test(f.type || "") && !/\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || "")) { setScan({ err: "That isn't a picture" }); return; }
@@ -14759,16 +17414,20 @@ const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
     try { res = await window.flowHealth.ocr(new Uint8Array(await f.arrayBuffer()), (f.name || "").split(".").pop() || (f.type || "").split("/")[1] || "png"); } catch (e) { res = null; }
     if (!res || !Array.isArray(res.lines)) { setScan({ err: "The picture couldn't be read" }); return; }
     const have = new Set(classes.map((c) => `${c.dow}|${c.from}|${c.name.trim().toLowerCase()}`));
-    const found = hlReadTimetable(res.lines, res.W, res.H).filter((c) => !have.has(`${c.dow}|${c.from}|${c.name.toLowerCase()}`)).map((c, i) => ({ ...c, key: i, on: true }));
-    if (!found.length) { setScan({ err: !res.lines.length ? "No words found in that picture" : hlReadTimetable(res.lines, res.W, res.H).length ? "Those classes are on the week already" : "No classes found in it: is it a timetable?" }); return; }
-    setScan({ found });
+    const all = hlReadTimetable(res.lines, res.W, res.H, res.px);
+    const found = all.filter((c) => !have.has(`${c.dow}|${c.from}|${c.name.toLowerCase()}`)).map((c, i) => {
+      const q = hlLibMatch(lib, c);
+      return { ...c, key: i, on: true, ...(q ? { name: q.name, room: c.room || q.room, tint: q.tint, col: q.col, lib: true } : {}) };
+    });
+    if (!found.length) { setScan({ err: !res.lines.length ? "No words found in that picture" : hlReadTimetable(res.lines, res.W, res.H, res.px).length ? "Those classes are on the week already" : "No classes found in it: is it a timetable?" }); return; }
+    setScan({ found, week: all.week || null });
   };
   useEffect(() => { if (!scan || !scan.err) return; clearTimeout(sayT.current); sayT.current = setTimeout(() => setScan(null), 4200); return () => clearTimeout(sayT.current); }, [scan]);
   // a picture pasted while the pointer is on the week (as on the vision board)
   useEffect(() => {
     if (!HL_OCR_OK) return;
     const paste = (e) => {
-      if (!over.current) return;
+      if (!over.current || ntOpen.current) return;
       const t = e.target, tag = (t && t.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
       const f = [...(e.clipboardData ? e.clipboardData.files : [])].find((q) => /^image\//.test(q.type));
@@ -14777,82 +17436,1300 @@ const HlWeek = memo(({ classes, todayDow, nowMin, api }) => {
     window.addEventListener("paste", paste);
     return () => window.removeEventListener("paste", paste);
   }, [classes]);
-  const from = Math.min(8, ...classes.map((c) => Math.floor(hlMin(c.from) / 60)));
-  const to = Math.max(18, ...classes.map((c) => Math.ceil(hlMin(c.to) / 60)));
+  // ⌘⌫ with the pointer on the week: every class off at once (as the bin), with the usual Undo; not while typing
+  useEffect(() => {
+    const key = (e) => {
+      // (Esc while a class is dragged, or asked where it goes: put back where it was)
+      if (e.key === "Escape" && (held.current || (drag.current && drag.current.moved))) { e.preventDefault(); e.stopImmediatePropagation(); back(); return; }
+      if (!over.current || ntOpen.current || !(e.metaKey || e.ctrlKey) || (e.key !== "Backspace" && e.key !== "Delete") || e.repeat) return;
+      const t = e.target, tag = (t && t.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || (t && t.isContentEditable)) return;
+      e.preventDefault();
+      setForm(null);
+      api.current.clearCls();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("keydown", key, true); clearTimeout(tap.current && tap.current.t); };
+  }, []);
+  /* a day's pieces, as Apple's and Google's calendars lay them out (28 October 2026): a class that runs past midnight is
+     cut there and goes on at the top of the next day; pieces that overlap stand side by side, each in the first lane free
+     at its start, sharing the width by the lanes of the run of overlaps it is in */
+  const pieces = (w) => {
+    const k = dates[w], kp = hlAddDays(k, -1), out = [];
+    for (const c of classes) {
+      const a = hlMin(c.from), e = hlClsEnd(c);
+      if (hlClsOn(c, k)) out.push({ c, s: a, e: Math.min(e, 1440), head: true });
+      if (e > 1440 && hlClsOn(c, kp)) out.push({ c, s: 0, e: e - 1440, head: false });
+    }
+    out.sort((p, q) => p.s - q.s || q.e - p.e);
+    let run = [], end = -1, lanes = [];
+    const close = () => { const n = run.reduce((m, p) => Math.max(m, p.lane + 1), 1); run.forEach((p) => { p.n = n; }); };
+    for (const p of out) {
+      if (run.length && p.s >= end) { close(); run = []; lanes = []; end = -1; }
+      let L = lanes.findIndex((x) => x <= p.s);
+      if (L < 0) { L = lanes.length; lanes.push(0); }
+      lanes[L] = p.e; p.lane = L; run.push(p); end = Math.max(end, p.e);
+    }
+    if (run.length) close();
+    return out;
+  };
+  const byDay = dates.map((k, w) => pieces(w)), shown = byDay.flat();
+  // the deadlines of the week on show (assignments not done yet): a line each, at its time on its day
+  const dues = asg.filter((a) => !a.done && a.due >= dates[0] && a.due <= dates[6]);
+  const from = Math.min(8, ...shown.map((p) => Math.floor(p.s / 60)), ...dues.map((a) => Math.floor(hlMin(a.at) / 60)));
+  const to = Math.max(18, ...shown.map((p) => Math.ceil(p.e / 60)), ...dues.map((a) => Math.min(24, Math.floor(hlMin(a.at) / 60) + 1)));
   const hours = Array.from({ length: to - from }, (_, i) => from + i);
   const set = (p) => setForm((f) => ({ ...f, ...p }));
-  const ok = form && form.name.trim() && hlTimeOk(form.from) && hlTimeOk(form.to) && form.to > form.from;
-  const save = () => { if (!ok) return; api.current.saveCls(form); setForm(null); };
+  const open = (f) => { setAsk(false); setLibOpen(false); setLibEd(null); setPickOpen(false); setForm(f); };
+  const openCls = (c) => open({ ...c, rep: c.once ? "once" : "week" });
+  /* one press opens the class to change it; two in quick succession its notes (29 October 2026: "this ui can be opened by
+     double clicking on the class"). The first waits a moment for a second (as the flask does): the form, opening at once,
+     would push the week down under the second press */
+  const press = (c, w) => {
+    const t = tap.current, now = performance.now();
+    if (t && t.id === c.id && now - t.at < 300) { clearTimeout(t.t); tap.current = null; setForm(null); setNt({ c, k: dates[w] }); return; }
+    if (t) clearTimeout(t.t);
+    tap.current = { id: c.id, at: now, t: setTimeout(() => { tap.current = null; openCls(c); }, 260) };
+  };
+  const ok = form && form.name.trim() && hlTimeOk(form.from) && hlTimeOk(form.to) && form.to !== form.from;
+  const save = () => {
+    if (!ok) return;
+    const k = dates[form.dow], { rep, ...f } = form;
+    api.current.saveCls({ ...f, once: rep === "once" ? k : null, since: rep === "week" && (!form.id || form.once) ? k : undefined });
+    setForm(null);
+  };
+  const del = (how) => { api.current.delCls(form.id, how, dates[form.dow]); setForm(null); setAsk(false); };
+  /* a class dragged to another day or time (28 October 2026: "i want to be able to drag classes on the calendar"): the block
+     follows the pointer in quarter hours, written to the page directly; on release it is saved there. A press that does
+     not move opens it, as before */
+  // (from the grip at its foot: its end, in quarter hours, as both calendars do)
+  const down = (e, c, w) => {
+    if (e.button !== 0 || held.current) return;
+    const el = e.currentTarget, cols = [...body.current.querySelectorAll(".hl-tt-day")].map((d) => d.getBoundingClientRect());
+    const size = !!(e.target.closest && e.target.closest(".hl-cls-grip"));
+    drag.current = { c, w, el, sx: e.clientX, sy: e.clientY, cols, moved: false, pid: e.pointerId, nw: w, st: hlMin(c.from), size, len: hlClsEnd(c) - hlMin(c.from), h0: el.offsetHeight };
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* the pointer is gone already */ }
+  };
+  const move = (e) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pid) return;
+    const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+    if (!d.moved) { if (Math.hypot(dx, dy) < 5) return; d.moved = true; d.el.classList.add("drag"); }
+    if (d.size) {
+      d.nl = Math.max(15, Math.min(1439, d.len + Math.round(((dy / HL_HOUR) * 60) / 15) * 15));
+      d.el.style.height = `${Math.max(22, (Math.min(d.nl, 1440 - d.st) / 60) * HL_HOUR - 3)}px`;
+      d.el.dataset.at = `until ${clk(hlHm((d.st + d.nl) % 1440))}`;
+      return;
+    }
+    let nw = d.cols.findIndex((r) => e.clientX >= r.left && e.clientX < r.right);
+    if (nw < 0) nw = e.clientX < d.cols[0].left ? 0 : 6;
+    d.nw = nw;
+    d.st = Math.max(0, Math.min(24 * 60 - 15, hlMin(d.c.from) + Math.round(((dy / HL_HOUR) * 60) / 15) * 15));
+    d.el.style.transform = `translate(${d.cols[nw].left - d.cols[d.w].left}px, ${((d.st - hlMin(d.c.from)) / 60) * HL_HOUR}px)`;
+    d.el.dataset.at = `${DOW_FULL[nw]} ${clk(hlHm(d.st))}`;
+  };
+  // the block as it was before the drag (its offset, its height, its label)
+  const undrag = (d) => {
+    d.el.classList.remove("drag"); d.el.style.transform = ""; delete d.el.dataset.at;
+    if (d.size && d.el.isConnected) d.el.style.height = `${d.h0}px`;
+  };
+  // saved and drawn in the new place in one go, then the drag's own offset taken off: no frame in the old place
+  const commit = (d, how) => {
+    held.current = null; setMv(null);
+    if (d.size) flushSync(() => api.current.moveCls(d.c.id, d.w, d.c.from, hlHm((d.st + d.nl) % 1440), dates[d.w], how, dates[d.w]));
+    else flushSync(() => api.current.moveCls(d.c.id, d.nw, hlHm(d.st), hlHm((d.st + d.len) % 1440), dates[d.nw], how, dates[d.w]));
+    undrag(d);
+  };
+  // Esc, a press elsewhere, a lost pointer: back where it was, nothing saved
+  const back = () => {
+    const d = held.current || drag.current;
+    held.current = null; drag.current = null; setMv(null);
+    if (d) undrag(d);
+  };
+  // the press that ends a drag is no press on what is under it (an empty hour would open a new class there)
+  const eatClick = () => {
+    const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    window.addEventListener("click", eat, true);
+    setTimeout(() => window.removeEventListener("click", eat, true), 0);
+  };
+  const up = (e) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pid) return;
+    drag.current = null;
+    if (!d.moved) { press(d.c, d.w); return; }
+    eatClick();
+    const changed = d.size ? d.nl && d.nl !== d.len : d.nw !== d.w || d.st !== hlMin(d.c.from);
+    if (!changed) { undrag(d); return; }
+    if (d.c.once) { commit(d, "all"); return; }
+    /* a weekly class: which weeks (as Apple's and Google's calendars ask when a repeating event is moved). It stays where it
+       was dropped while asked; the question stands under it, or over it near the foot of the week */
+    held.current = d;
+    const bt = d.el.offsetTop + (d.size ? 0 : ((d.st - hlMin(d.c.from)) / 60) * HL_HOUR), bh = d.el.offsetHeight;
+    const col = body.current.querySelectorAll(".hl-tt-day")[d.size ? d.w : d.nw];
+    const low = bt + bh + 54 > body.current.offsetHeight;
+    const bw = body.current.offsetWidth, left = Math.min(Math.max(col.offsetLeft + col.offsetWidth / 2, 200), bw - 200);
+    setMv({ left, top: low ? bt - 8 : bt + bh + 8, up: low, k: dates[d.size ? d.w : d.nw], k0: dates[d.w] });
+  };
+  const cancel = (e) => { const d = drag.current; if (d && e.pointerId === d.pid) back(); };
+  // a press anywhere but the question, while it is asked: put back
+  useEffect(() => {
+    if (!mv) return;
+    const away = (e) => { if (!(e.target.closest && e.target.closest(".hl-mv-ask"))) back(); };
+    window.addEventListener("pointerdown", away, true);
+    return () => window.removeEventListener("pointerdown", away, true);
+  }, [mv]);
+  const shortDay = (k) => { const t = hlDate(k); return `${t.getDate()} ${MONTHS_SHORT[t.getMonth()]}`; };
+  const wkName = wk === thisWk ? "This week" : wk === hlAddDays(thisWk, 7) ? "Next week" : wk === hlAddDays(thisWk, -7) ? "Last week" : `Week of ${shortDay(wk)}`;
+  const inLib = form && lib.some((q) => q.name.toLowerCase() === form.name.trim().toLowerCase());
   return (
     <div className="hl-week" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
          onDragOver={HL_OCR_OK ? (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); } : undefined}
          onDrop={HL_OCR_OK ? (e) => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) { e.preventDefault(); scanFile(f); } } : undefined}>
-      {HL_OCR_OK && (
-        <div className="hl-scan-bar">
-          <button className="bk-btn hl-scan-btn" disabled={!!(scan && scan.busy)} onClick={() => fileIn.current?.click()}
-                  title="Read your timetable off a screenshot or a photo: the classes it finds are shown to check before they go in. You can also drop or paste a picture on the week.">
-            <span className="msym" aria-hidden="true">{scan && scan.busy ? "autorenew" : "document_scanner"}</span>{scan && scan.busy ? "Reading the picture…" : "From a picture"}
+      <div className="hl-scan-bar">
+        <span className="month-nav hl-wk-nav">
+          <button className="nav-arrow" title="The week before" onClick={() => setWk(hlAddDays(wk, -7))}>‹</button>
+          <button className="hl-wk-lbl" title={wk === thisWk ? "This week" : "Back to this week"} onClick={() => setWk(thisWk)}><b key={wk}>{wkName}</b></button>
+          <button className="nav-arrow" title="The week after" onClick={() => setWk(hlAddDays(wk, 7))}>›</button>
+        </span>
+        <span className="hl-wk-sub">{shortDay(dates[0])} – {shortDay(dates[6])}</span>
+        {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
+        <span className="hl-bar-sp" />
+        <button className="hl-ibtn" title="Add a class" aria-label="Add a class" onClick={() => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" })}><span className="msym" aria-hidden="true">add</span></button>
+        {HL_OCR_OK && (
+          <>
+            <button className="hl-ibtn hl-scan-btn" disabled={!!(scan && scan.busy)} onClick={() => fileIn.current?.click()} aria-label="Read a timetable off a picture"
+                    title={scan && scan.busy ? "Reading the picture…" : "Read your timetable off a screenshot or a photo: the classes it finds are shown to check before they go in. You can also drop or paste a picture on the week."}>
+              <span className="msym" aria-hidden="true">{scan && scan.busy ? "autorenew" : "add_photo_alternate"}</span>
+            </button>
+            <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />
+          </>
+        )}
+        {/* every class off at once, with Undo for 10 seconds (the note at the foot of the window) */}
+        {classes.length > 0 && (
+          <button className="hl-ibtn hl-clear-btn" aria-label="Clear the timetable" onClick={() => { setForm(null); api.current.clearCls(); }}
+                  title="Take every class off the timetable (⌘⌫ with the pointer on the week). Undo is offered for 10 seconds.">
+            <span className="msym" aria-hidden="true">delete</span>
           </button>
-          <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />
-          {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
-        </div>
-      )}
+        )}
+      </div>
       {scan && scan.found && (
-        <HlScanSheet found={scan.found} onCancel={() => setScan(null)}
-                     onAdd={(list) => { api.current.saveClsMany(list); setScan(null); }} />
+        <HlScanSheet found={scan.found} week={scan.week} onCancel={() => setScan(null)}
+                     onAdd={(list, wk0) => { api.current.saveClsMany(list, wk0); if (wk0) setWk(wk0); setScan(null); }} />
       )}
-      {form && (
+      <HlSlide open={!!form}>
+        {form && (
         <div className="hl-form" key={form.id || "new"}>
-          <input className="jr-in" placeholder="What (Calculus II, futsal…)" value={form.name} maxLength={60} autoFocus onChange={(e) => set({ name: e.target.value })}
-                 onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setForm(null); }} />
+          <span className="hl-name-row">
+            <input className="jr-in" placeholder="What (Calculus II, futsal…)" value={form.name} maxLength={60} ref={hlFocusForm} onChange={(e) => set({ name: e.target.value })}
+                   onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setForm(null); }} />
+            {/* his classes, one press away (28 October 2026: "have quick select for my classes (i can add more and or delete
+                classes) like a button for a drop down"): each class saved goes in by itself; × takes one out */}
+            <button className={`hl-ibtn hl-lib-btn${libOpen ? " on" : ""}`} title="My classes" aria-label="My classes" aria-expanded={libOpen} onClick={() => { setLibOpen((v) => !v); setLibEd(null); }}>
+              <span className="msym" aria-hidden="true">expand_more</span>
+            </button>
+            {libOpen && (
+              <span className="hl-lib lg-float" role="listbox" aria-label="My classes">
+                {!lib.length && <small className="hl-lib-none">The classes you add show here, to pick again in one press.</small>}
+                {lib.map((q) => (libEd && libEd.from === q.name ? (
+                  <HlLibEdit key={q.name} ed={libEd} set={(pp) => setLibEd((e) => ({ ...e, ...pp }))} cols={cols}
+                             n={classes.filter((c) => hlNoteKey(c.name) === hlNoteKey(q.name)).length}
+                             taken={lib.some((o) => o.name !== q.name && hlNoteKey(o.name) === hlNoteKey(libEd.name))}
+                             onCancel={() => setLibEd(null)}
+                             onSave={() => { api.current.libSet(q.name, libEd, libEd.also); setLibEd(null); }} />
+                ) : (
+                  <span key={q.name} className="hl-lib-it" style={{ "--c": hlClsCol(q) }}>
+                    <button className="hl-lib-go" onClick={() => { set({ name: q.name, room: q.room, tint: q.tint, col: q.col }); setLibOpen(false); }}>
+                      <i /><b>{q.name}</b>{q.room && <small>{q.room}</small>}
+                    </button>
+                    <button className="hl-lib-ed" title={`Change ${q.name}`} aria-label={`Change ${q.name}`}
+                            onClick={() => setLibEd({ from: q.name, name: q.name, room: q.room || "", tint: q.tint || 0, col: q.col, also: true })}>
+                      <span className="msym" aria-hidden="true">edit</span>
+                    </button>
+                    <button className="hl-lib-x" title={`Take ${q.name} off the list`} aria-label={`Take ${q.name} off the list`} onClick={() => api.current.libDel(q.name)}>×</button>
+                  </span>
+                )))}
+                {form.name.trim() && !inLib && (
+                  <button className="hl-lib-add" onClick={() => api.current.libAdd(form)}><span className="msym" aria-hidden="true">add</span>Keep “{form.name.trim()}” in my classes</button>
+                )}
+              </span>
+            )}
+          </span>
           <input className="jr-in" placeholder="Where (room)" value={form.room} maxLength={40} onChange={(e) => set({ room: e.target.value })}
                  onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
           <span className="jr-pick">{DOW_FULL.map((n, w) => <button key={n} className={`jr-chip${form.dow === w ? " on" : ""}`} onClick={() => set({ dow: w })}>{n}</button>)}</span>
           <span className="hl-times">
-            <input className="jr-in" type="time" value={form.from} onChange={(e) => set({ from: e.target.value })} aria-label="Starts" />
+            <TimeField value={form.from} onChange={(v) => set({ from: v })} label="Starts" />
             <i>to</i>
-            <input className="jr-in" type="time" value={form.to} onChange={(e) => set({ to: e.target.value })} aria-label="Ends" />
+            <TimeField value={form.to} onChange={(v) => set({ to: v })} label="Ends" />
+            {hlTimeOk(form.from) && hlTimeOk(form.to) && form.to < form.from && <em className="hl-next-day">ends {HL_DOW_LONG[(form.dow + 1) % 7]}</em>}
           </span>
-          <span className="hl-dots">{HL_CLS.map((c, i) => <button key={c} className={form.tint === i ? "on" : ""} style={{ "--c": c }} onClick={() => set({ tint: i })} aria-label={`Colour ${i + 1}`} />)}</span>
+          <SlideSeg value={form.rep} onPick={(v) => set({ rep: v })}
+                    options={[["week", `Every ${HL_DOW_LONG[form.dow]}`, "Every week, until you change or delete it"], ["once", `Only ${shortDay(dates[form.dow])}`, "On this date only"]]} />
+          {/* the seven, his own kept colours, and the pencil: any colour (28 October 2026: "make user be able to fully customize
+              the color for the timetable … save that as a quick preset and it shows up in the options"); × on a kept one takes it off */}
+          <span className="hl-dots">
+            {HL_CLS.map((c, i) => <button key={c} className={!form.col && form.tint === i ? "on" : ""} style={{ "--c": c }} onClick={() => set({ tint: i, col: undefined })} aria-label={`Colour ${i + 1}`} />)}
+            {cols.map((hx) => (
+              <span key={hx} className="hl-cdot">
+                <button className={form.col === hx ? "on" : ""} style={{ "--c": hx }} onClick={() => set({ col: hx })} aria-label={`Your colour ${hx}`} />
+                <i role="button" tabIndex={-1} title="Take this colour off" onClick={() => { api.current.colDel(hx); if (form.col === hx) set({ col: undefined }); }}>×</i>
+              </span>
+            ))}
+            <span className="hl-pick-wrap">
+              <button className={`hl-dot-pick${form.col && !cols.includes(form.col) ? " on" : ""}`} style={{ "--c": form.col && !cols.includes(form.col) ? form.col : "transparent" }}
+                      title="Any colour" aria-label="Any colour" aria-expanded={pickOpen} onClick={() => setPickOpen((v) => !v)}>
+                <span className="msym" aria-hidden="true">edit</span>
+              </button>
+              {pickOpen && <ColorPick value={form.col || HL_CLS[form.tint || 0]} kept={cols} onPick={(hx) => set({ col: hx })}
+                                      onKeep={(hx) => { set({ col: hx }); api.current.colAdd(hx); }} onClose={() => setPickOpen(false)} />}
+            </span>
+            {form.col && !cols.includes(form.col) && <button className="hl-dot-keep" onClick={() => api.current.colAdd(form.col)}><span className="msym" aria-hidden="true">add</span>Keep this colour</button>}
+          </span>
           <span className="hl-form-go">
-            {form.id && <button className="bk-btn danger" onClick={() => { api.current.delCls(form.id); setForm(null); }}>Delete</button>}
-            <button className="bk-btn" onClick={() => setForm(null)}>Cancel</button>
-            <button className="hl-save" disabled={!ok} onClick={save}>{form.id ? "Save" : "Add to the week"}</button>
+            {form.id && !ask && (
+              <button className="bk-btn hl-form-notes" title={notes[hlNoteKey(form.name)] ? `Notes · ${hlKeptSay(notes[hlNoteKey(form.name)])}` : "Notes"} aria-label="Notes"
+                      onClick={() => { const c = classes.find((o) => o.id === form.id); if (c) { setForm(null); setNt({ c, k: dates[form.dow] }); } }}>
+                <span className="msym" aria-hidden="true">sticky_note_2</span>
+              </button>
+            )}
+            {form.id && !ask && <button className="bk-btn danger" onClick={() => (form.rep === "week" && !form.once ? setAsk(true) : del("all"))}>Delete</button>}
+            {form.id && ask && (
+              <span className="hl-ask">
+                <button className="bk-btn danger" onClick={() => del("one")}>Only {shortDay(dates[form.dow])}</button>
+                <button className="bk-btn danger" onClick={() => del("after")}>From this week on</button>
+                <button className="bk-btn danger" onClick={() => del("all")}>Every week</button>
+              </span>
+            )}
+            <button className="bk-btn" onClick={() => (ask ? setAsk(false) : setForm(null))}>{ask ? "Keep it" : "Cancel"}</button>
+            {!ask && <button className="hl-save" disabled={!ok} onClick={save}>{form.id ? "Save" : "Add to the week"}</button>}
           </span>
         </div>
-      )}
+        )}
+      </HlSlide>
       <div className="hl-tt" style={{ "--hh": `${HL_HOUR}px` }}>
-        <div className="hl-tt-head"><i />{DOW_FULL.map((n, w) => <b key={n} className={w === todayDow ? "now" : ""}>{n}</b>)}</div>
-        <div className="hl-tt-body" style={{ height: hours.length * HL_HOUR }}>
-          <div className="hl-tt-hours">{hours.map((hr) => <span key={hr} style={{ top: (hr - from) * HL_HOUR }}>{pad(hr)}:00</span>)}</div>
+        <div className="hl-tt-head"><i />{DOW_FULL.map((n, w) => <b key={n} className={dates[w] === today ? "now" : ""}>{n}<i>{hlDate(dates[w]).getDate()}</i></b>)}</div>
+        <div className={`hl-tt-body${fresh ? " in" : ""}`} ref={body} style={{ height: hours.length * HL_HOUR }}>
+          <div className="hl-tt-hours">{hours.map((hr) => <span key={hr} style={{ top: (hr - from) * HL_HOUR }}>{clkHour(hr)}</span>)}</div>
           {DOW_FULL.map((n, w) => (
-            <div key={n} className={`hl-tt-day${w === todayDow ? " now" : ""}`}
+            <div key={n} className={`hl-tt-day${dates[w] === today ? " now" : ""}`}
                  onClick={(e) => {
                    if (e.target !== e.currentTarget) return;
                    const r = e.currentTarget.getBoundingClientRect(), hr = from + Math.floor((e.clientY - r.top) / HL_HOUR);
-                   setForm(hlNewCls(w, `${pad(Math.min(22, hr))}:00`));
+                   open({ ...hlNewCls(w, `${pad(Math.min(22, hr))}:00`), rep: "week" });
                  }}>
               {hours.map((hr) => <i key={hr} style={{ top: (hr - from) * HL_HOUR }} />)}
-              {classes.filter((c) => c.dow === w).map((c, i) => {
-                const top = ((hlMin(c.from) - from * 60) / 60) * HL_HOUR, ht = Math.max(22, ((hlMin(c.to) - hlMin(c.from)) / 60) * HL_HOUR - 3);
+              {byDay[w].map((p, i) => {
+                const c = p.c, col = hlClsCol(c), top = ((p.s - from * 60) / 60) * HL_HOUR, ht = Math.max(22, ((p.e - p.s) / 60) * HL_HOUR - 3);
+                const night = hlClsEnd(c) > 1440, when = p.head ? `${clk(c.from)}–${clk(c.to)}${night ? " (next day)" : ""}` : `until ${clk(c.to)}`;
+                const kept = notes[hlNoteKey(c.name)], star = kept && kept.items.some((q) => q.star);
+                /* the lines a block has room for (30 October 2026: "text cut short with space to spare", then a long name,
+                   "Eunoia PPI Welcoming Party", cut to one line in a short block while the time took the other): from the
+                   width of its lane, how many lines each of its words need; the name first (up to 3), then the time, then the
+                   room (up to 2 each), each as many as are left */
+                const avail = Math.max(1, Math.floor((ht - 10) / 15)), tw = (p.n > 1 ? colW / p.n - 4 : colW - 6) - 14 - (kept ? 14 : 0);
+                const cpl = Math.max(4, Math.floor(tw / 7.2)), cps = Math.max(4, Math.floor(tw / 6.3));
+                const nameL = Math.min(Math.ceil((c.name.length * 1.12) / cpl) || 1, 3, avail), left1 = avail - nameL;
+                const timeL = Math.min(Math.ceil(when.length / cps), 2, left1), roomL = c.room ? Math.min(Math.ceil(c.room.length / cps) || 1, 2, left1 - timeL) : 0;
+                const showT = timeL > 0, showR = roomL > 0;
                 return (
-                  <button key={c.id} className="hl-cls" style={{ top, height: ht, "--c": HL_CLS[c.tint], animationDelay: `${w * 30 + i * 40}ms` }}
-                          onClick={() => setForm({ ...c })} title={`${c.name} · ${c.from}–${c.to}${c.room ? ` · ${c.room}` : ""}`}>
-                    <b>{c.name}</b>
-                    {ht > 34 && <span>{c.from}–{c.to}</span>}
-                    {ht > 52 && c.room && <span>{c.room}</span>}
+                  <button key={`${c.id}${p.head ? "" : "+"}`} className={`hl-cls${p.head ? "" : " cont"}${p.e >= 1440 && p.head && night ? " night" : ""}`}
+                          style={{ top, height: ht, "--c": col, ...(p.n > 1 ? { left: `calc(${(p.lane * 100) / p.n}% + 2px)`, right: "auto", width: `calc(${100 / p.n}% - 4px)` } : {}), animationDelay: `${w * 30 + i * 40}ms` }}
+                          onPointerDown={p.head ? (e) => down(e, c, w) : undefined} onPointerMove={p.head ? move : undefined} onPointerUp={p.head ? up : undefined}
+                          onPointerCancel={p.head ? cancel : undefined} onLostPointerCapture={p.head ? cancel : undefined}
+                          onClick={(e) => { if (e.detail === 0) openCls(c); else if (!p.head) press(c, w > 0 ? w - 1 : w); }}
+                          onKeyDown={(e) => { if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); setForm(null); setNt({ c, k: dates[p.head ? w : Math.max(0, w - 1)] }); } }}
+                          title={`${c.name} · ${clk(c.from)}–${clk(c.to)}${night ? " the next day" : ""}${c.room ? ` · ${c.room}` : ""}${c.once ? " · this date only" : " · every week"}\nDouble-click for its notes${kept ? ` (${hlKeptSay(kept)})` : ""}`}>
+                    <b style={{ "--nl": nameL }}>{c.name}</b>
+                    {showT && <span style={{ "--nl": timeL }}>{when}</span>}
+                    {showR && <span style={{ "--nl": roomL }}>{c.room}</span>}
+                    {p.head && kept && <span className={`msym hl-cls-kept${star ? " star" : ""}`} aria-hidden="true">{star ? "star" : "sticky_note_2"}</span>}
+                    {p.head && <i className="hl-cls-grip" aria-hidden="true" />}
                   </button>
                 );
               })}
-              {w === todayDow && nowMin >= from * 60 && nowMin < to * 60 && <span className="hl-now" style={{ top: ((nowMin - from * 60) / 60) * HL_HOUR }} />}
+              {dates[w] === today && nowMin >= from * 60 && nowMin < to * 60 && <span className="hl-now" style={{ top: ((nowMin - from * 60) / 60) * HL_HOUR }} />}
+              {dues.filter((a) => a.due === dates[w]).map((a, i) => (
+                <button key={`due-${a.id}`} className="hl-due" style={{ top: ((hlMin(a.at) - from * 60) / 60) * HL_HOUR, animationDelay: `${240 + w * 30 + i * 60}ms` }}
+                        title={`Due ${clk(a.at)}: ${a.title || hlAsgKind(a.kind)[1]}${a.cls ? ` · ${a.cls}` : ""}\nPress to open it`}
+                        onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); api.current.asgOpen(a.id); }}>
+                  <span className="hl-due-tab"><span className="msym" aria-hidden="true">flag</span><b>{a.title || hlAsgKind(a.kind)[1]}</b><i>{clk(a.at)}</i></span>
+                </button>
+              ))}
             </div>
           ))}
+          {mv && (
+            <span className={`hl-mv-ask lg-float${mv.up ? " up" : ""}`} style={{ left: mv.left, top: mv.top }} role="group" aria-label="Move which weeks">
+              <button className="bk-btn" onClick={() => held.current && commit(held.current, "one")}>Only {shortDay(mv.k)}</button>
+              <button className="bk-btn" onClick={() => held.current && commit(held.current, "after")}>From this week on</button>
+              <button className="bk-btn" onClick={() => held.current && commit(held.current, "all")}>Every week</button>
+              <button className="bk-btn hl-mv-x" aria-label="Put it back" title="Put it back (Esc)" onClick={back}><span className="msym" aria-hidden="true">undo</span></button>
+            </span>
+          )}
         </div>
       </div>
-      {!form && <div className="hl-hint">Press an empty hour to put something there, or a class to change it.</div>}
+      <div className={`hl-hint${form ? " off" : ""}`} aria-hidden={!!form}>Press an empty hour to add a class, a class to change it, or drag it to another day or time. Double-click a class for its notes.</div>
+      {nt && (() => {
+        const c = classes.find((o) => o.id === nt.c.id) || nt.c;
+        return <HlClsNotes key={c.id} cls={c} k={nt.k} notes={notes[hlNoteKey(c.name)]} api={api} onClose={() => setNt(null)}
+                           onEdit={() => { setNt(null); openCls(c); }} />;
+      })()}
     </div>
   );
 });
+
+/* ---------- health: a class's notes (29 October 2026, his words: "include information and sort of description for the
+   lessons, say i want to mark an important powerpoint that i will possibly lose cause everything gets stacked, or links to
+   crucial books and text and stuff like that. this ui can be opened by double clicking on the class on the timetable").
+   A pop-up over the week: a few words about the class, then what he keeps for it: links (opened in his browser), files of
+   his Mac (a PowerPoint, a PDF: dropped on it or picked, opened in their own app) and plain notes, each with the date of the
+   lesson it was kept from. A star puts one at the top, under Important, where it can't get lost under the rest. Kept by the
+   class's name (hlNoteKey), so every week of it, and a week read off a picture, shares them ---------- */
+const HL_FILE_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.where && window.flowHealth.open);
+const hlNoteExt = (s) => { const m = /\.([a-z0-9]{1,6})(?:[?#].*)?$/i.exec(String(s || "")); return m ? m[1].toLowerCase() : ""; };
+const hlNoteIcon = (it) => {
+  const e = hlNoteExt(it.file || (it.url && new URL(it.url).pathname));
+  if (/^(pptx?|key|odp)$/.test(e)) return "slideshow";
+  if (e === "pdf") return "picture_as_pdf";
+  if (/^(docx?|pages|rtf|txt|md|odt)$/.test(e)) return "description";
+  if (/^(xlsx?|numbers|csv|ods)$/.test(e)) return "table_chart";
+  if (/^(png|jpe?g|heic|gif|webp)$/.test(e)) return "image";
+  if (/^(mp4|mov|m4v)$/.test(e) || (it.url && /youtu\.?be|vimeo|echo360|panopto/i.test(it.url))) return "smart_display";
+  return it.file ? "draft" : it.url ? "link" : "sticky_note_2";
+};
+// the name a link goes by when only the link was pasted: its file's name when it ends in one ("Week%205.pptx" → "Week 5.pptx"),
+// otherwise its site
+const hlNoteName = (url) => {
+  try {
+    const u = new URL(url), last = decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || "");
+    return hlNoteExt(last) && last.length < 90 ? last.replace(/[_+]/g, " ") : u.host.replace(/^www\./, "");
+  } catch (e) { return url; }
+};
+const hlNoteSub = (it) => {
+  if (it.file) return it.file.split("/").slice(-2, -1)[0] ? `In ${it.file.split("/").slice(-2, -1)[0]}` : "On this Mac";
+  if (!it.url) return "";
+  try {
+    const u = new URL(it.url);
+    let path = u.pathname;
+    try { path = decodeURIComponent(path); } catch (e) { /* as it is */ }      // "Week%201.pptx" reads "Week 1.pptx"
+    return `${u.host.replace(/^www\./, "")}${path.length > 1 ? path.slice(0, 32) + (path.length > 32 ? "…" : "") : ""}`;
+  } catch (e) { return it.url; }
+};
+// one line typed or pasted: a link and the words with it ("Week 5 slides https://…"), or a note
+const hlNoteParse = (s) => {
+  const t = String(s || "").trim(), m = /(https?:\/\/|www\.)[^\s<>"]+/i.exec(t);
+  if (!m) return t ? { t: t.slice(0, 300) } : null;
+  const url = (/^www\./i.test(m[0]) ? `https://${m[0]}` : m[0]).replace(/[),.;:!?'"]+$/, "");
+  if (!hlNoteUrl(url)) return { t: t.slice(0, 300) };
+  const words = (t.slice(0, m.index) + " " + t.slice(m.index + m[0].length)).replace(/^[\s\-–:|·,]+|[\s\-–:|·,]+$/g, "").replace(/\s{2,}/g, " ");
+  return { t: (words || hlNoteName(url)).slice(0, 300), url };
+};
+/* One lesson of a class, open in the class's pop-up (30 October 2026, his words: "i want to make files for individual
+   classes and timetable boxes. so for example i got BTW class and i can put files for each 10 lessons of the semester,
+   week 1, 2 etc, and i can open them and insert a description, files, links (show just like a normal file with a box),
+   and i can individually insert a description for each of the file"). Its name (Week 1 until he types another), its date
+   when it was made from a block, its words, then what is kept in it as file boxes, each with its own words. What is typed
+   is kept as each box is left and as the lesson closes; Esc goes back to the class */
+const HlLesItem = ({ it, nkey, lid, api, onOpen }) => {
+  const [about, setAbout] = useState(it.about || "");
+  const now = useRef(about), was = useRef(it.about || "");
+  now.current = about; was.current = it.about || "";
+  const save = () => { if (now.current !== was.current) api.current.lesItemSet(nkey, lid, it.id, { about: now.current.slice(0, 4000) }); };
+  useEffect(() => () => save(), []);
+  const go = !!(it.url || it.file), ext = hlNoteExt(it.file || it.url || "");
+  return (
+    <div className="hl-lf">
+      <button className="hl-lf-box" disabled={!go} onClick={() => onOpen(it)} title={it.url || it.file || it.t}>
+        <span className="hl-lf-ico"><span className="msym" aria-hidden="true">{hlNoteIcon(it)}</span><i>{ext && ext.length <= 5 ? ext : it.file ? "file" : it.url ? "link" : "note"}</i></span>
+        <span className="hl-lf-tx"><b>{it.t || hlNoteName(it.url || "")}</b><small>{hlNoteSub(it) || "A note"}</small></span>
+      </button>
+      <textarea className="hl-lf-about" value={about} maxLength={4000} rows={3} spellCheck={false} placeholder="Add a description" aria-label={`About ${it.t || "this"}`}
+                onChange={(e) => setAbout(e.target.value)} onBlur={save} />
+      <button className="hl-nt-x hl-lf-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.lesItemDel(nkey, lid, it.id)}>
+        <span className="msym" aria-hidden="true">close</span>
+      </button>
+    </div>
+  );
+};
+/* Formatting in a class's and a lesson's description (31 October 2026, his words: "make me be able to bold, underline,
+   change text color on the description of notes of classes, take heavy inspiration from microsoft word. though just the
+   bare features"). Word's Home tab, Font group, bare: Bold, Italic, Underline (⌘B ⌘I ⌘U), Font Color as Word has it (the
+   A with a bar of the last colour applies that colour; the arrow beside it opens Automatic and Word's ten Standard Colors)
+   and Clear All Formatting. Each colour has a tone for the dark look (Word's own, for the light look, are too dark on
+   graphite). The box is the engine's own editable text (execCommand: <b> <i> <u>, and a colour as <font> with a stand-in
+   value per colour, coloured by the stylesheet); what is kept is cleaned to those few tags (rtClean), the colours as
+   data-c, so nothing else can ever come in through a backup. The plain words are kept beside it (`about`), as before. */
+const RT_COLS = [["auto", "Automatic", "#dfe3e7", "#1f2328"], ["dkred", "Dark Red", "#e46a6a", "#c00000"], ["red", "Red", "#ff5c5c", "#ff0000"],
+  ["orange", "Orange", "#ffc23a", "#c78f00"], ["yellow", "Yellow", "#ffea5c", "#a99400"], ["ltgreen", "Light Green", "#a7dc66", "#5c9a1c"],
+  ["green", "Green", "#36cf7c", "#00a04a"], ["ltblue", "Light Blue", "#3cc6f5", "#0090c8"], ["blue", "Blue", "#5ea6ec", "#0070c0"],
+  ["dkblue", "Dark Blue", "#8299e0", "#002060"], ["purple", "Purple", "#bb88ea", "#7030a0"]];
+const RT_HEX = Object.fromEntries(RT_COLS.map(([k], i) => [`#0a0b${String(i).padStart(2, "0")}`, k]));
+const RT_HEX_OF = Object.fromEntries(Object.entries(RT_HEX).map(([h, k]) => [k, h]));
+const RT_CSS = RT_COLS.map(([k, , dk, lt], i) => `.rt-ed [data-c="${k}"], .rt-ed font[color="#0a0b${String(i).padStart(2, "0")}" i] { color: light-dark(${dk}, ${lt}); }
+        .rt-sw[data-c="${k}"] { background: light-dark(${dk}, ${lt}); }`).join("\n        ");
+const rtEsc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const rtFromText = (t) => rtEsc(t || "").replace(/\n/g, "<br>");
+// only <b> <i> <u> <span data-c> <div> <br>; anything else gives its words only
+const rtClean = (html) => {
+  if (typeof html !== "string" || !html || typeof document === "undefined") return "";
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html.slice(0, 80000);
+  const walk = (n) => {
+    let out = "";
+    for (const c of n.childNodes) {
+      if (c.nodeType === 3) { out += rtEsc(c.nodeValue); continue; }
+      if (c.nodeType !== 1) continue;
+      const tag = c.tagName.toLowerCase(), st = c.getAttribute("style") || "";
+      if (tag === "br") { out += "<br>"; continue; }
+      let w = walk(c);
+      const col = c.getAttribute("data-c") || (tag === "font" ? RT_HEX[(c.getAttribute("color") || "").toLowerCase()] : null);
+      if (col && RT_HEX_OF[col]) w = `<span data-c="${col}">${w}</span>`;
+      if (tag === "u" || /text-decoration[^;]*underline/i.test(st)) w = `<u>${w}</u>`;
+      if (tag === "i" || tag === "em" || /font-style:\s*italic/i.test(st)) w = `<i>${w}</i>`;
+      if (tag === "b" || tag === "strong" || /font-weight:\s*(bold|[6-9]00)/i.test(st)) w = `<b>${w}</b>`;
+      if (tag === "div" || tag === "p") w = `<div>${w || "<br>"}</div>`;
+      out += w;
+    }
+    return out;
+  };
+  return walk(tpl.content);
+};
+// html: what is kept (null: only plain words so far); text: those plain words; onType(html, text) as it changes; onLeave
+const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
+  const ed = useRef(null), palRef = useRef(null);
+  const [on, setOn] = useState({}), [pal, setPal] = useState(false), [last, setLast] = useState("red");
+  useLayoutEffect(() => { ed.current.innerHTML = html ? rtClean(html) : rtFromText(text); }, []);
+  const tell = () => { const e = ed.current; if (e.innerText.trim() === "" && !e.querySelector("li")) e.innerHTML = ""; onType(e.innerHTML, e.innerText.replace(/\n$/, "")); };
+  const state = () => { try { setOn({ b: document.queryCommandState("bold"), i: document.queryCommandState("italic"), u: document.queryCommandState("underline") }); } catch (e) { /* not in the box */ } };
+  useEffect(() => {
+    const f = () => { if (ed.current && ed.current.contains(document.getSelection().anchorNode)) state(); };
+    document.addEventListener("selectionchange", f);
+    return () => document.removeEventListener("selectionchange", f);
+  }, []);
+  useEffect(() => {
+    if (!pal) return;
+    const out = (e) => { if (palRef.current && !palRef.current.contains(e.target)) setPal(false); };
+    window.addEventListener("pointerdown", out, true);
+    return () => window.removeEventListener("pointerdown", out, true);
+  }, [pal]);
+  const cmd = (c, v) => {
+    const e = ed.current;
+    if (document.activeElement !== e) e.focus();
+    document.execCommand("styleWithCSS", false, false);
+    document.execCommand(c, false, v);
+    state(); tell();
+  };
+  const paint = (k) => { setLast(k); setPal(false); cmd("foreColor", RT_HEX_OF[k]); };
+  const keep = (e) => e.preventDefault();        // a press on the bar leaves the words chosen in the box
+  const name = (k) => (RT_COLS.find((c) => c[0] === k) || RT_COLS[0])[1];
+  return (
+    <div className="rt">
+      <div className="rt-bar" role="toolbar" aria-label="Text formatting" onMouseDown={keep}>
+        <button className={`rt-btn${on.b ? " on" : ""}`} aria-pressed={!!on.b} title="Bold (⌘B)" onClick={() => cmd("bold")}><b>B</b></button>
+        <button className={`rt-btn${on.i ? " on" : ""}`} aria-pressed={!!on.i} title="Italic (⌘I)" onClick={() => cmd("italic")}><i>I</i></button>
+        <button className={`rt-btn${on.u ? " on" : ""}`} aria-pressed={!!on.u} title="Underline (⌘U)" onClick={() => cmd("underline")}><u>U</u></button>
+        <span className="rt-sep" />
+        <span className="rt-col" ref={palRef}>
+          <button className="rt-btn rt-a" title={`Font Color: ${name(last)}`} aria-label={`Font colour ${name(last)}`} onClick={() => paint(last)}><span>A</span><i className="rt-sw" data-c={last} /></button>
+          <button className={`rt-btn rt-arr${pal ? " on" : ""}`} aria-expanded={pal} aria-haspopup="menu" title="More colours" onClick={() => setPal((v) => !v)}><span className="msym" aria-hidden="true">arrow_drop_down</span></button>
+          {pal && (
+            <div className="rt-pal glass lg-float" role="menu" aria-label="Font colour">
+              <button className="rt-auto" role="menuitem" onClick={() => paint("auto")}><i className="rt-sw" data-c="auto" />Automatic</button>
+              <div className="rt-pal-t">Standard Colors</div>
+              <div className="rt-sws">
+                {RT_COLS.slice(1).map(([k, n]) => <button key={k} role="menuitem" className="rt-sw-b" title={n} aria-label={n} onClick={() => paint(k)}><i className="rt-sw" data-c={k} /></button>)}
+              </div>
+            </div>
+          )}
+        </span>
+        <span className="rt-sep" />
+        <button className="rt-btn" title="Clear All Formatting" aria-label="Clear all formatting" onClick={() => { cmd("removeFormat"); }}><span className="msym" aria-hidden="true">format_clear</span></button>
+      </div>
+      <div ref={ed} className="jr-in hl-nt-about rt-ed" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={label} data-ph={placeholder}
+           spellCheck={false} onInput={tell} onBlur={onLeave} onFocus={state}
+           onPaste={(e) => { e.preventDefault(); document.execCommand("insertText", false, e.clipboardData.getData("text/plain")); }}
+           onKeyDown={(e) => {
+             const k = e.key.toLowerCase();
+             if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (k === "b" || k === "i" || k === "u")) { e.preventDefault(); e.stopPropagation(); cmd(k === "b" ? "bold" : k === "i" ? "italic" : "underline"); }
+           }} />
+    </div>
+  );
+};
+const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, onClose }) => {
+  const [title, setTitle] = useState(lesson.t || "");
+  const about = useRef({ text: lesson.about || "", html: lesson.aboutH || "" });
+  const now = useRef({ title }), was = useRef(lesson);
+  now.current = { title }; was.current = lesson;
+  const saveTitle = () => { const t = now.current.title.trim().slice(0, 80); if (t !== (was.current.t || "")) api.current.lessonSet(nkey, lesson.id, { t }); };
+  const saveAbout = () => {
+    const a = about.current;
+    if (a.text !== (was.current.about || "") || a.html !== (was.current.aboutH || "")) api.current.lessonSet(nkey, lesson.id, { about: a.text.slice(0, 20000), aboutH: rtClean(a.html) });
+  };
+  useEffect(() => () => { saveTitle(); saveAbout(); }, []);
+  const name = `Week ${idx + 1}`, items = lesson.items;
+  return (
+    <>
+      <div className="fx-head">
+        <span className="hl-ls-head">
+          <button className="x-btn hl-ls-back" style={S.closeBtn} aria-label={`Back to ${cls.name}`} title={`Back to ${cls.name} (Esc)`} onClick={onBack}>
+            <span className="msym" aria-hidden="true">arrow_back</span>
+          </button>
+          <div className="hl-nt-hd">
+            <div className="hl-ls-cls">{cls.name}{lesson.k ? ` · ${hlNice(lesson.k)}` : ""}</div>
+            <input className="hl-ls-title" value={title} maxLength={80} placeholder={name} spellCheck={false} aria-label="The lesson's name"
+                   onChange={(e) => setTitle(e.target.value)} onBlur={saveTitle} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+          </div>
+        </span>
+        <span className="hl-nt-tools">
+          <button className="x-btn hl-nt-edit" style={S.closeBtn} aria-label="Delete this lesson" title="Delete this lesson (Undo is offered)"
+                  onClick={() => { api.current.lessonDel(nkey, lesson.id); onBack(); }}>
+            <span className="msym" aria-hidden="true">delete</span>
+          </button>
+          <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={onClose}>✕</button>
+        </span>
+      </div>
+      <RichBox html={lesson.aboutH} text={lesson.about} label="About this lesson" placeholder="What this lesson was about: the topic, what was set, what to read…"
+               onType={(html, text) => { about.current = { html, text }; }} onLeave={saveAbout} />
+      {lineBox("Paste a link or write a note, then Enter")}
+      <div className="hl-nt-list">
+        {!items.length ? (
+          <div className="hl-nt-none">
+            <span className="msym" aria-hidden="true">folder_open</span>
+            <b>Nothing in {title.trim() || name} yet</b>
+            <small>Slides, readings, links{HL_FILE_OK ? ", a file from your Mac (drop it here)" : ""} or a note: each gets a box, with a description of its own.</small>
+          </div>
+        ) : (
+          <div className="hl-ls-files">
+            {items.map((it) => <HlLesItem key={it.id} it={it} nkey={nkey} lid={lesson.id} api={api} onOpen={onOpen} />)}
+          </div>
+        )}
+      </div>
+      <div className="fx-foot">
+        <span key={say} className={say ? "hl-nt-say" : ""}>{say || `${title.trim() || name} of ${cls.name}. ${HL_FILE_OK ? "Files stay where they are on your Mac: only where they are is kept." : ""}`}</span>
+      </div>
+    </>
+  );
+};
+const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
+  useClock12();
+  const key = hlNoteKey(cls.name), n = notes || { about: "", items: [] }, lessons = n.lessons || [];
+  // the lesson open (its id); opened from a block whose date has a lesson, that lesson at once
+  const [les, setLes] = useState(() => { const l = k && lessons.find((q) => q.k === k); return l ? l.id : null; });
+  const lesson = les ? lessons.find((q) => q.id === les) || null : null, lesNow = useRef(null);
+  lesNow.current = lesson;
+  const [about, setAbout] = useState(n.about);
+  const aboutH = useRef(n.aboutH || "");
+  const [line, setLine] = useState("");
+  const [say, setSay] = useState("");
+  const [over, setOver] = useState(false);
+  const aboutRef = useRef(about), sayT = useRef(0), fileIn = useRef(null);
+  aboutRef.current = about;
+  // his words are kept as he leaves the box, and as the pop-up shuts
+  const keepAbout = () => { if (aboutRef.current !== ((notes && notes.about) || "") || aboutH.current !== ((notes && notes.aboutH) || "")) api.current.noteAbout(key, aboutRef.current, rtClean(aboutH.current)); };
+  useEffect(() => () => { keepAbout(); clearTimeout(sayT.current); }, []);
+  const sh = useSheet(onClose, (e) => {
+    const t = e.target, tag = (t && t.tagName || "").toLowerCase(), typing = tag === "input" || tag === "textarea";
+    // Esc inside a lesson goes back to the class (what was typed is kept as the lesson's boxes go), not out of the pop-up
+    if (e.key === "Escape" && lesNow.current) { e.stopImmediatePropagation(); e.preventDefault(); if (typing) t.blur(); setLes(null); return true; }
+    // (the days behind don't step while it is open)
+    if (!typing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.stopPropagation(); return true; }
+    return false;
+  });
+  const tell = (m) => { clearTimeout(sayT.current); setSay(m); sayT.current = setTimeout(() => setSay(""), 4200); };
+  // what is kept goes to the lesson open, or to the whole class (with the date it was kept from)
+  const keep = (it) => { const l = lesNow.current; if (l) api.current.lesItemAdd(key, l.id, it); else api.current.noteAdd(key, { ...it, ...(k ? { k } : {}) }); };
+  const add = () => {
+    const it = hlNoteParse(line);
+    if (!it) return;
+    keep(it);
+    setLine("");
+  };
+  const addFiles = (files) => {
+    let n0 = 0;
+    for (const f of files) {
+      const p = HL_FILE_OK ? window.flowHealth.where(f) : "";
+      if (hlNotePath(p)) { keep({ t: (f.name || p.split("/").pop()).slice(0, 300), file: p }); n0++; }
+    }
+    if (!n0 && files.length) tell("That can't be kept here: drop a file from Finder");
+  };
+  // a new lesson: the next "Week n", on this block's date when it has none yet; opened at once
+  const newLesson = () => {
+    const id = api.current.lessonAdd(key, { t: hlLesName(lessons), ...(k && !lessons.some((q) => q.k === k) ? { k } : {}) });
+    setLine(""); setLes(id);
+  };
+  const lineBox = (ph) => (
+    <label className="tp-line hl-nt-add">
+      <span className="msym" aria-hidden="true">add_link</span>
+      <input value={line} placeholder={ph} spellCheck={false} autoComplete="off" aria-label="A link or a note"
+             onChange={(e) => setLine(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
+      {line.trim() ? <button className="hl-nt-plus" onClick={add} aria-label="Keep it"><span className="msym" aria-hidden="true">arrow_upward</span></button>
+        : HL_FILE_OK && (
+          <button className="hl-nt-plus file" onClick={(e) => { e.preventDefault(); fileIn.current?.click(); }} aria-label="Keep a file" title="Keep a file from this Mac (a PowerPoint, a PDF…)">
+            <span className="msym" aria-hidden="true">attach_file</span>
+          </button>
+        )}
+      {HL_FILE_OK && <input ref={fileIn} type="file" multiple style={{ display: "none" }} onChange={(e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; }} />}
+    </label>
+  );
+  const open = async (it) => {
+    const to = it.url || it.file;
+    if (!to) return;
+    if (!HL_FILE_OK) { if (it.url) window.open(it.url, "_blank", "noopener"); return; }
+    let r = null;
+    try { r = await window.flowHealth.open(to); } catch (e) { r = null; }
+    if (r && r.moved) { api.current.fileMoved(to, r.moved); tell(`${it.t || "That file"} was moved: found it in ${hlWhere(r.moved)}`); }
+    if (r && r.gone) tell(`${it.t || "That file"} isn't there any more: it was moved or deleted`);
+    else if (!r || !r.ok) tell(it.file ? "That file can't be opened from here" : "That link can't be opened");
+  };
+  const items = n.items, starred = items.filter((q) => q.star).sort((p, q) => q.at - p.at), rest = items.filter((q) => !q.star).sort((p, q) => (q.k || "").localeCompare(p.k || "") || q.at - p.at);
+  const day = (x) => { const d = hlDate(x); return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
+  const night = hlClsEnd(cls) > 1440;
+  const row = (it) => {
+    const go = !!(it.url || it.file);
+    return (
+      <div key={it.id} className={`hl-nt-it${it.star ? " star" : ""}`}>
+        <button className="hl-nt-go" disabled={!go} onClick={() => open(it)} title={it.url || it.file || it.t}>
+          <span className="msym" aria-hidden="true">{hlNoteIcon(it)}</span>
+          <span className="hl-nt-tx"><b>{it.t || hlNoteName(it.url || "")}</b>{(hlNoteSub(it) || it.k) && <small>{[hlNoteSub(it), it.k ? day(it.k) : ""].filter(Boolean).join(" · ")}</small>}</span>
+          {go && <span className="msym hl-nt-out" aria-hidden="true">{it.file ? "open_in_new" : "north_east"}</span>}
+        </button>
+        <button className={`hl-nt-star${it.star ? " on" : ""}`} aria-pressed={!!it.star} aria-label={it.star ? "Not important" : "Important: keep it at the top"}
+                title={it.star ? "Not important" : "Important: keep it at the top"} onClick={() => api.current.noteSet(key, it.id, { star: it.star ? 0 : 1 })}>
+          <span className="msym" aria-hidden="true">star</span>
+        </button>
+        <button className="hl-nt-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.noteDel(key, it.id)}>
+          <span className="msym" aria-hidden="true">close</span>
+        </button>
+      </div>
+    );
+  };
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 10vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
+         onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
+      <div role="dialog" aria-modal="true" aria-label={`${cls.name}: notes`} className={`glass hl-nt${over ? " over" : ""}`} style={{ ...sh.pop, "--c": hlClsCol(cls) }} onClick={stop}
+           onDragOver={(e) => { e.stopPropagation(); const ty = [...e.dataTransfer.types]; if (ty.includes("Files") || ty.includes("text/uri-list")) { e.preventDefault(); if (!over) setOver(true); } }}
+           onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(false); }}
+           onDrop={(e) => {
+             e.stopPropagation(); e.preventDefault(); setOver(false);
+             const fs = [...(e.dataTransfer.files || [])];
+             if (fs.length) { addFiles(fs); return; }
+             const u = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || "").split(/\r?\n/).find((x) => x && !x.startsWith("#"));
+             const it = u && hlNoteParse(u);
+             if (it) keep(it);
+           }}>
+        {lesson ? (
+          <HlLesson key={lesson.id} cls={cls} nkey={key} lesson={lesson} idx={lessons.indexOf(lesson)} api={api} lineBox={lineBox} onOpen={open} say={say}
+                    onBack={() => { setLine(""); setLes(null); }} onClose={sh.shut} />
+        ) : (<>
+        <div className="fx-head">
+          <div className="hl-nt-hd">
+            <div className="hl-nt-name">{cls.name}</div>
+            <div className="hl-nt-when">
+              {k ? hlNice(k) : HL_DOW_LONG[cls.dow]} · {clk(cls.from)}–{clk(cls.to)}{night ? " the next day" : ""}{cls.room ? ` · ${cls.room}` : ""}{cls.once ? "" : ` · every ${HL_DOW_LONG[cls.dow]}`}
+            </div>
+          </div>
+          <span className="hl-nt-tools">
+            <button className="x-btn hl-nt-edit" style={S.closeBtn} aria-label="Change the class" title="Change the class: its name, time, room, colour" onClick={() => { keepAbout(); onEdit(); }}>
+              <span className="msym" aria-hidden="true">edit</span>
+            </button>
+            <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+          </span>
+        </div>
+        <RichBox html={n.aboutH} text={n.about} label="About this class" placeholder="About this class: the lecturer, what to bring, how it's marked…"
+                 onType={(html, text) => { aboutH.current = html; aboutRef.current = text; setAbout(text); }} onLeave={keepAbout} />
+        <div className="hl-nt-list">
+          <div className="hl-nt-grp hl-ls-grp"><span className="msym" aria-hidden="true">folder</span>Lessons</div>
+          <div className="hl-ls-grid">
+            {lessons.map((l, i) => (
+              <button key={l.id} className={`hl-ls-tile${k && l.k === k ? " now" : ""}`} onClick={() => { setLine(""); setLes(l.id); }}
+                      title={`Open ${l.t || `Week ${i + 1}`}`}>
+                <span className="msym" aria-hidden="true">folder</span>
+                <b>{l.t || `Week ${i + 1}`}</b>
+                <small>{[l.k ? day(l.k) : "", l.items.length ? `${l.items.length} ${l.items.length === 1 ? "item" : "items"}` : "Empty"].filter(Boolean).join(" · ")}</small>
+              </button>
+            ))}
+            <button className="hl-ls-tile new" onClick={newLesson} title="A folder for one lesson: its words, files and links">
+              <span className="msym" aria-hidden="true">create_new_folder</span>
+              <b>New lesson</b>
+              <small>{k && !lessons.some((q) => q.k === k) ? `${hlLesName(lessons)} · ${day(k)}` : hlLesName(lessons)}</small>
+            </button>
+          </div>
+          <div className="hl-nt-grp hl-ls-grp">For the whole class</div>
+          {lineBox("Paste a link or write a note, then Enter")}
+          {!items.length && (
+            <div className="hl-nt-none">
+              <span className="msym" aria-hidden="true">inventory_2</span>
+              <b>Nothing kept yet</b>
+              <small>Links to slides, books and readings, a file from your Mac{HL_FILE_OK ? " (drop it here)" : ""}, or a note. Star what you can't lose.</small>
+            </div>
+          )}
+          {starred.length > 0 && <div className="hl-nt-grp"><span className="msym" aria-hidden="true">star</span>Important</div>}
+          {starred.map(row)}
+          {starred.length > 0 && rest.length > 0 && <div className="hl-nt-grp">Everything else</div>}
+          {rest.map(row)}
+        </div>
+        <div className="fx-foot">
+          <span key={say} className={say ? "hl-nt-say" : ""}>{say || `Kept for every ${cls.name} class. ${HL_FILE_OK ? "Files stay where they are on your Mac: only where they are is kept." : ""}`}</span>
+        </div>
+        </>)}
+        {over && <div className="hl-nt-drop" aria-hidden="true"><span className="msym">file_download</span>{lesson ? `Drop to keep it in ${lesson.t || "this lesson"}` : "Drop to keep it"}</div>}
+      </div>
+    </div>,
+    document.body);
+};
+
+/* ---------- health: assignments and assessments (29 October 2026, his words: "a section for upcoming assignments and
+   assessments, these are according to my classes, and i can attach pics, titles, subheadings, links, powerpoints, etc. and
+   i can set a due date what time what date, and when due date is near it will give a warning/heads up to me. also this
+   deadline be a … line on the calendar, when pressed it goes straight to the assignment"; then, of the line: "maybe it
+   could be a different color since the line for time is already red, though make it noticable and different to boxes in
+   the timetable").
+   - Each (`h.asg`): a title, a subheading, its class (one of his, by name), what kind it is, when it is due (a date and a
+     time), notes, and what he keeps for it: links, files of his Mac (a PowerPoint opens in its own app, as in a class's
+     notes), pictures (in the picture store under `hl-` ids, so hlSweep keeps them) and short notes.
+   - On the week: a dashed orchid line across its day at its time, with a flag; pressed, it opens. Not red (the line of the
+     time of day is) and not a filled block (classes are).
+   - Heads-up: in Health, a note at the top while one is due within HL_SOON (or overdue); and, while Flow is open on any
+     side, the Mac's own notification a day before and three hours before (hlDueWatch, once each). ---------- */
+const HL_DUE = "#f2a5e6";        // the deadlines' colour, orchid: apart from the red of the time of day and from the classes' seven
+const HL_ASG_KINDS = [["assignment", "Assignment", "assignment"], ["exam", "Exam", "history_edu"], ["quiz", "Quiz", "quiz"],
+                      ["project", "Project", "folder_special"], ["talk", "Presentation", "co_present"]];
+const hlAsgKind = (k) => HL_ASG_KINDS.find((q) => q[0] === k) || HL_ASG_KINDS[0];
+const hlDueMs = (a) => new Date(`${a.due}T${a.at || "23:59"}:00`).getTime();
+const HL_SOON = 3 * 864e5;
+// how far off a deadline is, in words, and how near: over (past), hot (within a day), near (within HL_SOON), far
+const hlDueSay = (ms, now) => {
+  const d = ms - now, m = Math.round(Math.abs(d) / 6e4), dd = Math.round(m / 1440);
+  const span = m < 60 ? `${Math.max(1, m)} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${dd} day${dd === 1 ? "" : "s"}`;
+  return d < 0 ? { lvl: "over", say: `${span} overdue` } : { lvl: d < 864e5 ? "hot" : d < HL_SOON ? "near" : "far", say: `in ${span}` };
+};
+/* The due line, read by the page itself (30 October 2026, his words: "make an AI that automatically detects what time, what
+   week, etc."): "Week 4, Friday, 20 November 2026, at 23.55 (Submit on Moodle)" and the lines near it ("WEIGHTAGE: 30%")
+   come out as a date, a time, a teaching week, where to hand it in and a weight. Plain rules, not the on-device model:
+   a date has to come out the same every time, at once and offline, which a model that guesses can't promise. English and
+   Malay / Indonesian month names; a numeric date is day first (20/11/2026), as in Malaysia and Indonesia. */
+const HL_MON = { january: 0, januari: 0, jan: 0, february: 1, februari: 1, feb: 1, march: 2, maret: 2, mac: 2, mar: 2, april: 3, apr: 3, may: 4, mei: 4,
+  june: 5, juni: 5, jun: 5, july: 6, juli: 6, julai: 6, jul: 6, august: 7, agustus: 7, ogos: 7, aug: 7, agu: 7, agt: 7, september: 8, sept: 8, sep: 8,
+  october: 9, oktober: 9, oct: 9, okt: 9, november: 10, nov: 10, december: 11, desember: 11, disember: 11, dec: 11, des: 11 };
+const HL_WD = { sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tues: 2, tue: 2, wednesday: 3, wed: 3, thursday: 4, thurs: 4, thur: 4, thu: 4,
+  friday: 5, fri: 5, saturday: 6, sat: 6 };
+const HL_WD_NAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const hlAlt = (o) => Object.keys(o).sort((p, q) => q.length - p.length).join("|");
+const HL_MON_RE = hlAlt(HL_MON), HL_WD_RE = hlAlt(HL_WD);
+// opt: { week1 (the Monday of teaching week 1, when known), wk (a week already known), time (the text is only a time, so a
+// bare "23.55" is one) }
+const hlAsgRead = (text, now = new Date(), opt = {}) => {
+  let s = ` ${String(text || "").replace(/\s+/g, " ")} `;
+  if (opt.time) s = ` at${s}`;
+  const out = {};
+  // finds a pattern, takes it out of what is left (so its digits are not read twice) and hands over its match
+  const cut = (re, f) => { const m = re.exec(s); if (!m) return false; s = `${s.slice(0, m.index)} ${s.slice(m.index + m[0].length)}`; f(m); return true; };
+  const N = "(\\d{1,3}(?:[.,]\\d{1,2})?)(?!\\d)", PC = "(?:%|\\s*(?:percent|per cent|persen)\\b)";
+  const wt = (m) => { const n = parseFloat(m[1].replace(",", ".")); if (n >= 0 && n <= 100) out.weight = Math.round(n * 10) / 10; };
+  cut(new RegExp(`\\b(?:weight(?:age)?|bobot)\\s*(?:[:=\\-–]|is|of)?\\s*${N}\\s*${PC}?`, "i"), wt)
+    || cut(new RegExp(`${N}\\s*${PC}\\s*(?:weight(?:age)?|of\\b|bobot)`, "i"), wt)
+    || ((s.match(new RegExp(`\\d\\s*${PC}`, "gi")) || []).length === 1 && cut(new RegExp(`${N}\\s*${PC}`, "i"), wt));
+  // the week before the date, so "Week 4" is never read as a day
+  cut(/\b(?:week|wk|minggu(?: ke)?)\s*[-:#.]?\s*(\d{1,2})(?!\d)/i, (m) => { if (+m[1] <= 60) out.wk = +m[1]; });
+  let y = null, mo = null, d = null;
+  const ymd = (yy, mm, dd) => { y = yy ? (+yy < 100 ? 2000 + +yy : +yy) : null; mo = +mm; d = +dd; };
+  cut(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/, (m) => ymd(m[1], m[2] - 1, m[3]))
+    || cut(/(?<!\d)(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})(?!\d)/, (m) => { let a = +m[1], b = +m[2]; if (b > 12 && a <= 12) [a, b] = [b, a]; ymd(m[3], b - 1, a); })
+    || cut(new RegExp(`(?<!\\d)(\\d{1,2})(?:st|nd|rd|th)?[ ,\\-]*(?:of )?(${HL_MON_RE})\\b\\.?(?:[ ,]+(20\\d{2})(?!\\d))?`, "i"), (m) => ymd(m[3], HL_MON[m[2].toLowerCase()], m[1]))
+    || cut(new RegExp(`\\b(${HL_MON_RE})\\b\\.?[ ,]*(\\d{1,2})(?:st|nd|rd|th)?(?!\\d|[:.]\\d)(?:[ ,]+(20\\d{2})(?!\\d))?`, "i"), (m) => ymd(m[3], HL_MON[m[1].toLowerCase()], m[2]));
+  if (d != null) {
+    // no year said: this year's, unless that is already well past
+    if (y == null) { y = now.getFullYear(); if (new Date(y, mo, d, 12) < now - 45 * 864e5) y++; }
+    const dt = new Date(y, mo, d, 12);
+    if (y >= 2000 && y < 2100 && dt.getMonth() === mo && dt.getDate() === d) out.due = hlKey(dt);
+  }
+  const wdM = new RegExp(`\\b(${HL_WD_RE})\\b`, "i").exec(String(text || ""));
+  if (wdM) out.wd = HL_WD[wdM[1].toLowerCase()];
+  // no date written: a day said another way ("tomorrow", "Friday", "Friday of week 6"); marked `rel`
+  if (!out.due) {
+    const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12), wk = out.wk ?? opt.wk;
+    const rel = /\b(today|tonight|hari ini|malam ini|tomorrow|besok)\b/i.exec(s);
+    if (rel) { t0.setDate(t0.getDate() + (/tomorrow|besok/i.test(rel[1]) ? 1 : 0)); out.due = hlKey(t0); out.rel = 1; }
+    else if (wdM && opt.week1 && wk != null) { out.due = hlAddDays(opt.week1, (wk - 1) * 7 + (out.wd + 6) % 7); out.rel = 1; }
+    else if (wdM) { t0.setDate(t0.getDate() + ((out.wd - t0.getDay() + 7) % 7 || 7)); out.due = hlKey(t0); out.rel = 1; }
+  }
+  if (out.due && out.wd != null && hlDate(out.due).getDay() !== out.wd) out.wdIs = hlDate(out.due).getDay();
+  const hm = (h, m, ap) => {
+    h = +h; m = +m; ap = (ap || "").toLowerCase().replace(/\./g, "");
+    if (ap === "pm" && h < 12) h += 12; else if (ap === "am" && h === 12) h = 0;
+    if (h < 24 && m < 60) out.at = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  };
+  const AP = "(a\\.?m\\.?|p\\.?m\\.?)";
+  cut(new RegExp(`(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)\\s*${AP}?`, "i"), (m) => hm(m[1], m[2], m[3]))
+    || cut(new RegExp(`(?:\\b(?:at|by|before|until|till|pukul|jam|time)|@)\\s*(\\d{1,2})\\.(\\d{2})(?!\\d)\\s*${AP}?`, "i"), (m) => hm(m[1], m[2], m[3]))
+    || cut(new RegExp(`(?<!\\d)(\\d{1,2})\\.(\\d{2})\\s*${AP}(?![a-z])`, "i"), (m) => hm(m[1], m[2], m[3]))
+    || cut(new RegExp(`(?<!\\d)(\\d{1,2})\\s*${AP}(?![a-z])`, "i"), (m) => hm(m[1], 0, m[2]))
+    || cut(/(?<!\d)([01]\d|2[0-3])([0-5]\d)\s*(?:hrs?|hours|h)\b/i, (m) => hm(m[1], m[2]))
+    || cut(/\bmidnight\b/i, () => { out.at = "23:59"; })
+    || cut(/\bnoon\b/i, () => { out.at = "12:00"; });
+  // where to hand it in: the bracket after a date ("(Submit on Moodle)"), or a "submit … on …" phrase. A bracket left
+  // with nothing but a weekday or a week (its date read already) is not one
+  const par = out.due || out.at ? [...s.matchAll(/\(([^()]{2,140})\)/g)].map((m) => m[1].trim())
+    .filter((t) => /[a-z]{3}/i.test(t.replace(new RegExp(`\\b(?:${HL_WD_RE})\\b|\\b(?:week|wk|minggu(?: ke)?)\\s*[-:#.]?\\s*\\d+`, "gi"), ""))).pop() : "";
+  const sub = par ? null : /\b(?:(?:submit(?:ted)?|hand(?: ?in)?|upload|turn in)\b[^.;,()]{0,40}\b(?:on|via|through|to|in|into)|via|through)\s+[a-z][\w .\/-]{1,50}/i.exec(s);
+  // (a phrase ends with its place: "through Moodle by Friday …" is "through Moodle"; "to Google Classroom" stays whole)
+  const subP = sub ? (/^(.*?\b(?:on|via|through|to|in|into)\s+\S+(?:\s+[A-Z]\S*)*)/.exec(sub[0]) || sub)[0] : "";
+  const how = (par || subP).replace(/[\s.,;:]+$/, "").replace(/\s+(?:before|by|at|until|till|on)$/i, "").trim();
+  if (how) out.how = how[0].toUpperCase() + how.slice(1, 120);
+  return out;
+};
+/* The on-device model's part (30 October 2026, his words: "for the due date, make an ai"): the Mac's own model (Apple
+   Intelligence, electron/due-ai, run by main.cjs) says which words of the text give the day, time, week, weight and
+   where to hand it in. That is the understanding, which rules can't do: a brief with a release date, a late rule and a
+   due date in it is read for its due date. Each of its answers is used only when those words really are in the text, and
+   is turned into a date or a time by hlAsgRead above, so nothing it guesses becomes a deadline (tried on his own lines
+   the same day: on a few words it sometimes made up a weight or a place; those are not in the text and are dropped).
+   `base` is what the rules read already; the model's answers go over it */
+const HL_DUE_AI = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.dueAI);
+const hlFold = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+const hlAsgAI = async (text, base, now, week1) => {
+  let w = null;
+  try { w = await window.flowHealth.dueAI(text); } catch (e) { w = null; }
+  if (!w || w.error) return null;
+  const all = hlFold(text), has = (q) => hlFold(q).length > 1 && all.includes(hlFold(q));
+  const out = { ...base };
+  if (has(w.week)) { const r = hlAsgRead(w.week, now); if (r.wk != null) out.wk = r.wk; }
+  if (has(w.day)) {
+    const r = hlAsgRead(w.day, now, { week1, wk: out.wk });
+    // only a weekday ("Friday"), and the date written in the text falls on it: that date
+    if (r.due && !(r.rel && base.due && hlDate(base.due).getDay() === r.wd)) { out.due = r.due; delete out.wdIs; if (r.wdIs != null) out.wdIs = r.wdIs; out.wd = r.wd; }
+  }
+  if (has(w.time)) { const r = hlAsgRead(w.time, now, { time: 1 }); if (r.at) out.at = r.at; }
+  if (has(w.weight)) { const r = hlAsgRead(`weightage ${w.weight}`, now); if (r.weight != null) out.weight = r.weight; }
+  if (has(w.submit) && !(base.how && hlFold(base.how).includes(hlFold(w.submit)))) out.how = w.submit.trim()[0].toUpperCase() + w.submit.trim().slice(1, 120);
+  delete out.rel;
+  return out;
+};
+// the Monday of teaching week 1, from the assignment most lately due that has both a week and a day
+const hlWeek1 = (asg) => {
+  const a = asg.filter((q) => q.wk != null && hlDayOk(q.due)).sort((p, q) => (p.due < q.due ? 1 : -1))[0];
+  return a ? hlAddDays(a.due, -hlDow(a.due) - (a.wk - 1) * 7) : null;
+};
+// what was read, in a line ("Fri 20 Nov 2026 · 23:55 · Week 4 · Submit on Moodle · 30%")
+const hlAsgSay = (r) => [r.due && `${hlNice(r.due)} ${r.due.slice(0, 4)}`, r.at && clk(r.at), r.wk != null && `Week ${r.wk}`, r.how, r.weight != null && `${r.weight}%`].filter(Boolean).join(" · ");
+const hlWtNum = (s) => { const n = parseFloat(String(s).replace(",", ".")); return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n * 10) / 10 : null; };
+const hlWkNum = (s) => { const n = parseInt(s, 10); return n >= 0 && n <= 60 ? n : null; };
+// end of the due-line reader
+// his classes to pick from: the ones he keeps, then any other on the timetable, once each by name
+const hlAsgNames =(classes, lib) => [...new Map([...classes, ...lib].map((c) => [hlNoteKey(c.name), c])).values()];
+// his classes this semester (30 October 2026, his words: "not everything is a class on the timetable … per semester, i have 4
+// classes"): the names he chose; before he has, the ones that look like a course code ("BTW1042"), or all if none do.
+// A class is shown by its code when it has one, so four fit in one bar
+const HL_CODE = /^\s*([A-Za-z]{2,5}\s?\d{3,4}[A-Za-z]?)\b/;
+const hlClsShort = (name) => { const m = HL_CODE.exec(name); return m ? m[1].toUpperCase().replace(/\s/g, "") : name; };
+const hlMineList = (names, mine) => {
+  if (Array.isArray(mine)) return mine.map((k) => names.find((c) => hlNoteKey(c.name) === k)).filter(Boolean);
+  const g = names.filter((c) => HL_CODE.test(c.name));
+  return g.length ? g : names;
+};
+const hlAsgCol = (name, classes, lib) => {
+  const k = hlNoteKey(name), c = k && (lib.find((q) => hlNoteKey(q.name) === k) || classes.find((q) => hlNoteKey(q.name) === k));
+  return c ? hlClsCol(c) : HL_DUE;
+};
+// where a found file is now, in a few words ("~/Documents/Uni/BTW")
+const hlWhere = (p) => p.replace(/^\/Users\/[^/]+/, "~").split("/").slice(0, -1).join("/");
+const hlItemOpen = async (it, tell, api) => {
+  const to = it.url || it.file;
+  if (!to) return;
+  if (!HL_FILE_OK) { if (it.url) window.open(it.url, "_blank", "noopener"); return; }
+  let r = null;
+  try { r = await window.flowHealth.open(to); } catch (e) { r = null; }
+  if (r && r.moved && api) { api.current.fileMoved(to, r.moved); tell(`${it.t || "That file"} was moved: found it in ${hlWhere(r.moved)}`); }
+  if (r && r.gone) tell(`${it.t || "That file"} isn't there any more: it was moved or deleted`);
+  else if (!r || !r.ok) tell(it.file ? "That file can't be opened from here" : "That link can't be opened");
+};
+// one assignment, opened: everything about it changes in place (its words as each box is left, the rest at once). One left
+// with no words and nothing kept is let go when it shuts (a press on Add that was not followed through)
+const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
+  useClock12();
+  const [title, setTitle] = useState(a.title), [sub, setSub] = useState(a.sub), [about, setAbout] = useState(a.about);
+  const [wk, setWk] = useState(a.wk == null ? "" : String(a.wk)), [wt, setWt] = useState(a.weight == null ? "" : String(a.weight)), [how, setHow] = useState(a.how || "");
+  const [due, setDue] = useState(""), [pickCls, setPickCls] = useState(false), [line, setLine] = useState(""), [say, setSay] = useState(""), [over, setOver] = useState(false), [view, setView] = useState(null);
+  const txt = useRef(null), aRef = useRef(a), sayT = useRef(0), fileIn = useRef(null), picIn = useRef(null), gone = useRef(false), shut = useRef(false), viewRef = useRef(null), read = useRef(false), aiN = useRef(0);
+  const [aiBusy, setAiBusy] = useState(false);
+  txt.current = { title, sub, about, wk, wt, how }; aRef.current = a; viewRef.current = view;
+  const keep = () => {
+    const t = txt.current, o = aRef.current, p = {};
+    if (t.title !== o.title) p.title = t.title.slice(0, 120);
+    if (t.sub !== o.sub) p.sub = t.sub.slice(0, 200);
+    if (t.about !== o.about) p.about = t.about.slice(0, 20000);
+    if (t.how !== (o.how || "")) p.how = t.how.slice(0, 120);
+    const w = hlWtNum(t.wt), k = hlWkNum(t.wk);
+    if (w !== (o.weight ?? null)) p.weight = w;
+    if (k !== (o.wk ?? null)) p.wk = k;
+    if (Object.keys(p).length) api.current.asgSet(o.id, p);
+  };
+  const finish = () => {
+    shut.current = true;
+    const t = txt.current, o = aRef.current;
+    if (!gone.current) { if (!t.title.trim() && !t.sub.trim() && !t.about.trim() && !t.how.trim() && !t.wt && !t.wk && !o.items.length && !read.current) api.current.asgDrop(o.id); else keep(); }
+    onClose();
+  };
+  useEffect(() => () => { clearTimeout(sayT.current); if (!shut.current && !gone.current) keep(); }, []);
+  // (Esc with a picture open closes the picture only; the days behind don't step while it is open)
+  const sh = useSheet(finish, (e) => {
+    if (viewRef.current) return true;
+    const t = e.target, tag = (t && t.tagName || "").toLowerCase();
+    if (tag !== "input" && tag !== "textarea" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.stopPropagation(); return true; }
+    return false;
+  });
+  const tell = (m) => { clearTimeout(sayT.current); setSay(m); sayT.current = setTimeout(() => setSay(""), 4200); };
+  const addItem = (it) => api.current.asgItem(a.id, it);
+  const add = () => { const it = hlNoteParse(line); if (!it) return; addItem(it); setLine(""); };
+  // what the due-line reader found goes into the fields at once (only what it found: the rest stays as it was)
+  const useRead = (r, what = "Read") => {
+    const p = {};
+    if (r.due) p.due = r.due;
+    if (r.at) p.at = r.at;
+    if (r.wk != null) { p.wk = r.wk; setWk(String(r.wk)); }
+    if (r.how) { p.how = r.how; setHow(r.how); }
+    if (r.weight != null) { p.weight = r.weight; setWt(String(r.weight)); }
+    if (!Object.keys(p).length) return false;
+    read.current = true;
+    api.current.asgSet(a.id, p);
+    tell(`${what}: ${hlAsgSay(r)}${r.wdIs != null ? ` (it says ${HL_WD_NAME[r.wd]}, but that day is a ${HL_WD_NAME[r.wdIs]})` : ""}`);
+    return true;
+  };
+  // the rules' reading goes in at once; on this Mac the on-device model then reads the text too (a second or two) and what
+  // it finds goes over it (hlAsgAI). The newest reading wins. none(): neither found anything
+  const readText = (text, base, none) => {
+    const got = useRead(base);
+    if (!HL_DUE_AI) { if (!got && none) none(); return; }
+    const n = ++aiN.current;
+    setAiBusy(true);
+    hlAsgAI(text, base, new Date(), week1).then((m) => {
+      if (n !== aiN.current || gone.current) return;
+      setAiBusy(false);
+      if (m && useRead(m, "Read by AI")) return;
+      if (!got) { tell("No date, time, week or weight found in that"); if (none) none(); }
+    });
+  };
+  // the due line: pasted, or typed then Enter (or the arrow, or leaving it with something read)
+  const goDue = (text, base) => { setDue(""); readText(text, base, () => setDue((v) => v || text)); };
+  // a picture is kept in the app (it survives the file being moved); any other file is kept by where it is on his Mac
+  const addFiles = async (files) => {
+    let n0 = 0;
+    for (const f of files) {
+      if (/^image\//.test(f.type || "")) { const id = await shotAdd(f, HL_PIC); if (id) { addItem({ t: (f.name || "Picture").slice(0, 300), img: id }); n0++; } continue; }
+      const p = HL_FILE_OK ? window.flowHealth.where(f) : "";
+      if (hlNotePath(p)) { addItem({ t: (f.name || p.split("/").pop()).slice(0, 300), file: p }); n0++; }
+    }
+    if (!n0 && files.length) tell("That can't be kept here: drop a picture, or a file from Finder");
+  };
+  // a picture pasted while it is open is kept with it (before the week's own paste, which would read it as a timetable)
+  useEffect(() => {
+    const paste = (e) => {
+      const fs = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => /^image\//.test(f.type));
+      if (!fs.length) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      addFiles(fs);
+    };
+    window.addEventListener("paste", paste, true);
+    return () => window.removeEventListener("paste", paste, true);
+  }, [a.id]);
+  const kind = hlAsgKind(a.kind), ds = hlDueSay(hlDueMs(a), Date.now()), names = hlAsgNames(classes, lib);
+  const rd = due.trim() ? hlAsgRead(due, new Date(), { week1 }) : null, rdSay = rd ? hlAsgSay(rd) : "";
+  const mineNow = hlMineList(names, mine), mineKeys = mineNow.map((c) => hlNoteKey(c.name)), onKey = hlNoteKey(a.cls);
+  // his classes, and the one this is tied to if it is not among them (so it can still be seen and taken off)
+  const shown = onKey && !mineKeys.includes(onKey) ? [...mineNow, names.find((c) => hlNoteKey(c.name) === onKey) || { name: a.cls }] : mineNow;
+  const flip = (c) => { const k = hlNoteKey(c.name); api.current.mineSet(mineKeys.includes(k) ? mineKeys.filter((x) => x !== k) : [...mineKeys, k]); };
+  const num = (set, max) => (e) => set(e.target.value.replace(/[^\d.,]/g, "").slice(0, max));
+  const fixNums = () => { keep(); const k = hlWkNum(wk), w = hlWtNum(wt); setWk(k == null ? "" : String(k)); setWt(w == null ? "" : String(w)); };
+  const enterOut = (e) => { if (e.key === "Enter") e.currentTarget.blur(); };
+  const pics = a.items.filter((q) => q.img), rest = a.items.filter((q) => !q.img).sort((p, q) => q.at - p.at);
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 8vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
+         onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
+      <div role="dialog" aria-modal="true" aria-label={`${title || kind[1]}: due ${hlNice(a.due)}`} className={`glass hl-nt hl-as-pop${over ? " over" : ""}`}
+           style={{ ...sh.pop, "--c": hlAsgCol(a.cls, classes, lib) }} onClick={stop}
+           onDragOver={(e) => { e.stopPropagation(); const ty = [...e.dataTransfer.types]; if (ty.includes("Files") || ty.includes("text/uri-list")) { e.preventDefault(); if (!over) setOver(true); } }}
+           onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(false); }}
+           onDrop={(e) => {
+             e.stopPropagation(); e.preventDefault(); setOver(false);
+             const fs = [...(e.dataTransfer.files || [])];
+             if (fs.length) { addFiles(fs); return; }
+             const u = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || "").split(/\r?\n/).find((x) => x && !x.startsWith("#"));
+             const it = u && hlNoteParse(u);
+             if (it) addItem(it);
+           }}>
+        <div className="fx-head">
+          <div className="hl-nt-hd hl-as-hd">
+            <input className="hl-as-title" value={title} maxLength={120} placeholder={`${kind[1]} title`} aria-label="Title" autoFocus={!a.title} spellCheck={false}
+                   onChange={(e) => setTitle(e.target.value)} onBlur={keep} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+            <input className="hl-as-sub" value={sub} maxLength={200} placeholder="Subheading: what it covers, in a line" aria-label="Subheading" spellCheck={false}
+                   onChange={(e) => setSub(e.target.value)} onBlur={keep} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+          </div>
+          <span className="hl-nt-tools">
+            <button className="x-btn" style={S.closeBtn} aria-label="Delete this" title="Delete (Undo is offered)" onClick={() => { gone.current = true; api.current.asgDel(a.id); sh.shut(); }}>
+              <span className="msym" aria-hidden="true" style={{ fontSize: 18 }}>delete</span>
+            </button>
+            <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+          </span>
+        </div>
+        <div className="hl-as-body">
+        <div className="hl-as-smart">
+          <label className="tp-line hl-as-read">
+            <span className="msym" aria-hidden="true">auto_awesome</span>
+            <input value={due} placeholder="Paste the due line: Week 4, Friday, 20 November 2026, at 23.55 (Submit on Moodle)" spellCheck={false} autoComplete="off"
+                   aria-label={`Paste the due date or the weightage: the date, time, week and weight are read for you${HL_DUE_AI ? " by the Mac's own AI" : ""}`}
+                   onChange={(e) => setDue(e.target.value)}
+                   onPaste={(e) => {
+                     const t = e.clipboardData.getData("text"), base = t ? hlAsgRead(t, new Date(), { week1 }) : {};
+                     if (!t || (!HL_DUE_AI && !hlAsgSay(base))) return;
+                     e.preventDefault(); goDue(t, base);
+                   }}
+                   onBlur={() => { if (rdSay) goDue(due, rd); }}
+                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (rd && (rdSay || HL_DUE_AI)) goDue(due, rd); } }} />
+            {(rdSay || (HL_DUE_AI && due.trim())) && <button className="hl-nt-plus" onClick={() => goDue(due, rd)} aria-label="Read it"><span className="msym" aria-hidden="true">arrow_upward</span></button>}
+          </label>
+          {aiBusy && !due.trim() && (
+            <div className="hl-as-found ai" aria-live="polite"><span className="msym" aria-hidden="true">auto_awesome</span><span>The Mac's AI is reading it…</span></div>
+          )}
+          {due.trim() && (
+            <div className={`hl-as-found${rdSay ? "" : " none"}`} aria-live="polite">
+              <span className="msym" aria-hidden="true">{rdSay ? "check_circle" : "search"}</span>
+              <span>{rdSay || (HL_DUE_AI ? "Press Enter and the Mac's AI reads it" : "No date, time, week or weight in that yet")}</span>
+              {rd.wdIs != null && <small>{HL_WD_NAME[rd.wd]} isn't {hlNice(rd.due)}: that day is a {HL_WD_NAME[rd.wdIs]}</small>}
+            </div>
+          )}
+        </div>
+        <div className="hl-as-due-row">
+          <span className={`hl-as-left ${a.done ? "done" : ds.lvl}`}><span className="msym" aria-hidden="true">{a.done ? "task_alt" : ds.lvl === "over" ? "error" : "schedule"}</span>{a.done ? "Done" : ds.say}</span>
+          <input className="jr-in" type="date" value={a.due} aria-label="Due date" onChange={(e) => { if (hlDayOk(e.target.value)) api.current.asgSet(a.id, { due: e.target.value }); }} />
+          <input className="jr-in" type="time" value={a.at} aria-label="Due time" onChange={(e) => { if (hlTimeOk(e.target.value)) api.current.asgSet(a.id, { at: e.target.value }); }} />
+          <button className={`hl-as-done${a.done ? " on" : ""}`} aria-pressed={!!a.done} onClick={() => api.current.asgSet(a.id, { done: a.done ? 0 : 1 })}>
+            <span className="msym" aria-hidden="true">check</span>{a.done ? "Done" : "Mark done"}
+          </button>
+        </div>
+        <div className="hl-as-meta">
+          <label className="hl-as-fld"><span>Week</span>
+            <input value={wk} inputMode="numeric" placeholder="–" aria-label="Teaching week" onChange={num(setWk, 2)} onBlur={fixNums} onKeyDown={enterOut} />
+          </label>
+          <label className="hl-as-fld"><span>Weight</span>
+            <input value={wt} inputMode="decimal" placeholder="–" aria-label="Weightage in percent" onChange={num(setWt, 5)} onBlur={fixNums} onKeyDown={enterOut} /><em>%</em>
+          </label>
+          <label className="hl-as-fld wide"><span className="msym" aria-hidden="true">upload</span>
+            <input value={how} maxLength={120} placeholder="Where to hand it in, e.g. Submit on Moodle" spellCheck={false} aria-label="Where to hand it in"
+                   onChange={(e) => setHow(e.target.value)} onBlur={keep} onKeyDown={enterOut} />
+          </label>
+        </div>
+        <span className="jr-pick hl-as-kinds">
+          {HL_ASG_KINDS.map(([k, n, ic]) => (
+            <button key={k} className={`jr-chip${a.kind === k ? " on" : ""}`} onClick={() => api.current.asgSet(a.id, { kind: k })}><span className="msym" aria-hidden="true">{ic}</span>{n}</button>
+          ))}
+        </span>
+        <div className="hl-as-clsrow">
+          <span className="jr-pick hl-as-cls">
+            {shown.map((c) => (
+              <button key={c.name} className={`jr-chip${onKey === hlNoteKey(c.name) ? " on" : ""}`} style={{ "--c": hlClsCol(c) }} title={c.name}
+                      onClick={() => api.current.asgSet(a.id, { cls: onKey === hlNoteKey(c.name) ? "" : c.name })}><i /><span>{hlClsShort(c.name)}</span></button>
+            ))}
+            {!shown.length && <small className="hl-as-nocls">{names.length ? "No classes picked yet: press the sliders to choose them." : "Classes you put on the week show here, to tie this to one."}</small>}
+          </span>
+          {names.length > 0 && (
+            <button className={`hl-as-cls-ed${pickCls ? " on" : ""}`} aria-expanded={pickCls} aria-label="Choose which are your classes" title="Which are your classes this semester"
+                    onClick={() => setPickCls((v) => !v)}><span className="msym" aria-hidden="true">tune</span></button>
+          )}
+        </div>
+        {pickCls && (
+          <div className="hl-as-mine">
+            <div className="hl-nt-grp">My classes this semester</div>
+            <span className="jr-pick hl-as-mine-set">
+              {mineNow.map((c) => <button key={c.name} className="jr-chip on" style={{ "--c": hlClsCol(c) }} onClick={() => flip(c)} title="Not a class"><i />{c.name}</button>)}
+              {!mineNow.length && <small className="hl-as-nocls">None yet: press one below.</small>}
+            </span>
+            <div className="hl-nt-grp">Not classes</div>
+            <span className="jr-pick hl-as-mine-set">
+              {names.filter((c) => !mineKeys.includes(hlNoteKey(c.name))).map((c) => <button key={c.name} className="jr-chip" style={{ "--c": hlClsCol(c) }} onClick={() => flip(c)} title="Make it one of my classes"><i />{c.name}</button>)}
+              {mineNow.length === names.length && <small className="hl-as-nocls">Everything on your timetable is a class.</small>}
+            </span>
+            <small className="hl-as-nocls">Parties and other events stay on your timetable; they just don't show as a class here. Change it each semester: assignments you already made keep theirs.</small>
+          </div>
+        )}
+        <textarea className="jr-in hl-nt-about hl-as-about" value={about} maxLength={20000} rows={9} spellCheck={false} aria-label="Notes"
+                  placeholder="Notes: paste the whole brief here: what to do, the marking, what to hand in…" onChange={(e) => setAbout(e.target.value)} onBlur={keep}
+                  onPaste={(e) => {
+                    // a pasted brief with its own "DUE DATE:" or "WEIGHTAGE:" lines fills those in too (only the labelled lines are read)
+                    const ls = (e.clipboardData.getData("text") || "").split(/\r?\n/).filter((l) => /^\s*(?:due(?: date)?|deadline|weight(?:age)?|bobot)\s*[:\-–]/i.test(l));
+                    const t = e.clipboardData.getData("text") || "", base = ls.length ? hlAsgRead(ls.join("\n"), new Date(), { week1 }) : {};
+                    // with the Mac's AI, a brief that speaks of a due date or a weight is read whole (it finds the due date among the others)
+                    if (HL_DUE_AI && /\b(?:due|deadline|submit|submission|hand in|weight(?:age)?|bobot)\b/i.test(t)) readText(t, base);
+                    else if (ls.length) useRead(base, "Read from your notes");
+                  }} />
+        <label className="tp-line hl-nt-add">
+          <span className="msym" aria-hidden="true">add_link</span>
+          <input value={line} placeholder="Paste a link or write a note, then Enter" spellCheck={false} autoComplete="off" aria-label="A link or a note"
+                 onChange={(e) => setLine(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
+          {line.trim() ? <button className="hl-nt-plus" onClick={add} aria-label="Keep it"><span className="msym" aria-hidden="true">arrow_upward</span></button> : (
+            <>
+              <button className="hl-nt-plus file" onClick={(e) => { e.preventDefault(); picIn.current?.click(); }} aria-label="Add a picture" title="Add a picture (or paste one)">
+                <span className="msym" aria-hidden="true">add_photo_alternate</span>
+              </button>
+              {HL_FILE_OK && (
+                <button className="hl-nt-plus file" onClick={(e) => { e.preventDefault(); fileIn.current?.click(); }} aria-label="Keep a file" title="Keep a file from this Mac (a PowerPoint, a PDF…)">
+                  <span className="msym" aria-hidden="true">attach_file</span>
+                </button>
+              )}
+            </>
+          )}
+          <input ref={picIn} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={(e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; }} />
+          {HL_FILE_OK && <input ref={fileIn} type="file" multiple style={{ display: "none" }} onChange={(e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; }} />}
+        </label>
+        <div className="hl-nt-list">
+          {pics.length > 0 && (
+            <div className="hl-as-pics">
+              {pics.map((q) => (
+                <span key={q.id} className="hl-as-pic">
+                  <button className="hl-as-pic-go" onClick={() => setView(q.img)} aria-label={`Open ${q.t || "the picture"}`}><Shot id={q.img} /></button>
+                  <button className="hl-nt-x" aria-label={`Delete ${q.t || "the picture"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, q.id)}>
+                    <span className="msym" aria-hidden="true">close</span>
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {rest.map((it) => {
+            const go = !!(it.url || it.file);
+            return (
+              <div key={it.id} className="hl-nt-it">
+                <button className="hl-nt-go" disabled={!go} onClick={() => hlItemOpen(it, tell, api)} title={it.url || it.file || it.t}>
+                  <span className="msym" aria-hidden="true">{hlNoteIcon(it)}</span>
+                  <span className="hl-nt-tx"><b>{it.t || hlNoteName(it.url || "")}</b>{hlNoteSub(it) && <small>{hlNoteSub(it)}</small>}</span>
+                  {go && <span className="msym hl-nt-out" aria-hidden="true">{it.file ? "open_in_new" : "north_east"}</span>}
+                </button>
+                <button className="hl-nt-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, it.id)}>
+                  <span className="msym" aria-hidden="true">close</span>
+                </button>
+              </div>
+            );
+          })}
+          {!a.items.length && (
+            <div className="hl-nt-none hl-as-none">
+              <small>Links to the brief or readings, the slides{HL_FILE_OK ? " (drop a PowerPoint here)" : ""}, pictures of the question sheet, or a note.</small>
+            </div>
+          )}
+        </div>
+        </div>
+        <div className="fx-foot">
+          <span key={say} className={say ? "hl-nt-say" : ""}>{say || `Due ${hlNice(a.due)}, ${clk(a.at)}. A heads-up comes a day before and 3 hours before.`}</span>
+        </div>
+        {over && <div className="hl-nt-drop" aria-hidden="true"><span className="msym">file_download</span>Drop to keep it</div>}
+      </div>
+      {view && <ShotView id={view} onClose={() => setView(null)} />}
+    </div>,
+    document.body);
+};
+// the card: what is overdue, then what is coming up, soonest first; what is done folded away under them
+const HlAsgList = memo(({ asg, classes, lib, api }) => {
+  useClock12();
+  const [now, setNow] = useState(Date.now);
+  const [showDone, setShowDone] = useState(false);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(t); }, []);
+  const rows = asg.map((a) => ({ a, ms: hlDueMs(a) }));
+  const open = rows.filter((r) => !r.a.done).sort((p, q) => p.ms - q.ms), done = rows.filter((r) => r.a.done).sort((p, q) => q.ms - p.ms);
+  const late = open.filter((r) => r.ms < now), next = open.filter((r) => r.ms >= now);
+  const row = ({ a, ms }, i) => {
+    const ds = hlDueSay(ms, now), kind = hlAsgKind(a.kind);
+    return (
+      <div key={a.id} className={`hl-as-row ${a.done ? "done" : ds.lvl}`} style={{ "--c": hlAsgCol(a.cls, classes, lib), animationDelay: `${i * 40}ms` }}>
+        <button className={`hl-as-tick${a.done ? " on" : ""}`} aria-pressed={!!a.done} aria-label={a.done ? "Not done" : "Mark done"} title={a.done ? "Not done" : "Mark done"}
+                onClick={() => api.current.asgSet(a.id, { done: a.done ? 0 : 1 })}>
+          <span className="msym" aria-hidden="true">check</span>
+        </button>
+        <button className="hl-as-go" onClick={() => api.current.asgOpen(a.id)}>
+          <span className="msym hl-as-ico" aria-hidden="true">{kind[2]}</span>
+          <span className="hl-as-tx">
+            <b>{a.title || `Untitled ${kind[1].toLowerCase()}`}</b>
+            <small>{[a.cls, kind[1], a.wk != null && `Week ${a.wk}`, a.sub].filter(Boolean).join(" · ")}</small>
+          </span>
+          {a.weight != null && <span className="hl-as-wt" title="Weightage">{a.weight}%</span>}
+          {a.items.length > 0 && <span className="hl-as-n" title={`${a.items.length} kept`}><span className="msym" aria-hidden="true">attach_file</span>{a.items.length}</span>}
+          <span className="hl-as-when">
+            <b>{hlNice(a.due)} · {clk(a.at)}</b>
+            {!a.done && <em>{ds.say}</em>}
+          </span>
+        </button>
+      </div>
+    );
+  };
+  return (
+    <div className="hl-as">
+      <div className="hl-as-bar">
+        <span className="hl-as-count">{open.length ? `${open.length} to hand in${late.length ? ` · ${late.length} overdue` : ""}` : asg.length ? "All handed in" : ""}</span>
+        <button className="hl-as-add" onClick={() => api.current.asgOpen(api.current.asgNew())}><span className="msym" aria-hidden="true">add</span>Add</button>
+      </div>
+      {!asg.length && (
+        <div className="hl-nt-none">
+          <span className="msym" aria-hidden="true">assignment</span>
+          <b>No assignments yet</b>
+          <small>Add what's due for your classes, with the brief, links, slides and pictures. It shows on the week as a line at its time, and a heads-up comes a day before and 3 hours before.</small>
+        </div>
+      )}
+      {late.length > 0 && <div className="hl-nt-grp hl-as-grp over">Overdue</div>}
+      {late.map(row)}
+      {next.length > 0 && late.length > 0 && <div className="hl-nt-grp hl-as-grp">Coming up</div>}
+      {next.map(row)}
+      {done.length > 0 && (
+        <button className="hl-nt-grp hl-as-grp hl-as-fold" aria-expanded={showDone} onClick={() => setShowDone((v) => !v)}>
+          <span className="msym" aria-hidden="true" style={{ transform: showDone ? "rotate(90deg)" : "none" }}>chevron_right</span>Done · {done.length}
+        </button>
+      )}
+      {showDone && done.map(row)}
+    </div>
+  );
+});
+// the heads-up at the top of Health: what is due within HL_SOON or overdue, soonest first. It goes by itself after
+// HL_HEADS_MS (it stands over the page), or when closed or opened; once a visit
+const HL_HEADS_MS = 12000;
+const HlHeads = ({ list, classes, lib, onOpen, onClose }) => {
+  const [out, setOut] = useState(false);
+  const leaveT = useRef(0);
+  const leave = (then) => { clearTimeout(leaveT.current); setOut(true); leaveT.current = setTimeout(then, 220); };
+  useEffect(() => { const t = setTimeout(() => leave(onClose), HL_HEADS_MS); return () => { clearTimeout(t); clearTimeout(leaveT.current); }; }, []);
+  const now = Date.now(), a = list[0], ds = hlDueSay(hlDueMs(a), now);
+  return (
+    <div className={`glass hl-heads${out ? " out" : ""} ${ds.lvl}`} role="status" style={{ "--c": hlAsgCol(a.cls, classes, lib) }}>
+      <span className="msym hl-heads-ico" aria-hidden="true">{ds.lvl === "over" ? "notification_important" : "notifications_active"}</span>
+      <span className="hl-heads-tx">
+        <b>{ds.lvl === "over" ? "Overdue" : "Heads up"}: {a.title || hlAsgKind(a.kind)[1]}{a.cls ? ` · ${a.cls}` : ""}</b>
+        <small>{ds.lvl === "over" ? `Was due ${hlNice(a.due)}, ${clk(a.at)}` : `Due ${ds.say} · ${hlNice(a.due)}, ${clk(a.at)}`}{list.length > 1 ? ` · ${list.length - 1} more due soon` : ""}</small>
+      </span>
+      <button className="bk-btn" onClick={() => leave(() => onOpen(a.id))}>Open</button>
+      <button className="hl-heads-x" aria-label="Close" onClick={() => leave(onClose)}><span className="msym" aria-hidden="true">close</span></button>
+    </div>
+  );
+};
+// the Mac's own heads-up while Flow is open, on any side: a day before and three hours before each deadline, once each
+// (kept under HL_WARN_KEY by assignment and due time, so a deadline moved later warns again). Pressed, the shell brings the
+// window forward and Health, when it is on screen, opens that assignment
+const HL_WARN_KEY = "flow-health-warned";
+const HL_WARN_AT = [3 * 36e5, 864e5];
+const hlDueWatch = async () => {
+  if (USER.aside || typeof window === "undefined" || !window.flowHealth || !window.flowHealth.notify) return;
+  let asg = null, warned = {};
+  try { const r = await store.get(HL_KEY); asg = r && r.value ? cleanHealth(JSON.parse(r.value)).asg : null; } catch (e) { return; }
+  if (!asg) return;
+  try { const r = await store.get(HL_WARN_KEY); const v = r && r.value ? JSON.parse(r.value) : null; if (v && typeof v === "object" && !Array.isArray(v)) warned = v; } catch (e) { /* none yet */ }
+  const now = Date.now(), next = {};
+  let said = false;
+  for (const a of asg) {
+    if (a.done) continue;
+    const ms = hlDueMs(a), left = ms - now, tag = `${a.id}|${a.due}|${a.at}`;
+    if (warned[tag]) next[tag] = warned[tag];
+    const w = HL_WARN_AT.find((x) => left > 0 && left <= x);
+    if (!w || (next[tag] && next[tag] <= w)) continue;
+    next[tag] = w; said = true;
+    const kind = hlAsgKind(a.kind)[1];
+    try { await window.flowHealth.notify(`${kind} due in ${hlDueSay(ms, now).say.slice(3)}`, `${a.title || kind}${a.cls ? ` · ${a.cls}` : ""}\n${hlNice(a.due)}, ${clk(a.at)}`, a.id); } catch (e) { /* the Mac said no */ }
+  }
+  if (said || Object.keys(next).length !== Object.keys(warned).length) { try { await store.set(HL_WARN_KEY, JSON.stringify(next)); } catch (e) { /* next round */ } }
+};
 
 /* ---------- health: reading a timetable off a picture (23 October 2026, his words: "is it possible for you to make an ai
    that i can just input an image and it will automatically assign it on the timetable", then "okay, i want you to make
@@ -14898,12 +18775,23 @@ const hlOcrTimes = (t) => {
     if (m[3].toLowerCase() === "pm" && hh < 12) hh += 12; else if (m[3].toLowerCase() === "am" && hh === 12) hh = 0;
     out.push({ min: hh * 60, at: m.index + m[1].length });
   }
+  // a range whose colons the reading lost ("1230-200", "930- 1100"): only as a range, and marked loose (a photo's "9:30"
+  // can come out "836"; its start is then checked against where the block stands)
+  if (!out.length) {
+    const re3 = /(^|[^\d:./])(\d{1,2})(\d{2})\s*-\s*(\d{1,2})(\d{2})(?![\d:./])/g;
+    while ((m = re3.exec(s))) {
+      const two = [[+m[2], +m[3]], [+m[4], +m[5]]];
+      if (two.some(([h, mm]) => h > 23 || mm > 59)) continue;
+      two.forEach(([h, mm], i) => out.push({ min: (h >= 1 && h <= 6 ? h + 12 : h) * 60 + mm, at: m.index + m[1].length + i, loose: true }));
+    }
+  }
   return out.sort((a, b) => a.at - b.at);
 };
 const hlOcrRange = (ts) => {
   if (!ts.length) return null;
-  const a = ts[0].min, b = ts.length > 1 && ts[1].min > a ? ts[1].min : null;
-  return { from: a, to: b };
+  // (an end with no am / pm before its start is twelve hours on: "11:30 - 1:00")
+  const a = ts[0].min, e = ts.length > 1 ? ts[1].min : null, b = e === null ? null : e > a ? e : e + 720 > a && e + 720 - a <= 360 ? e + 720 : null;
+  return { from: a, to: b, loose: !!ts[0].loose };
 };
 const HL_HEADW = /^(no\.?|nomor|number|#|time|times|jam|waktu|pukul|hari|day|days|course|courses|subject|subjects|mata\s?kuliah|matkul|mk|class|kelas|room|ruang|ruangan|venue|location|lokasi|lecturer|lecturers|dosen|pengajar|teacher|sks|credits?|code|kode|kode\s?mk|section|seksi|group|schedule|jadwal|timetable|jadwal kuliah|week|start|end|mulai|selesai)$/i;
 // a room: a room word first ("Room 301", "Lab B2", "Ruang 2"; "Physics Lab" is a name), R.101, a building and a room
@@ -14912,36 +18800,71 @@ const HL_ROOMW = /^(room|rm|ruang(an)?|lab|laboratori(um|es)?|laboratory|gedung|
 const HL_TEACHW = /\b(dr|prof|ir|drs|dra|s\.\s?kom|m\.\s?kom|skom|mkom|s\.\s?t|m\.\s?t|m\.\s?sc|msc|ph\.\s?d|phd|s\.\s?pd|m\.\s?pd|s\.\s?si|m\.\s?si|m\.\s?eng|m\.\s?ba|mba|lecturer|dosen|teacher|bpk|bapak|ibu)\b/i;
 const HL_CODEW = /^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?$/i;
 // one line of the picture: its place, and what it reads as (a time, a day, a heading, a teacher, a room, a code, words)
+/* (28 October 2026, his university's timetable: "MGW1010_MA_OC", "MY-01_ON-", "CAMPUS", "Tutorial", "21", "MA_ClassRoom_61" in
+   one block) a campus or delivery code is said of every class and names none: passed over (meta); a room is also any words
+   with a classroom, hall or theatre in them, wherever they stand; a code with the offering after it ("_MA_OC") is the code */
+const HL_METAW = /^(?:[a-z]{2}-\d{2}[_ ]?)?(?:on|off)-?$|^(?:on|off)?-?campus\w?$|\b(?:on|off)-?campus\b|^[a-z]{2}-\d{2}[_ ](?:on|off)/i;
+const HL_ROOMIN = /class\s?_?room|lecture\s?(?:hall|theat)|seminar\s?room|tutorial\s?room|\btheatre\b/i;
+const hlOcrCode = (s) => { const m = /^([a-z]{2,5}\s?\d{3,4}[a-z]?)_[a-z0-9_]+$/i.exec(String(s).trim()); return m ? m[1] : s; };
+const hlOcrRoom = (s) => String(s).replace(/_+/g, " ").replace(/[^a-z0-9)]+$/i, "").replace(/\s{2,}/g, " ").trim();
 const hlOcrLine = (o) => {
-  const t = String(o.t || "").replace(/\s+/g, " ").trim(), times = hlOcrTimes(t), day = hlOcrDay(t);
-  const rest = t.replace(HL_TIME_RE, " ").replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined ? " " : w))
+  const t = String(o.t || "").replace(/\s+/g, " ").trim(), day = hlOcrDay(t);
+  // an hour's row of a sheet, written "8-9" or "12-1" (only as the whole text: the hours, an hour or two apart)
+  const hr = t.replace(/[–—−~]/g, "-").match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+  const times = hr && +hr[1] <= 24 && +hr[2] <= 24 && [1, 2, 3].includes((+hr[2] - +hr[1] + 24) % 12)
+    ? [+hr[1], +hr[2]].map((h, i) => ({ min: (h >= 1 && h <= 6 ? h + 12 : h % 24) * 60, at: i })) : hlOcrTimes(t);
+  const rest = hr && times.length === 2 ? "" : t.replace(HL_TIME_RE, " ").replace(/(^|[^\d:./])\d{3,4}\s*-\s*\d{3,4}(?![\d:./])/g, (m, a) => (times.some((x) => x.loose) ? `${a} ` : m)).replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined ? " " : w))
     .replace(/^[\s\-–,·|:/()]+|[\s\-–,·|:/()]+$/g, "").replace(/\s{2,}/g, " ");
   const letters = (rest.match(/[a-z]/gi) || []).length;
-  const kind = rest && HL_ROOMW.test(rest) ? "room" : letters < 2 ? (times.length ? "time" : day >= 0 ? "day" : "junk")
+  const kind = HL_METAW.test(t) ? "meta" : rest && (HL_ROOMW.test(rest) || HL_ROOMIN.test(rest)) ? "room" : letters < 2 ? (times.length ? "time" : day >= 0 ? "day" : "junk")
     : HL_HEADW.test(rest) ? "head" : HL_TEACHW.test(rest) ? "teach" : HL_CODEW.test(rest) ? "code" : "text";
   return { t, rest, times, day, kind, x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0, cx: (+o.x || 0) + (+o.w || 0) / 2, cy: (+o.y || 0) + (+o.h || 0) / 2 };
 };
 // a name from words: a course code in front of it ("IF2110 - Algoritma") is left out, and so is "(3 SKS)" after it; a
 // Roman numeral the reading took a stroke of for a mark ("Kalkulus I!") is put right
+// (the code stays when what follows it is only the kind of class: "ECON1202 - TUT", "PDTY1234 Lecture")
+const HL_KINDW = /^(lec|lect|lectures?|le\d*|tut|tute|tutorials?|tu\d*|labs?|laboratory|prac|practicals?|prak|praktikum|wks|workshops?|sem|seminars?|studio|exams?|quiz|tests?|review|prep|preparation|revision|consolidate|consolidation|exercises?|homework|assignments?|projects?|discussion|recitation|class|lesson|session|kuliah|responsi|asistensi|tugas|ujian|kuis|uts|uas|online|web|consult(ation)?)\b/i;
+// (24 October 2026, the review: it kept the code when the name only began with such a word, "IF3110 - Web Programming",
+// "MGT201 Project Management"; now only when the name is nothing but kind words and numbers, "TUT", "Lab 2")
+const HL_KINDALT = HL_KINDW.source.replace(/^\^\(/, "").replace(/\)\\b$/, "");
+const HL_KINDONLY = new RegExp(`^(?:${HL_KINDALT})\\b(?:[\\s\\-–·|:/()]+(?:(?:${HL_KINDALT})\\b|\\d+[a-z]?))*[\\s\\-–·|:/()]*$`, "i");
 const hlOcrName = (s0) => {
   const s = String(s0).replace(/(^|\s)([Il|!1]{2,3})(?=\s|$)/g, (m, sp, r) => (/[I|l]/.test(r[0]) && r.length > 1 ? sp + "I".repeat(r.length) : m));
   let n = String(s).replace(/^[a-z]{2,5}[\s-]?\d{2,4}[a-z]?\s*[-–:·|]?\s+/i, "").replace(/\(?\b\d\s?(sks|credits?)\b\)?/gi, "").replace(/\s{2,}/g, " ").trim();
-  if ((n.match(/[a-z]/gi) || []).length < 2) n = String(s).trim();
+  const bare = n.replace(/^[^a-z]+/i, "");
+  if ((bare.match(/[a-z]/gi) || []).length < 3 || HL_KINDONLY.test(bare)) n = String(s).replace(/\s{2,}/g, " ").trim();
   return n.slice(0, 60);
 };
 // a class from the lines that belong to it: the name, the room, and the time when its words say it. In a grid's block
 // (wrap) a name may run on to the next line; in a table's row the cells are columns, and the name is the longest words
+const HL_CODEIN = /\b[a-z]{2,5}\s?\d{3,4}[a-z]?(?![a-z0-9])/i;      // (an underscore may follow: "MGW1010_MA_OC")
 const hlOcrClass = (ls, wrap = true) => {
-  let name = "", room = "", code = "";
+  let name = "", room = "", code = "", bare = "";
   const parts = [];
   ls.forEach((l) => {
     if (l.times.length && (l.rest.match(/[a-z]/gi) || []).length >= 2) {        // "08:00–09:40 Calculus II · Room 301" in one line: its pieces
       l.rest.split(/\s[·|•–-]\s|,\s|\s{2,}/).forEach((q) => parts.push(hlOcrLine({ t: q, x: l.x, y: l.y, w: l.w, h: l.h })));
     } else parts.push(l);
   });
+  // in a grid's block, the line with a course code in it is the class ("ECON1202 - TUT"; "PDTY1234" over "Lecture"): a
+  // note in a corner before it ("Wks") is passed over, and the words after it are its room ("Burrows Th"). A bare number
+  // (a class number beside it, "4560") is a room only when nothing else is
+  const lead = wrap ? parts.findIndex((l) => (l.kind === "text" || l.kind === "code") && HL_CODEIN.test(l.rest)) : -1;
   // a name wrapped onto a second line (a narrow grid cell) is joined back, when the line right before it was the name too
   parts.forEach((l, i) => {
-    if (l.kind === "text") {
+    if (i < lead && l.kind !== "room") return;
+    if (i === lead) name = hlOcrCode(l.rest);
+    // the kind of class under its code ("Tutorial", "Lecture"): part of the name, once
+    else if (lead >= 0 && l.kind === "text" && HL_KINDW.test(l.rest) && l.rest.split(" ").length <= 2 && !new RegExp(`\\b${l.rest.replace(/[^a-z]/gi, "")}\\b`, "i").test(name)) name = `${name} ${l.rest}`;
+    else if (lead >= 0 && l.kind === "text") {
+      // (24 October 2026, the review: "IF2110 Algoritma dan" over "Struktur Data" over "GK1-301" took "Struktur Data" for
+      // the room and lost the real one) the words after the lead are its room, unless the lead's name stops on a joining
+      // word: then they are the rest of the name
+      if ((parts[lead].kind === "code" && name === parts[lead].rest) || (!room && /(\s(dan|and|of|untuk|for|the|di|ke|dengan|with|&)|[-–&,])$/i.test(name) && !/\d/.test(l.rest))) name = `${name} ${l.rest}`;
+      else if (!room) room = l.rest;
+    }
+    else if (l.kind === "room" && /^\d{3,4}[a-z]?$/i.test(l.rest)) { if (!bare) bare = l.rest; }
+    else if (l.kind === "text") {
       if (!name) name = l.rest;
       else if (!wrap) { if ((l.rest.match(/[a-z]/gi) || []).length > (name.match(/[a-z]/gi) || []).length) name = l.rest; }
       else if (!room && /\d/.test(l.rest) && l.rest.split(" ").length <= 3) room = l.rest;        // a room word misread ("Hoom 4")
@@ -14951,7 +18874,7 @@ const hlOcrClass = (ls, wrap = true) => {
     else if (l.kind === "code") { if (name && !room) room = l.rest; else if (!code) code = l.rest; }
   });
   if (!name) name = code;
-  return { name: hlOcrName(name), room: room.slice(0, 40), range: hlOcrRange(ls.flatMap((l) => l.times)) };
+  return { name: hlOcrName(name), room: hlOcrRoom(room || bare).slice(0, 40), range: hlOcrRange(ls.flatMap((l) => l.times)) };
 };
 const hlOcrRows = (lines) => {
   const rows = [];
@@ -14978,12 +18901,72 @@ const hlOcrFit = (pts) => {
   const keep = pts.filter((p) => Math.abs(f(p[0]) - p[1]) <= 15);
   return keep.length >= 2 && keep.length < pts.length ? hlOcrFit1(keep) || f : f;
 };
+// (from label to label in straight pieces, with three or more: a sheet's rows are as tall as their words make them, so its
+// hours don't stand in one straight line. A label well off the line (a misread), or out of order, is left out)
+const hlOcrPiece = (pts) => {
+  const f = hlOcrFit(pts);
+  if (!f || pts.length < 3) return f;
+  const k = [];
+  pts.filter((p) => Math.abs(f(p[0]) - p[1]) <= 45).sort((a, b) => a[0] - b[0]).forEach((p) => { if (!k.length || (p[1] > k[k.length - 1][1] && p[0] > k[k.length - 1][0])) k.push(p); });
+  if (k.length < 3) return f;
+  return (v) => {
+    let i = 1;
+    while (i < k.length - 1 && v > k[i][0]) i++;
+    return k[i - 1][1] + ((v - k[i - 1][0]) * (k[i][1] - k[i - 1][1])) / (k[i][0] - k[i - 1][0]);
+  };
+};
 const hlR5 = (v) => Math.max(0, Math.min(23 * 60 + 55, Math.round(v / 5) * 5));
+// the picture's colours, where the reading hands them over (px: w, h, rgb, 3 bytes a pixel, the top row first): a cell's
+// edges, for a class whose words don't say its time. The colour at a point 0 to 1 across and down, and from y0 towards y1
+// at x, where it first changes by more than `by` (a line between cells, the next cell, the page; a pale blue cell on white
+// is 59 out): null when it doesn't
+const hlPxAt = (px, x, y) => (Math.max(0, Math.min(px.h - 1, Math.floor(y * px.h))) * px.w + Math.max(0, Math.min(px.w - 1, Math.floor(x * px.w)))) * 3;
+const hlPxEdge = (px, x, y0, y1, by = 60) => {
+  const a = hlPxAt(px, x, y0), n = Math.round(Math.abs(y1 - y0) * px.h), s = Math.sign(y1 - y0) / px.h, c = px.rgb;
+  for (let k = 1; k <= n; k++) {
+    const b = hlPxAt(px, x, y0 + k * s);
+    if (Math.abs(c[a] - c[b]) + Math.abs(c[a + 1] - c[b + 1]) + Math.abs(c[a + 2] - c[b + 2]) > by) return y0 + (k - 0.5) * s;
+  }
+  return null;
+};
+// how far a block's colour reaches from its words, up (y1 above y0) or down. Its colour is the one most points around the
+// words agree on (beside them, and just past them above and below: words can sit on the very edge of their cell). It is
+// followed from beside the words and from just past them, from each point that starts on it, and the farthest edge
+// found is the block's (a round corner, or a letter's tail, stops one short)
+const HL_PX_FS = [0.1, 0.3, 0.5, 0.7, 0.9];
+const hlPxOff = (px, a, b) => Math.abs(px.rgb[a] - px.rgb[b]) + Math.abs(px.rgb[a + 1] - px.rgb[b + 1]) + Math.abs(px.rgb[a + 2] - px.rgb[b + 2]);
+const hlPxTone = (px, l) => {
+  const e2 = 2 / px.w, vote = [[l.x - e2, l.cy], [l.x + l.w + e2, l.cy], ...HL_PX_FS.flatMap((f) => [[l.x + f * l.w, l.y - 0.2 * l.h], [l.x + f * l.w, l.y + 1.2 * l.h]])].map(([x, y]) => hlPxAt(px, x, y));
+  return vote.reduce((m, a) => { const n = vote.filter((b) => hlPxOff(px, a, b) <= 36).length; return n > m.n ? { a, n } : m; }, { a: vote[0], n: 0 }).a;
+};
+const hlPxReach = (px, l, y0, y1) => {
+  const d = Math.sign(y1 - y0), e2 = 2 / px.w, ref = hlPxTone(px, l);
+  const go = [[l.x - e2, l.cy], [l.x + l.w + e2, l.cy], ...HL_PX_FS.map((f) => [l.x + f * l.w, y0 + d * 0.2 * l.h])];
+  const e = go.filter(([x, y]) => hlPxOff(px, hlPxAt(px, x, y), ref) <= 36).map(([x, y]) => hlPxEdge(px, x, y, y1, 36)).filter((v) => v !== null);
+  // (the middle of what they found, 28 October 2026: the farthest let a point that started on the next day's block of the same
+  // colour carry a class on to that block's end; a round corner or a letter's tail stops one point short, a neighbour runs one long)
+  if (!e.length) return null;
+  e.sort((a, b) => a - b);
+  return d < 0 ? e[(e.length - 1) >> 1] : e[e.length >> 1];
+};
+// a time read off a position, to the quarter hour when it is that close, else to the 5 minutes
+const hlQ = (v) => { const q = Math.round(v / 15) * 15; return Math.abs(v - q) <= 4 ? q : Math.round(v / 5) * 5; };
+// (an end a few minutes short of a whole half hour on is that: a calendar draws its blocks a little short of the next line.
+// 100 minutes stays 100)
+// (an end drawn short of the next half hour by up to 9 minutes is it: a calendar insets its blocks; one past a half hour by up
+// to 4 is it too. 100 minutes stays 100, 28 October 2026)
+const hlQEnd = (from, v) => {
+  const d = v - from, upTo = Math.ceil(d / 30) * 30, downTo = Math.floor(d / 30) * 30;
+  if (from % 15 === 0 && upTo > 0 && upTo - d <= 9) return from + upTo;
+  if (from % 15 === 0 && downTo > 0 && d - downTo <= 4) return from + downTo;
+  return hlQ(v);
+};
 // a grid (across: days across the top, the hours down the side; else turned round). A block of a class is the lines
 // under one day that stand together; its time is its own words', else where it stands against the hours
-const hlOcrGrid = (lines, heads, across) => {
+const hlOcrGrid = (lines, heads, across, px) => {
   const P = across ? (l) => l.cx : (l) => l.cy, Q = across ? (l) => l.cy : (l) => l.cx;
   const Q0 = across ? (l) => l.y : (l) => l.x, Q1 = across ? (l) => l.y + l.h : (l) => l.x + l.w, QS = across ? (l) => l.h : (l) => l.w;
+  const pix = across && px && px.w > 0 && px.h > 0 && px.rgb && px.rgb.length >= px.w * px.h * 3 ? px : null;
   // a day heading the reading missed (Tuesday read as "Aepsont") is put back between the two it lies between, in step
   const read = [...heads].sort((a, b) => P(a) - P(b)), cols = [];
   read.forEach((h, i) => {
@@ -14993,34 +18976,93 @@ const hlOcrGrid = (lines, heads, across) => {
   });
   const edge = (i, side) => (side < 0 ? (i > 0 ? (P(cols[i - 1]) + P(cols[i])) / 2 : P(cols[i]) - (cols.length > 1 ? (P(cols[1]) - P(cols[0])) / 2 : 0.1))
     : i < cols.length - 1 ? (P(cols[i]) + P(cols[i + 1])) / 2 : P(cols[i]) + (cols.length > 1 ? (P(cols[i]) - P(cols[i - 1])) / 2 : 0.1));
-  const lo = edge(0, -1), hi = edge(cols.length - 1, 1), start = Math.max(...heads.map(Q1));
-  const axis = lines.filter((l) => l.kind === "time" && l.times.length === 1 && Q(l) > start - 0.01 && P(l) < lo);
-  const fit = hlOcrFit(axis.map((l) => [Q(l), l.times[0].min]));
-  const body = lines.filter((l) => !heads.includes(l) && !axis.includes(l) && Q(l) > start && P(l) >= lo && P(l) <= hi && l.kind !== "head" && l.kind !== "junk");
+  const start = Math.max(...heads.map(Q1)), top = Math.min(...heads.map(Q0));
+  // and one too small to read after the last (a photo's far "Fri"): a step on, when words stand there
+  const words = (l) => l.kind !== "junk" && l.kind !== "head" && (l.rest.match(/[a-z]/gi) || []).length >= 2 && Q(l) > start;
+  while (cols.length >= 2 && cols[cols.length - 1].day < 6) {
+    const z = cols[cols.length - 1], y = cols[cols.length - 2], end = edge(cols.length - 1, 1);
+    if (!lines.some((l) => words(l) && P(l) > end && P(l) < end + P(z) - P(y))) break;
+    cols.push({ ...z, day: z.day + 1, cx: 2 * z.cx - y.cx, cy: 2 * z.cy - y.cy });
+  }
+  const lo = edge(0, -1), hi = edge(cols.length - 1, 1);
+  // the hours down the side: a time ("8am", "13:00") or a row's span ("8-9", "08:00 - 08:45", its middle where it stands),
+  // read in order, so one with no am / pm under a later one is twelve hours on ("7-8" under "6-7")
+  const axis = lines.filter((l) => l.kind === "time" && l.times.length >= 1 && l.times.length <= 2 && Q(l) > top - 0.01 && P(l) < lo).sort((a, b) => Q(a) - Q(b));
+  let prev = -1;
+  const marks = axis.map((l) => {
+    let s = l.times[0].min, e = l.times.length > 1 ? l.times[1].min : null;
+    if (s < prev && s + 720 < 1440) { s += 720; if (e !== null) e += 720; }
+    if (e !== null && e <= s) e += 720;
+    prev = s;
+    return { q: Q(l), s, e: e === null ? null : Math.min(1439, e) };
+  });
+  const fit = hlOcrPiece(marks.map((m) => [m.q, m.e !== null ? (m.s + m.e) / 2 : m.s]));
+  const spans = marks.filter((m) => m.e !== null), span = spans.length > marks.length / 2 ? spans.map((m) => m.e - m.s).sort((a, b) => a - b)[spans.length >> 1] : 0;
+  // (in rows of a span, a cell's edge is on a line between rows: the nearest)
+  const rowLines = spans.flatMap((m) => [m.s, m.e]);
+  const onLine = (v) => { const b = rowLines.reduce((m, t) => (Math.abs(t - v) < Math.abs(m - v) ? t : m), Infinity); return Math.abs(b - v) <= span / 3 ? b : hlQ(v); };
+  const body = lines.filter((l) => !heads.includes(l) && !axis.includes(l) && Q(l) > start && P(l) >= lo && P(l) <= hi && l.kind !== "head" && (l.kind !== "junk" || /^\d{1,3}$/.test(l.t)));
   const sizes = body.map(QS).sort((a, b) => a - b), med = sizes[Math.floor(sizes.length / 2)] || 0.02, out = [];
+  const coded = (l) => (l.kind === "code" || l.kind === "text") && HL_CODEIN.test(l.rest);
+  const pend = [];
   cols.forEach((c, i) => {
     const a = edge(i, -1), b = edge(i, 1);
     const own = body.filter((l) => P(l) >= a && P(l) < b).sort((p, q) => Q0(p) - Q0(q));
     const blocks = [];
     own.forEach((l) => {
-      const blk = blocks[blocks.length - 1];
-      const gap = blk ? Q0(l) - Math.max(...blk.map(Q1)) : Infinity;
+      const blk = blocks[blocks.length - 1], last = blk && blk.reduce((m, q) => (Q1(q) > Q1(m) ? q : m));
+      const gap = blk ? Q0(l) - Q1(last) : Infinity;
       const twice = blk && l.times.length >= 2 && blk.some((q) => q.times.length >= 1);
-      if (!blk || gap > 0.85 * med || twice) blocks.push([l]); else blk.push(l);
+      // a second course code, or a line between cells in the picture (beside the words and between them), or, in blocks that
+      // don't say their times, words on a cell of another colour: the next block
+      const code2 = blk && coded(l) && blk.some(coded);
+      const cut = blk && pix && ((gap > 0 && [Math.min(l.x, last.x) - 0.004, (l.cx + last.cx) / 2].every((x) => hlPxEdge(pix, x, Q1(last), Q0(l)) !== null))
+        || (!l.times.length && !blk.some((q) => q.times.length) && hlPxOff(pix, hlPxTone(pix, l), hlPxTone(pix, last)) > 36));
+      if (!blk || gap > 0.85 * med || twice || code2 || cut) blocks.push([l]); else blk.push(l);
     });
     blocks.forEach((blk) => {
-      const k = hlOcrClass(blk);
+      const k = hlOcrClass(hlOcrRows(blk).flatMap((r) => r.ls));
       if (!k.name) return;
-      // no time in its words: it starts where its words begin against the hours, to the quarter hour at or before (the
-      // words sit a little inside the block); its end can't be read off words, so it gets the usual length, to be checked
-      let from = k.range ? k.range.from : null, to = k.range ? k.range.to : null;
-      if (from === null && fit) from = Math.max(0, Math.floor((fit(Math.min(...blk.map(Q0))) - 2) / 15) * 15);
-      if (from === null) return;
-      if (to === null || to - from < 20) to = Math.min(23 * 60 + 59, from + 100);
-      out.push({ dow: c.day, from, to, name: k.name, room: k.room });
+      const t0 = Math.min(...blk.map(Q0)), t1 = Math.max(...blk.map(Q1));
+      const up = fit && pix && hlPxReach(pix, blk.reduce((m, q) => (Q0(q) < Q0(m) ? q : m)), t0, start), down = fit && pix && hlPxReach(pix, blk.reduce((m, q) => (Q1(q) > Q1(m) ? q : m)), t1, 1);
+      pend.push({ c, k, t0, t1, up, down });
     });
   });
-  return out;
+  /* (28 October 2026, his university's timetable: its hour labels stand just under their lines, so every cell's edge read
+     about five minutes early, 11:55 for 12:00) when the cells' tops share one offset from the quarter hours, it is the
+     labels', and is taken off */
+  const offs = pend.filter((q) => q.up).map((q) => { const t = fit(q.up); return t - Math.round(t / 15) * 15; }).sort((a, b) => a - b);
+  const bias = offs.length >= 2 && Math.abs(offs[offs.length >> 1]) >= 1.5 && offs[offs.length - 1] - offs[0] <= 4 ? offs[offs.length >> 1] : 0;
+  const fitB = (v) => fit(v) - bias;
+  pend.forEach(({ c, k, t0, t1, up, down }) => {
+      // where it stands against the hours: its cell's edges in the picture (beside its words, up and down to the first
+      // change of colour); else, in rows of an hour's span, the row its words are the middle of (two when they stand on the
+      // line between); else where its words begin, to the quarter hour at or before (they sit a little inside the block)
+      let pos = null, end = null;
+      if (fit) {
+        if (up && down && fitB(down) - fitB(up) >= 15 && fitB(down) - fitB(up) <= 480) { pos = span ? onLine(fitB(up)) : hlQ(fitB(up)); end = span ? onLine(fitB(down)) : hlQEnd(pos, fitB(down)); }
+        else if (span) {
+          const first = spans[0].s, j = Math.round((fit((t0 + t1) / 2) - first) / (span / 2));
+          pos = first + Math.floor((j - 1) / 2) * span; end = pos + (j % 2 ? 1 : 2) * span;
+        } else pos = Math.max(0, Math.floor((fit(t0) - 2) / 15) * 15);
+      }
+      // its own time, checked against that: twelve hours out (no am / pm) is put right, and a start read without its colon
+      // whose minutes no clock gives ("836" for 9:30) is where its words begin
+      let from = k.range ? k.range.from : null, to = k.range ? k.range.to : null;
+      if (from !== null && fit) {
+        const at = fit(t0);
+        if (Math.abs(from - at) > 300) { const sh = from < at ? 720 : -720; if (Math.abs(from + sh - at) < 120 && from + sh >= 0) { from += sh; if (to !== null) to += sh; } }
+        if (k.range.loose && from % 5) from = Math.round(at / 15) * 15;
+      }
+      if (from === null) { from = pos; to = end; }
+      if (from === null) return;
+      if ((to === null || to - from < 20) && end !== null && end - from >= 15) to = end;
+      if (to === null || to - from < 20) to = Math.min(23 * 60 + 59, from + 100);
+      out.push({ dow: c.day, from, to, name: k.name, room: k.room, own: !!k.range });
+  });
+  // where most blocks say their time (a student portal's), one that doesn't is a note on the page ("Permitted Clash")
+  const timed = out.filter((c) => c.own);
+  return timed.length >= 2 && timed.length >= out.length * 0.6 ? timed : out;
 };
 // a table or a list: a class is a row with a time; its day the row's own, else the day label it belongs to (the one above
 // it under day headings, the nearest when the label stands beside its rows, as one cell beside several does)
@@ -15105,23 +19147,73 @@ const hlOcrStraight = (raw, W, H) => {
     return { ...o, x: cx / W - o.w / 2, y: cy / H - o.h / 2 };
   });
 };
-const hlReadTimetable = (raw, W, H) => {
-  const lines = hlOcrStraight((Array.isArray(raw) ? raw : []).filter((o) => o && typeof o.t === "string" && o.t.trim()), W, H).map(hlOcrLine);
+// the days across the top: three or more, each further right a later day, in a line that may slope (a photo of a screen
+// taken from the side slopes one way at the top and the other at the bottom, so no turn puts it straight)
+const hlOcrHeads = (days, W = 1, H = 1) => {
+  const s = [...days].sort((a, b) => a.cx - b.cx);
+  let best = [];
+  s.forEach((d0, i) => {
+    const ch = [d0];
+    s.slice(i + 1).forEach((q) => { const p = ch[ch.length - 1]; if (q.day > p.day && Math.abs(q.cy - p.cy) * H <= 0.12 * (q.cx - p.cx) * W + 0.6 * Math.max(p.h, q.h) * H) ch.push(q); });
+    if (ch.length > best.length) best = ch;
+  });
+  return best.length >= 3 ? best : null;
+};
+const hlReadTimetable = (raw, W, H, px) => {
+  const kept = (Array.isArray(raw) ? raw : []).filter((o) => o && typeof o.t === "string" && o.t.trim()), turned = hlOcrStraight(kept, W, H);
+  const lines = turned.map(hlOcrLine);
   const days = lines.filter((l) => l.kind === "day" && l.day >= 0);
-  // days across the top: three or more on one row; down the side: three or more under each other, with the hours across
-  const across = hlOcrRows(days).map((r) => r.ls).find((ls) => new Set(ls.map((l) => l.day)).size >= 3);
+  // days across the top; down the side: three or more under each other, with the hours across. (The picture's colours
+  // only stand where the words do when they weren't turned here)
+  const across = hlOcrHeads(days, W > 0 ? W : 1, H > 0 ? H : 1);
   let found;
-  if (across) found = hlOcrGrid(lines, across, true);
+  if (across) found = hlOcrGrid(lines, across, true, turned === kept ? px : null);
   else {
-    const timeRow = hlOcrRows(lines.filter((l) => l.kind === "time" && l.times.length === 1)).find((r) => r.ls.length >= 3);
+    const timeRow = hlOcrRows(lines.filter((l) => l.kind === "time" && l.times.length >= 1 && l.times.length <= 2)).find((r) => r.ls.length >= 3);
     const down = timeRow ? days.filter((l) => l.cx < Math.min(...timeRow.ls.map((q) => q.x))) : [];
     found = down.length >= 3 && new Set(down.map((l) => l.day)).size >= 3 ? hlOcrGrid(lines, down, false) : hlOcrList(lines);
   }
   const seen = new Set();
-  return found.filter((c) => c.name && c.to > c.from && c.dow >= 0 && c.dow <= 6)
+  const out = found.filter((c) => c.name && c.to > c.from && c.dow >= 0 && c.dow <= 6)
     .map((c) => ({ dow: c.dow, from: hlHm(hlR5(c.from)), to: hlHm(Math.min(23 * 60 + 59, hlR5(c.to))), name: c.name, room: c.room || "" }))
     .filter((c) => { const k = `${c.dow}|${c.from}|${c.name.toLowerCase()}`; if (seen.has(k)) return false; seen.add(k); return true; })
     .sort((a, b) => a.dow - b.dow || (a.from < b.from ? -1 : 1));
+  // (28 October 2026, his university's "2/11 (Mon)") the week its dated day headings name, by its Monday: each heading's day
+  // and month (either order, the year near today) that falls on the weekday it names; the Monday most of them agree on
+  if (across) {
+    const near = new Date(), votes = {};
+    for (const hd of across) {
+      const m = /(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?/.exec(hd.t);
+      if (!m) continue;
+      let best = null;
+      for (const [d, mo] of [[+m[1], +m[2]], [+m[2], +m[1]]]) {
+        if (mo < 1 || mo > 12 || d < 1 || d > 31) continue;
+        for (const y of m[3] ? [+m[3] < 100 ? 2000 + +m[3] : +m[3]] : [near.getFullYear() - 1, near.getFullYear(), near.getFullYear() + 1]) {
+          const t = new Date(y, mo - 1, d, 12);
+          if (t.getDate() !== d || (t.getDay() + 6) % 7 !== hd.day) continue;
+          if (!best || Math.abs(t - near) < Math.abs(best - near)) best = t;
+        }
+      }
+      if (best) { best.setDate(best.getDate() - hd.day); const k = `${best.getFullYear()}-${pad(best.getMonth() + 1)}-${pad(best.getDate())}`; votes[k] = (votes[k] || 0) + 1; }
+    }
+    const top = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= 2) out.week = top[0];
+  }
+  return out;
+};
+// a class read off a picture matched to one of his (his list of classes, 28 October 2026: "match the classes with the already
+// made class presets by me"): the same course code ("BTW1042"), or his name being the code's letters ("BTW"), or his name
+// standing whole in the words read
+const hlLibMatch = (lib, c) => {
+  const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const codeOf = (x) => ((/[a-z]{2,5}\s?\d{3,4}/i.exec(String(x)) || [""])[0]).replace(/\s/g, "").toLowerCase();
+  const code = codeOf(c.name), pre = code.replace(/\d.*/, ""), words = norm(c.name);
+  return (lib || []).find((q) => {
+    const qc = codeOf(q.name), first = norm(String(q.name).split(/[\s_-]+/)[0]);
+    if (code && qc) return qc === code;
+    if (code && (first === pre || first === code)) return true;
+    return norm(q.name).length >= 4 && words.includes(norm(q.name));
+  }) || null;
 };
 /* ---------- health: reading a timetable end ---------- */
 // the Mac app reads pictures (a plain browser has no such thing, and offers none of it)
@@ -15129,8 +19221,10 @@ const HL_OCR_OK = typeof window !== "undefined" && !!(window.flowHealth && windo
 /* What was read off the picture, to be checked before it goes in: a row a class, each with its day, times, name and
    room to change, and a tick to leave it out. Classes that are on the week already are passed over. "Add to the week"
    puts the ticked ones in, one colour per name */
-const HlScanSheet = ({ found, onAdd, onCancel }) => {
+const HlScanSheet = ({ found, week, onAdd, onCancel }) => {
   const [rows, setRows] = useState(found);
+  // a picture with dates is one week of his (his timetable "may change in the following weeks"): that week only, unless he says every week
+  const [only, setOnly] = useState(!!week);
   const set = (i, p) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
   const ok = (r) => r.on && r.name.trim() && hlTimeOk(r.from) && hlTimeOk(r.to) && r.to > r.from;
   const n = rows.filter(ok).length;
@@ -15139,8 +19233,12 @@ const HlScanSheet = ({ found, onAdd, onCancel }) => {
       <div className="hl-scan-head">
         <span className="msym" aria-hidden="true">document_scanner</span>
         <b>{found.length === 1 ? "1 class found" : `${found.length} classes found`} in the picture</b>
-        <small>Check them before they go in: the words and times were read off the picture.</small>
+        <small>Check them before they go in: the words and times were read off the picture.{rows.some((r) => r.lib) ? " The ones marked are matched to your classes." : ""}</small>
       </div>
+      {week && (
+        <SlideSeg value={only ? "only" : "every"} onPick={(v) => setOnly(v === "only")}
+                  options={[["only", `Only the week of ${hlNice(week).slice(4)}`, "The picture's own week: the next one may differ"], ["every", "Every week", "Every week, until you change or delete them"]]} />
+      )}
       <div className="hl-scan-rows">
         {rows.map((r, i) => (
           <div key={r.key} className={`hl-scan-row${r.on ? "" : " off"}`} style={{ "--i": Math.min(i, 12) }}>
@@ -15150,16 +19248,19 @@ const HlScanSheet = ({ found, onAdd, onCancel }) => {
             <select className="jr-in hl-scan-day" value={r.dow} onChange={(e) => set(i, { dow: +e.target.value })} aria-label="Day">
               {DOW_FULL.map((d, w) => <option key={d} value={w}>{d}</option>)}
             </select>
-            <input className="jr-in hl-scan-t" type="time" value={r.from} onChange={(e) => set(i, { from: e.target.value })} aria-label="Starts" />
-            <input className="jr-in hl-scan-t" type="time" value={r.to} onChange={(e) => set(i, { to: e.target.value })} aria-label="Ends" />
-            <input className="jr-in hl-scan-n" value={r.name} maxLength={60} placeholder="What" onChange={(e) => set(i, { name: e.target.value })} aria-label="What" />
+            <TimeField cls="hl-scan-t" value={r.from} onChange={(v) => set(i, { from: v })} label="Starts" />
+            <TimeField cls="hl-scan-t" value={r.to} onChange={(v) => set(i, { to: v })} label="Ends" />
+            <span className="hl-scan-nw">
+              {r.lib && <i className="hl-scan-lib" style={{ "--c": hlClsCol(r) }} title="Matched to your class" />}
+              <input className="jr-in hl-scan-n" value={r.name} maxLength={60} placeholder="What" onChange={(e) => set(i, { name: e.target.value, lib: false })} aria-label="What" />
+            </span>
             <input className="jr-in hl-scan-r" value={r.room} maxLength={40} placeholder="Where" onChange={(e) => set(i, { room: e.target.value })} aria-label="Where" />
           </div>
         ))}
       </div>
       <span className="hl-form-go">
         <button className="bk-btn" onClick={onCancel}>Cancel</button>
-        <button className="hl-save" disabled={!n} onClick={() => onAdd(rows.filter(ok))}>{n === 1 ? "Add 1 to the week" : `Add ${n} to the week`}</button>
+        <button className="hl-save" disabled={!n} onClick={() => onAdd(rows.filter(ok), only ? week : null)}>{n === 1 ? "Add 1 to the week" : `Add ${n} to the week`}</button>
       </span>
     </div>
   );
@@ -15169,36 +19270,179 @@ const HlScanSheet = ({ found, onAdd, onCancel }) => {
 const HL_PHONE_OK = typeof window !== "undefined" && !!(window.flowHealth && window.flowHealth.phone);
 const HL_PHONE_MS = 5 * 60000;          // while Health is open, the file is looked at again this often (and when the window comes back)
 // how to make the shortcut and its automation, as the Activity card shows it (the same as was written to him)
+// (29 October 2026: "update the setting up the shortcut for the icloud and include sleep data": the pieces of sleep of the
+// last 7 days, one line each, worked into nights by hlPhoneNights; each list is kept in a variable of its own, so the file's
+// Text can't take one list for the other)
 const HL_PHONE_STEPS = [
   ["Make the shortcut", <>In the Shortcuts app on your iPhone, tap <b>+</b> and name it <b>Flow steps</b>.</>],
   ["Steps of the last 7 days", <>Add <b>Find Health Samples</b>: Type is <b>Steps</b>. Tap Add Filter: <b>Start Date</b> is <b>in the last 7 days</b>. Group By: <b>Day</b>.</>],
   ["One line a day", <>Add <b>Repeat with Each</b>. Inside it add <b>Text</b> and fill it with: <b>Repeat Item</b> (tap it, choose <b>Start Date</b>, Date Format <b>Custom</b>: <code>yyyy-MM-dd</code>), then <code>;</code>, then <b>Repeat Item</b> again, choosing <b>Value</b>.</>],
-  ["Put the lines together", <>After End Repeat add <b>Combine Text</b>: Repeat Results, with <b>New Lines</b>.</>],
+  ["Keep the steps", <>After End Repeat add <b>Combine Text</b>: Repeat Results, with <b>New Lines</b>. Then <b>Set Variable</b>: name it <code>Steps</code>, set to Combined Text.</>],
+  ["Sleep of the last 7 days", <>Add <b>Find Health Samples</b>: Type is <b>Sleep Analysis</b> (in some versions just <b>Sleep</b>). Add Filter: <b>Start Date</b> is <b>in the last 7 days</b>. No Group By.</>],
+  ["One line a piece of sleep", <>Add <b>Repeat with Each</b>. Inside it add <b>Text</b>: <code>sleep;</code> then <b>Repeat Item</b> → <b>Start Date</b> (Custom: <code>yyyy-MM-dd HH:mm</code>), then <code>;</code>, then <b>Repeat Item</b> → <b>End Date</b> (Custom: <code>yyyy-MM-dd HH:mm</code>), then <code>;</code>, then <b>Repeat Item</b> → <b>Value</b>.</>],
+  ["Keep the sleep", <>After this End Repeat add <b>Combine Text</b>: Repeat Results, with <b>New Lines</b>. Then <b>Set Variable</b>: name it <code>Sleep</code>, set to this Combined Text.</>],
   ["Your latest weight", <>Add <b>Find Health Samples</b>: Type is <b>Weight</b>, Sort by <b>Start Date</b>, Order <b>Latest First</b>, Limit <b>1</b>.</>],
-  ["The file", <>Add <b>Text</b> with three lines: <code>flow-health</code> · <b>Combined Text</b> · <code>weight;</code> Start Date <code>;</code> Value <code>;</code> Unit (each from the weight's Health Samples, the date as <code>yyyy-MM-dd</code> again).</>],
-  ["Save it in iCloud Drive", <>Add <b>Save File</b>: turn off Ask Where to Save, folder <b>Shortcuts</b>, Subpath <code>flow-health.txt</code>, turn on <b>Overwrite If File Exists</b>. Run it once and allow Health.</>],
-  ["Every day by itself", <>In <b>Automation</b>, tap <b>+</b>, <b>Time of Day</b>, e.g. 22:00 Daily, <b>Run Immediately</b>, then choose Flow steps. Pick a time you usually have the phone in hand: a locked iPhone keeps Health locked too.</>],
-  ["On this Mac", <>iCloud Drive on (System Settings, your name, iCloud). Flow reads the file when Health opens, and every few minutes while it is open.</>],
+  ["The file", <>Add <b>Text</b> with four lines: <code>flow-health</code> · the <b>Steps</b> variable · the <b>Sleep</b> variable · <code>weight;</code> Start Date <code>;</code> Value <code>;</code> Unit (each from the weight's Health Samples, the date as <code>yyyy-MM-dd</code>).</>],
+  ["Save it in iCloud Drive", <>Add <b>Save File</b>: turn off Ask Where to Save, tap the folder and choose <b>iCloud Drive</b> itself (the top level), Subpath <code>flow-health.txt</code> with nothing before it, turn on <b>Overwrite If File Exists</b>. Run it once and allow Health to share Steps, Sleep and Weight.</>],
+  ["Every day by itself", <>In <b>Automation</b>, tap <b>+</b>, <b>Time of Day</b>, e.g. 10:00 Daily (after you're up, so last night is in), <b>Run Immediately</b>, then choose Flow steps. Pick a time you usually have the phone in hand: a locked iPhone keeps Health locked too.</>],
+  ["On this Mac", <>iCloud Drive on (System Settings, your name, iCloud). Flow reads the file when Health opens, and every few minutes while it is open. A day's steps, a night's sleep or a weight you typed in Flow yourself stays yours: the file never writes over it.</>],
 ];
+// the same shortcut asked of the Shortcuts app's own AI (23 October 2026: "shortcuts is using AI now so give the whole
+// prompt to copy paste in the Ai"): what hlPhoneRead reads, said in words, step by step with the actions' own names. The
+// daily automation is set up by hand after
+const HL_PHONE_PROMPT = `Make a shortcut named "Flow steps" with these actions:
+1. Find Health Samples: Steps, Start Date in the last 7 days, Group By Day.
+2. Repeat with Each: Text = Start Date (custom format yyyy-MM-dd) + ";" + Value.
+3. Combine Text (Repeat Results, New Lines). Set Variable Steps.
+4. Find Health Samples: Sleep Analysis, Start Date in the last 7 days.
+5. Repeat with Each: Text = "sleep;" + Start Date + ";" + End Date + ";" + Value (both dates custom format yyyy-MM-dd HH:mm).
+6. Combine Text (Repeat Results, New Lines). Set Variable Sleep.
+7. Find Health Samples: Weight, Latest First, Limit 1.
+8. Text with 4 lines: flow-health / Steps / Sleep / weight;Start Date (yyyy-MM-dd);Value;Unit
+9. Save File: iCloud Drive top level, Subpath flow-health.txt, Ask Where to Save off, Overwrite on.`;
+// (it said the Shortcuts folder until his phone answered "Location Doesn't Exist": an iCloud Drive need not have that
+// folder, and its top level is always there. The Mac looks in both: PHONE_DIRS in electron/main.cjs)
+const copyText = async (t) => {
+  try { await navigator.clipboard.writeText(t); return true; } catch (e) { /* the older way, below */ }
+  try {
+    const a = document.createElement("textarea");
+    a.value = t; a.setAttribute("readonly", ""); a.style.cssText = "position:fixed;left:-9999px;top:0";
+    document.body.appendChild(a); a.select();
+    const ok = document.execCommand("copy");
+    a.remove();
+    return ok;
+  } catch (e) { return false; }
+};
 // when the phone saved its file: "today, 22:00", "Thu 22 Oct, 22:00"
 const hlWhen = (at) => {
-  const d = new Date(at), k = hlKey(d), t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const d = new Date(at), k = hlKey(d), t = clk(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
   return k === hlKey(new Date()) ? `today, ${t}` : `${hlNice(k)}, ${t}`;
 };
 
 /* ---------- health: activity. The day's steps (typed, or taken from an Apple Health export), the last two weeks as
    bars against the goal, and the month as rings, Apple's activity history ---------- */
+/* Sleep history (31 October 2026, his words: "make the sleep bigger and the steps info on top a lot smaller, make me be
+   able to open sleep history, set manually how long i slept from what time to what time"): a month of nights at a time
+   (‹ › to step), the month's figures, the nights drawn on a clock from going to sleep to waking (18:00 at the top to noon
+   at the bottom, as Apple Health draws them), and every night as a row whose two times are typed in place, the latest
+   first. A press on a night's bar goes to its row. A night typed here is his: the iPhone's file leaves it alone */
+const HL_SLP_T0 = 18 * 60, HL_SLP_SPAN = 18 * 60;
+const hlSlpAt = (t) => Math.min(1, ((hlMin(t) - HL_SLP_T0 + 1440) % 1440) / HL_SLP_SPAN);
+// the middle of some clock times, counted from 18:00 so a bedtime after midnight is that night's
+const hlSlpMid = (ts) => {
+  if (!ts.length) return null;
+  const v = ts.map((t) => (hlMin(t) - HL_SLP_T0 + 1440) % 1440).sort((a, b) => a - b), x = (v[v.length >> 1] + HL_SLP_T0) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+};
+const hlSlpTone = (s) => (s.score >= 70 ? "#b7a4e6" : s.score >= 50 ? "#f0d88a" : "#ff9aa3");
+const HlSleepLog = ({ h, api, day, today, onClose }) => {
+  // Esc shuts a time's pane first, when one is open, then the pop-up
+  const sh = useSheet(onClose, (e) => (e.key === "Escape" && document.querySelector(".tpk") ? true : undefined));
+  const [mo, setMo] = useState(() => (day <= today ? day : today).slice(0, 7));
+  const [sel, setSel] = useState(null);
+  const rows = useRef(new Map());
+  const first = `${mo}-01`, d0 = hlDate(first), dim = new Date(d0.getFullYear(), d0.getMonth() + 1, 0).getDate();
+  const ks = Array.from({ length: dim }, (_, i) => hlAddDays(first, i)), past = ks.filter((k) => k <= today);
+  const back = hlKey(new Date(hlDate(today).getFullYear() - 1, hlDate(today).getMonth(), 1)).slice(0, 7), oldest = Object.keys(h.sleep).sort()[0];
+  const low = oldest && oldest.slice(0, 7) < back ? oldest.slice(0, 7) : back;
+  const step = (n) => { setMo(hlKey(new Date(d0.getFullYear(), d0.getMonth() + n, 1)).slice(0, 7)); setSel(null); };
+  const nights = past.map((k) => ({ k, q: h.sleep[k] || {}, s: hlSleepScore(h.sleep, k) })), had = nights.filter((x) => x.s);
+  const avg = (f) => (had.length ? Math.round(had.reduce((a, x) => a + f(x), 0) / had.length) : 0);
+  const bed = hlSlpMid(had.map((x) => x.q.bed)), wake = hlSlpMid(had.map((x) => x.q.wake));
+  const go = (k) => { setSel(k); const el = rows.current.get(k); if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 8vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
+         onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
+      <div role="dialog" aria-modal="true" aria-label="Sleep history" className="glass hl-nt hl-sh" style={{ ...sh.pop, "--c": "#b7a4e6" }} onClick={stop}>
+        <div className="fx-head">
+          <div className="hl-nt-hd">
+            <div className="hl-nt-name">Sleep</div>
+            <div className="hl-nt-when">{had.length} of {past.length} nights logged · press a time to type it</div>
+          </div>
+          <span className="hl-nt-tools">
+            <span className="hl-sh-mo">
+              <button aria-label="The month before" disabled={mo <= low} onClick={() => step(-1)}><span className="msym" aria-hidden="true">chevron_left</span></button>
+              <b>{MONTHS_FULL[d0.getMonth()]} {d0.getFullYear()}</b>
+              <button aria-label="The month after" disabled={mo >= today.slice(0, 7)} onClick={() => step(1)}><span className="msym" aria-hidden="true">chevron_right</span></button>
+            </span>
+            <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
+          </span>
+        </div>
+        <div className="hl-sh-figs">
+          {[["A night, on average", had.length ? hlDur(avg((x) => x.s.min)) : "–"], ["Rating, on average", had.length ? avg((x) => x.s.score) : "–"],
+            ["Usual bedtime", bed ? clk(bed) : "–"], ["Usual wake-up", wake ? clk(wake) : "–"]].map(([k, v]) => (
+            <span key={k} className="hl-sh-fig"><small>{k}</small><b>{v}</b></span>
+          ))}
+        </div>
+        <div className="hl-sh-chart" role="img" aria-label={`The nights of ${MONTHS_FULL[d0.getMonth()]}, from going to sleep to waking`}>
+          <span className="hl-sh-ax" aria-hidden="true">
+            {[0, 3, 6, 9, 12, 15, 18].map((n) => <span key={n} style={{ top: `${(n / 18) * 100}%` }}>{clk(`${String((18 + n) % 24).padStart(2, "0")}:00`)}</span>)}
+          </span>
+          <div className="hl-sh-cols" key={mo}>
+            {[3, 6, 9, 12, 15].map((n) => <span key={n} className="hl-sh-ln" style={{ top: `${(n / 18) * 100}%` }} />)}
+            {ks.map((k, i) => {
+              const x = nights[i], s = x && x.s, a = s ? hlSlpAt(x.q.bed) : 0, b = s ? hlSlpAt(x.q.wake) : 0, top = s && b < a ? 0 : a;
+              return (
+                <button key={k} className={`hl-sh-col${sel === k ? " sel" : ""}${k === today ? " today" : ""}`} disabled={k > today} onClick={() => go(k)}
+                        title={s ? `${hlNice(k)}: ${clk(x.q.bed)} – ${clk(x.q.wake)}, ${hlDur(s.min)}, rated ${s.score}` : k > today ? hlNice(k) : `${hlNice(k)}: not logged`}>
+                  {s && <i style={{ top: `${top * 100}%`, height: `${Math.max(0.02, b - top) * 100}%`, background: hlSlpTone(s), "--i": i }} />}
+                  <em>{i % 2 === 0 || k === today ? i + 1 : ""}</em>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="hl-sh-list">
+          <div className="hl-sh-row head" aria-hidden="true"><span>Woke on</span><span>Went to sleep → woke up</span><span>Slept</span><span>Rating</span><span>Felt</span><span /></div>
+          {nights.slice().reverse().map(({ k, q, s }) => (
+            <div key={k} ref={(el) => { if (el) rows.current.set(k, el); else rows.current.delete(k); }} className={`hl-sh-row${sel === k ? " sel" : ""}`}>
+              <span className="hl-sh-d"><b>{hlNice(k)}</b>{(k === today || q.ph) && <small>{[k === today ? "last night" : "", q.ph ? "from your iPhone" : ""].filter(Boolean).join(" · ")}</small>}</span>
+              <span className="hl-slp-times">
+                <span className="msym" aria-hidden="true">bedtime</span>
+                <TimeField value={q.bed || ""} label={`Went to sleep, the night before ${hlNice(k)}`} onChange={(v) => api.current.setSleep(k, { bed: v })} />
+                <i aria-hidden="true">→</i>
+                <span className="msym" aria-hidden="true">sunny</span>
+                <TimeField value={q.wake || ""} label={`Woke up on ${hlNice(k)}`} onChange={(v) => api.current.setSleep(k, { wake: v })} />
+              </span>
+              <span className="hl-sh-dur">{s ? hlDur(s.min) : "–"}</span>
+              {s ? <span className="hl-sh-sc" style={{ "--t": hlSlpTone(s) }} title={`${s.word}: ${s.why}`}>{s.score}</span> : <span className="hl-sh-sc none">–</span>}
+              <span className="hl-sh-feel">{q.feel ? <span className="msym" title={HL_FEEL[q.feel - 1][1]}>{HL_FEEL[q.feel - 1][0]}</span> : null}</span>
+              <button className="hl-sh-x" aria-label={`Clear the night before ${hlNice(k)}`} title="Clear this night (Undo is offered)" disabled={!(q.bed || q.wake || q.feel)}
+                      onClick={() => api.current.sleepDel(k)}><span className="msym" aria-hidden="true">close</span></button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
 const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
-  const [how, setHow] = useState(false);         // the steps that set up the iPhone's shortcut, unfolded
+  const [how, setHow] = useState(false);         // how to set up the iPhone's shortcut, unfolded
+  const [byHand, setByHand] = useState(false);   // (and in it, the steps by hand)
+  const [slpLog, setSlpLog] = useState(false);   // the sleep history pop-up
+  const [copied, setCopied] = useState(0);       // 1: the prompt was copied, -1: it couldn't be
+  const copyT = useRef(0);
+  useEffect(() => () => clearTimeout(copyT.current), []);
+  const copyPrompt = async () => {
+    const ok = await copyText(HL_PHONE_PROMPT);
+    setCopied(ok ? 1 : -1);
+    clearTimeout(copyT.current); copyT.current = setTimeout(() => setCopied(0), 2400);
+  };
   const [busy, setBusy] = useState(null);        // the share of the export read so far, while it is being read
   const [said, setSaid] = useState("");
   const file = useRef(null);
   const goal = h.profile.steps, dd = hlDayOf(h, day);
+  // the steps the diet goal asks for a day (hlPlan: the goal plus what the eating doesn't cut), when it asks more than the goal
+  const kgNow = hlWeightOn(h, today), plan = h.goal && h.profile.cm && kgNow ? hlPlan({ ...h.profile, kg: kgNow }, h.goal, today, h.goal.way) : null;
+  const diet = plan && !plan.done && plan.steps > goal ? plan.steps : 0;
+  const [hov, setHov] = useState(null);          // the month's day under the pointer: { k, l, t } (its middle and top in the grid)
   const bars = Array.from({ length: 14 }, (_, i) => hlAddDays(day, i - 13));
-  const top = Math.max(goal * 1.25, ...bars.map((k) => h.steps[k] || 0));
+  const top = Math.max(goal * 1.25, diet * 1.1, ...bars.map((k) => h.steps[k] || 0));
   const week = Array.from({ length: 7 }, (_, i) => hlAddDays(day, i - 6)).filter((k) => k <= today);
   const wSteps = week.map((k) => h.steps[k] || 0), met = wSteps.filter((n) => n >= goal).length;
-  const best = week.reduce((b, k) => ((h.steps[k] || 0) > (h.steps[b] || 0) ? k : b), week[0] || day);
+  const nights = week.map((k) => hlSleepMin(h.sleep[k])).filter(Boolean), sleepAvg = nights.length ? Math.round(nights.reduce((a, b) => a + b, 0) / nights.length) : 0;
   let streak = 0;
   for (let k = day <= today ? day : today; (h.steps[k] || 0) >= goal && streak < 3660; k = hlAddDays(k, -1)) streak++;
   // the month of the day on screen, Monday first
@@ -15226,22 +19470,33 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
             {[500, 1000, 2000].map((n) => <button key={n} className="jr-chip" onClick={() => api.current.setSteps(day, (h.steps[day] || 0) + n)}>+{n >= 1000 ? `${n / 1000}k` : n}</button>)}
           </span>
         </div>
+        {/* the step goal typed here (28 October 2026: "make a steps goal manual"), the dashed line on the bars */}
+        <div className="hl-steps-in hl-goal-in">
+          <span className="hl-cap">Step goal</span>
+          <HlNum value={goal} max={60000} label="Step goal" onPick={(n) => { if (n >= 1000 && n <= 60000) api.current.profile({ steps: Math.round(n) }); }} />
+          {diet > 0 && <small className="hl-diet-say">Your diet goal asks <b>{hlFmt(diet)}</b></small>}
+        </div>
+        {/* sleep and waking (28 October 2026) stood here until 31 October: they are in the sleep panel now, under the month */}
         <div className="hl-stats">
           <span><b>{dd.km.toFixed(1)}</b> km</span>
           <span><b>{hlFmt(dd.stepKcal)}</b> kcal from steps</span>
           <span><b>{hlFmt(wSteps.length ? wSteps.reduce((a, b) => a + b, 0) / wSteps.length : 0)}</b> a day this week</span>
           <span><b>{met}</b> of {week.length} days on goal</span>
+          {sleepAvg > 0 && <span><b>{hlDur(sleepAvg)}</b> sleep a night</span>}
           {streak > 1 && <span className="hl-good"><span className="msym">local_fire_department</span><b>{streak}</b> days in a row</span>}
         </div>
       </div>
       <div className="hl-bars" key={day}>
-        <span className="hl-goal-line" style={{ bottom: `${(goal / top) * 100}%` }}><i>{hlFmt(goal)}</i></span>
+        {/* a line stands on the bars' own scale: the bars fill the box above the days' 20px strip, so the line is measured
+            in that height too (2 November 2026: measured in the whole box, a 19.0k bar stood under the 18,500 line) */}
+        <span className="hl-goal-line" style={{ bottom: `calc(20px + (100% - 20px) * ${goal / top})` }}><i>Goal {hlFmt(goal)}</i></span>
+        {diet > 0 && <span className="hl-goal-line diet" style={{ bottom: `calc(20px + (100% - 20px) * ${diet / top})` }}><i>Diet goal {hlFmt(diet)}</i></span>}
         {bars.map((k, i) => {
           const n = h.steps[k] || 0;
           return (
             <button key={k} className={`hl-bar${k === day ? " sel" : ""}${n >= goal ? " met" : ""}${k > today ? " later" : ""}`} onClick={() => api.current.pick(k)}
                     title={`${hlNice(k)}: ${hlFmt(n)} steps`}>
-              <span className="hl-bar-col"><i style={{ height: `${(n / top) * 100}%`, animationDelay: `${i * 22}ms` }} />{n > 0 && <em>{n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n}</em>}</span>
+              <span className="hl-bar-col" style={{ "--h": `${(n / top) * 100}%` }}><i style={{ height: `${(n / top) * 100}%`, animationDelay: `${i * 22}ms` }} />{n > 0 && <em>{n >= 1000 ? `${(Math.floor(n / 100) / 10).toFixed(1)}k` : n}</em>}</span>
               <span className="hl-bar-d">{DOW[hlDow(k)]}</span>
             </button>
           );
@@ -15249,34 +19504,138 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
       </div>
       <div className="hl-month">
         <div className="hl-month-head"><b>{MONTHS_FULL[d0.getMonth()]}</b><span>The three rings of each day: steps, moving, to-dos</span></div>
-        <div className="hl-month-grid">
+        <div className="hl-month-row">
+        <div className="hl-month-grid" onPointerLeave={() => setHov(null)}>
           {DOW.map((n, i) => <span key={i} className="hl-mdow">{n}</span>)}
           {Array.from({ length: lead }, (_, i) => <span key={`e${i}`} />)}
           {Array.from({ length: dim }, (_, i) => {
             const k = hlAddDays(first, i), later = k > today;
             return (
-              <button key={k} className={`hl-mday${k === day ? " sel" : ""}${k === today ? " today" : ""}${later ? " later" : ""}`} onClick={() => api.current.pick(k)} title={hlNice(k)}>
+              <button key={k} className={`hl-mday${k === day ? " sel" : ""}${k === today ? " today" : ""}${later ? " later" : ""}`} onClick={() => api.current.pick(k)}
+                      onPointerEnter={later ? undefined : (e) => { const b = e.currentTarget; setHov({ k, l: b.offsetLeft + b.offsetWidth / 2, t: b.offsetTop }); }}>
                 {later ? <svg viewBox="0 0 40 40" /> : <HlMini vals={hlRingVals(h, hlDayOf(h, k))} />}
                 <i>{i + 1}</i>
               </button>
             );
           })}
+          {/* the day's three rings in words, in their colours (28 October 2026: "when hovering over the rings … have information
+              just like on the finance app") */}
+          {hov && (() => {
+            const q = hlDayOf(h, hov.k), v = hlRingVals(h, q);
+            return (
+              <span key={hov.k} className="hl-mtip" style={{ left: hov.l, top: hov.t }} role="tooltip">
+                <b>{hlNice(hov.k)}</b>
+                {[["Steps", `${hlFmt(q.steps)} / ${hlFmt(goal)}`, v[0]], ["Move", `${hlFmt(q.move)} / ${hlFmt(h.profile.move)} kcal`, v[1]],
+                  ["To-dos", q.todos.length ? `${q.done} / ${q.todos.length}` : "none", q.todos.length ? v[2] : null]].map(([n, t, f], i) => (
+                  <span key={n} style={{ "--c": HL_TINT[i][0] }}><i />{n}<em>{t}</em><small>{f === null ? "" : `${Math.round(f * 100)}%`}</small></span>
+                ))}
+                {hlSleepMin(h.sleep[hov.k]) && <span style={{ "--c": "#b7a4e6" }}><i />Sleep<em>{hlDur(hlSleepMin(h.sleep[hov.k]))}</em><small /></span>}
+              </span>
+            );
+          })()}
+        </div>
+        {/* the month in figures beside its rings (27 October 2026, his picture of the empty room right of them); smaller since
+            29 October, with the night's sleep rated under them and the month's sleep in a corner of that ("beside the calendar
+            rings, have the windows … a smaller box, and below it rate my sleep for today, and small portion of that space is
+            for this month") */}
+        {(() => {
+          const ks = Array.from({ length: dim }, (_, i) => hlAddDays(first, i)).filter((k) => k <= today), vs = ks.map((k) => h.steps[k] || 0);
+          const tot = vs.reduce((a, b) => a + b, 0), logged = vs.filter((v) => v > 0).length, hit = vs.filter((v) => v >= goal).length;
+          const bi = vs.indexOf(Math.max(0, ...vs)), closed = ks.filter((k) => { const q = hlRingVals(h, hlDayOf(h, k)); return q[0] >= 1 && q[1] >= 1; }).length;
+          const sc = hlSleepScore(h.sleep, day), q = h.sleep[day] || {}, R = 34, C = 2 * Math.PI * R;
+          const nights = ks.map((k) => ({ k, s: hlSleepScore(h.sleep, k) })), had = nights.filter((x) => x.s);
+          const avg = (f) => (had.length ? Math.round(had.reduce((a, x) => a + f(x), 0) / had.length) : 0);
+          const feels = ks.map((k) => (h.sleep[k] || {}).feel).filter(Boolean), feelAvg = feels.length ? feels.reduce((a, b) => a + b, 0) / feels.length : 0;
+          return (
+            <div className="hl-mside">
+              {/* one slim line since 31 October 2026 ("the steps info on top a lot smaller"); each says it in full under the pointer */}
+              <div className="hl-msum">
+                {[[hlFmt(tot), "steps", "Steps this month", HL_TINT[0][0]], [hlFmt(logged ? tot / logged : 0), "a day", "Steps a day, on average", HL_TINT[0][1]],
+                  [`${hit}/${ks.length}`, "at goal", "Days at your step goal", "#5ee3a9"], [closed, "steps + move closed", "Days with the steps and move rings both closed", HL_TINT[1][0]],
+                  [vs[bi] ? hlFmt(vs[bi]) : "–", vs[bi] ? `best · ${hlNice(ks[bi]).slice(4)}` : "best day", "Best day", "#f0d88a"]].map(([v, k, t, c]) => (
+                  <span key={t} className="hl-msum-t" style={{ "--c": c }} title={t}><i aria-hidden="true" /><b>{v}</b><small>{k}</small></span>
+                ))}
+              </div>
+              <div className="hl-slp">
+                <div className="hl-slp-day">
+                  <span className="hl-slp-hd">
+                    <span className="hl-cap">Sleep{day === today ? " · last night" : ` · before ${hlNice(day)}`}{q.ph ? " · from your iPhone" : ""}</span>
+                    <button className="hl-slp-hist" onClick={() => setSlpLog(true)} title="Every night, and the times of any of them"><span className="msym" aria-hidden="true">history</span>History</button>
+                  </span>
+                  <div className="hl-slp-top">
+                    <svg className="hl-slp-ring" viewBox="0 0 80 80" aria-hidden="true">
+                      <circle cx="40" cy="40" r={R} />
+                      {sc && <circle key={`${day}${sc.score}`} className="on" cx="40" cy="40" r={R} style={{ strokeDasharray: C, strokeDashoffset: C * (1 - sc.score / 100), "--c0": C }} />}
+                    </svg>
+                    <b className="hl-slp-n">{sc ? sc.score : "–"}</b>
+                    <span className="hl-slp-say">
+                      {sc ? <><b>{sc.word}</b><em>{hlDur(sc.min)} · {clk(q.bed)} – {clk(q.wake)}</em><small>{sc.why}</small></>
+                        : <><b>Not rated yet</b><small>Put in when you went to sleep and woke, below, and the night is rated here{HL_PHONE_OK ? " (or let your iPhone send it)" : ""}.</small></>}
+                    </span>
+                  </div>
+                  {/* the night's two times, typed here (they stood in the row above the step bars until 31 October 2026) */}
+                  <span className="hl-slp-times">
+                    <span className="msym" aria-hidden="true">bedtime</span>
+                    <TimeField value={q.bed || ""} label="Went to sleep" onChange={(v) => api.current.setSleep(day, { bed: v })} />
+                    <i aria-hidden="true">→</i>
+                    <span className="msym" aria-hidden="true">sunny</span>
+                    <TimeField value={q.wake || ""} label="Woke up" onChange={(v) => api.current.setSleep(day, { wake: v })} />
+                    <small>{hlSleepMin(q) ? <><b>{hlDur(hlSleepMin(q))}</b> of sleep</> : "When you went to sleep, and woke"}</small>
+                  </span>
+                  <span className="hl-slp-feel" role="group" aria-label="How you slept">
+                    <small>How did you sleep?</small>
+                    {HL_FEEL.map(([ic, w], i) => (
+                      <button key={ic} className={q.feel === i + 1 ? "on" : ""} aria-pressed={q.feel === i + 1} title={w} aria-label={w} disabled={day > today}
+                              onClick={() => api.current.setSleep(day, { feel: q.feel === i + 1 ? 0 : i + 1 })}><span className="msym" aria-hidden="true">{ic}</span></button>
+                    ))}
+                  </span>
+                </div>
+                <div className="hl-slp-mo">
+                  <span className="hl-cap">{MONTHS_FULL[d0.getMonth()]}</span>
+                  <span className="hl-slp-fig"><b>{had.length ? hlDur(avg((x) => x.s.min)) : "–"}</b><small>a night</small></span>
+                  <span className="hl-slp-fig"><b>{had.length ? avg((x) => x.s.score) : "–"}</b><small>rating, on average</small></span>
+                  {feelAvg > 0 && <span className="hl-slp-fig"><b className="msym" title={HL_FEEL[Math.round(feelAvg) - 1][1]}>{HL_FEEL[Math.round(feelAvg) - 1][0]}</b><small>how you felt</small></span>}
+                  <button className="hl-slp-bars" aria-label="Sleep history" onClick={() => setSlpLog(true)}>
+                    {nights.map(({ k, s: x }) => <i key={k} className={`${x && x.score < 50 ? "low" : ""}${k === day ? " sel" : ""}`} style={{ height: `${x ? Math.max(8, Math.min(100, (x.min / 600) * 100)) : 4}%` }} title={x ? `${hlNice(k)}: ${hlDur(x.min)}, ${x.score}` : hlNice(k)} />)}
+                  </button>
+                  <small className="hl-slp-n2">{had.length} of {ks.length} nights logged</small>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         </div>
       </div>
+      {slpLog && <HlSleepLog h={h} api={api} day={day} today={today} onClose={() => setSlpLog(false)} />}
       <div className="hl-apple">
         {HL_PHONE_OK && (
           <>
             <div className="hl-phone">
               <span className={`hl-phone-dot${h.phone ? " on" : ""}`} />
-              <span className="hl-phone-t">{h.phone ? <>From your iPhone: <b>{h.phone.days} day{h.phone.days === 1 ? "" : "s"}</b>, saved {hlWhen(h.phone.at)}</> : <>Steps from your iPhone, <b>every day by itself</b></>}</span>
+              <span className="hl-phone-t">{h.phone ? <>From your iPhone: <b>{h.phone.days} day{h.phone.days === 1 ? "" : "s"}</b>{h.phone.nights ? <> and <b>{h.phone.nights} night{h.phone.nights === 1 ? "" : "s"}</b></> : null}, saved {hlWhen(h.phone.at)}</> : <>Steps and sleep from your iPhone, <b>every day by itself</b></>}</span>
+              {/* small words, not a button (his picture of the big "How to set it up", 23 October 2026) */}
+              <button className={`hl-link${how ? " on" : ""}`} onClick={() => setHow((v) => !v)} aria-expanded={how}>{how ? "Hide" : h.phone ? "How it's set up" : "How to set it up"}</button>
               <button className="bk-btn" onClick={() => api.current.phoneNow()}><span className="msym">sync</span>Check now</button>
-              <button className="bk-btn" onClick={() => setHow((v) => !v)}>{how ? "Hide the steps" : h.phone ? "The steps" : "How to set it up"}</button>
               <Linger on={phoneSaid || null} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
             </div>
             {how && (
-              <ol className="hl-how">
-                {HL_PHONE_STEPS.map(([name, say]) => <li key={name}><b>{name}.</b> {say}</li>)}
-              </ol>
+              <div className="hl-how">
+                <div className="hl-ai-head">
+                  <b>1. Ask the Shortcuts app's AI on your iPhone</b>
+                  <button className="hl-link" onClick={copyPrompt}>{copied > 0 ? "Copied" : copied < 0 ? "Couldn't copy: select it instead" : "Copy the prompt"}</button>
+                </div>
+                <pre className="hl-ai-text">{HL_PHONE_PROMPT}</pre>
+                <p><b>2. Run it once</b> and allow it to read Health.</p>
+                <p><b>3. Every day by itself:</b> in Shortcuts' <b>Automation</b> tab, tap <b>+</b>, <b>Time of Day</b> (e.g. 10:00, Daily: after you're up, so last night's sleep is in), <b>Run Immediately</b>, and choose Flow steps. Pick a time you usually have the phone in hand: a locked iPhone keeps Health locked too.</p>
+                <p><b>4. On this Mac:</b> iCloud Drive on (System Settings, your name, iCloud). Flow reads the file when Health opens, and every few minutes while it is open.</p>
+                <p><b>What you type wins:</b> a day's steps, a night's sleep or a weight you put in Flow yourself is kept; the iPhone's file fills in the rest.</p>
+                <button className={`hl-link${byHand ? " on" : ""}`} onClick={() => setByHand((v) => !v)} aria-expanded={byHand}>{byHand ? "Hide the steps by hand" : "Or build the shortcut by hand"}</button>
+                {byHand && (
+                  <ol className="hl-steps">
+                    {HL_PHONE_STEPS.map(([name, say]) => <li key={name}><b>{name}.</b> {say}</li>)}
+                  </ol>
+                )}
+              </div>
             )}
           </>
         )}
@@ -15697,8 +20056,13 @@ const HL_TEST_CLASSES = [["Calculus II", "B2.01", [0, 2], "08:00", "09:40", 0], 
 const HL_TEST_SPLITS = [["Push", [["Bench press", 60, 8], ["Overhead press", 35, 8], ["Triceps pushdown", 25, 12]]],
   ["Pull", [["Lat pulldown", 50, 10], ["Barbell row", 50, 8], ["Biceps curl", 12.5, 12]]],
   ["Legs", [["Squat", 70, 6], ["Romanian deadlift", 60, 8], ["Leg press", 120, 10]]]];
+const HL_TEST_SHOP = [["The mall", ["Shoes", "Shoe rack", "Water bottles"], [2]], ["Pharmacy", ["Paracetamol", "Vitamin C", "Plasters"], []],
+                      ["Supermarket", ["Oats", "Eggs", "Greek yoghurt", "Bananas"], [1]]];
 const HL_TEST_NOTES = [["75 kg by January", 24, 26, 0], ["Run 5 km in under 30 minutes", 280, 40, 1], ["Sleep before 23:30 on weekdays", 536, 22, 2],
   ["Bench 80 kg × 5", 120, 230, 3], ["Walk to campus, not the ojek", 420, 250, 5]];
+const HL_TEST_ASG = [["Problem set 6", "Integration by parts, questions 1 to 12", "Calculus II", "assignment", 1, "23:59"],
+  ["Lab report: the pendulum", "Method, results and the error analysis", "Physics I", "assignment", 4, "17:00"],
+  ["Midterm", "Chapters 1 to 5, closed book", "Calculus II", "exam", 9, "09:00"]];
 const hlTestData = (h, today, seed = Date.now()) => {
   let s = (seed % 2147483646) + 1;
   const rnd = () => (s = (s * 48271) % 2147483647) / 2147483647;
@@ -15741,21 +20105,25 @@ const hlTestData = (h, today, seed = Date.now()) => {
                ex: lifts.map(([lift, kg, reps]) => ({ name: lift, sets: [0, 1, 2].map((j) => ({ kg: Math.round((kg + wk * kg * 0.035) / 2.5) * 2.5, reps: Math.max(4, reps - (j === 2 ? Math.floor(rnd() * 3) : 0)) })) })), ...mark });
   }
   x.gym = [...h.gym, ...gym];
+  x.asg = [...h.asg, ...HL_TEST_ASG.map(([title, sub, cls, kind, days, at]) => ({ id: uid(), title, sub, cls, kind, due: hlAddDays(today, days), at, about: "", items: [], ...mark }))];
   x.board = [...h.board, ...HL_TEST_NOTES.map(([text, bx, by, tint], i) => ({ id: uid(), kind: "note", text, x: bx, y: by, w: 220, tint, z: i, ...mark }))];
+  x.shop = [...(h.shop || []), ...HL_TEST_SHOP.map(([place, items, got]) => ({ id: uid(), place, items: items.map((text, i) => ({ id: uid(), text, ...(got.includes(i) ? { got: 1 } : {}) })), ...mark }))];
   return x;
 };
 const hlClearTest = (h) => {
   const t = h.tests, drop = (map, marks) => Object.fromEntries(Object.entries(map).filter(([k]) => !marks[k]));
   return { ...h, steps: drop(h.steps, t.steps), weights: drop(h.weights, t.weights), profile: t.profile ? hlBlank().profile : h.profile,
-           goal: h.goal && h.goal.test ? null : h.goal, todos: h.todos.filter((x) => !x.test), classes: h.classes.filter((x) => !x.test),
-           gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test), tests: hlBlank().tests };
+           goal: h.goal && h.goal.test ? null : h.goal, todos: h.todos.filter((x) => !x.test), classes: h.classes.filter((x) => !x.test), asg: h.asg.filter((x) => !x.test),
+           gym: h.gym.filter((x) => !x.test), board: h.board.filter((x) => !x.test), shop: (h.shop || []).filter((x) => !x.test), tests: hlBlank().tests };
 };
 const hlHasTest = (h) => !!(Object.keys(h.tests.steps).length || Object.keys(h.tests.weights).length || (h.goal && h.goal.test)
-  || h.todos.some((x) => x.test) || h.classes.some((x) => x.test) || h.gym.some((x) => x.test) || h.board.some((x) => x.test));
-// the board's pictures that no card points to any more go, the next time Health opens (never at once: an import can be undone)
-const hlSweep = async (board) => {
+  || h.todos.some((x) => x.test) || h.classes.some((x) => x.test) || h.asg.some((x) => x.test) || h.gym.some((x) => x.test) || h.board.some((x) => x.test) || (h.shop || []).some((x) => x.test));
+// the pictures that no card of the board and no assignment points to any more go, the next time Health opens (never at
+// once: an import can be undone)
+const hlPics = (h) => [...h.board.filter((c) => c.img).map((c) => c.img), ...h.asg.flatMap((a) => a.items.filter((q) => q.img).map((q) => q.img))];
+const hlSweep = async (h) => {
   if (USER.aside) return;
-  const keep = new Set(board.filter((c) => c.img).map((c) => c.img));
+  const keep = new Set(hlPics(h));
   const keys = await shotDo("readonly", (st) => st.getAllKeys());
   const gone = Array.isArray(keys) ? keys.filter((id) => String(id).startsWith(HL_PIC) && !keep.has(id)) : [];
   if (!gone.length) return;
@@ -15779,11 +20147,108 @@ const importHealth = async (data) => {
 const HL_DOW_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const HL_ACT_BTNS = [{ id: "addtodo", icon: "add_task", text: "Add to-do", key: "⌘N", tip: "Add a to-do to the day on screen (⌘N)" },
                      { id: "steps", icon: "directions_walk", text: "Log steps", tip: "Type the steps of the day on screen" }];
-function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
+/* The day page's cards in the order he arranged them (29 October 2026: "put a button below the home button on the top left and
+   make me be able to arrange the ui, so if i want assignments on top of to do i can freely arrange it"). [card name, the menu
+   row's id, its words, its symbol]. The order is kept in HL_PREFS_KEY (`order`): the account's own, in no backup; a card added
+   later stands last. HlArrange is the pane under the button: a row per card, dragged up or down (the grip also takes the up
+   and down arrows), the page and the menu following at once */
+const HL_CARDS = [["to-do", "todo", "To-do", "checklist"], ["shopping", "shop", "Shopping", "shopping_cart"], ["week", "week", "Week", "calendar_view_week"], ["assignments", "asg", "Assignments", "assignment"], ["activity", "activity", "Activity", "directions_walk"],
+                  ["body", "body", "Body", "monitor_weight"], ["diet", "diet", "Diet goal", "restaurant"], ["gym", "gym", "Gym", "fitness_center"], ["vision board", "board", "Vision board", "dashboard"]];
+const HL_CARD_NAMES = HL_CARDS.map((c) => c[0]);
+// a side's cards in a saved order: names it doesn't know dropped, a card added later standing last (every side, 29 October
+// 2026: "i want this arrange feature on all the apps")
+const cardOrder = (list, cards) => {
+  const names = cards.map((c) => c[0]), seen = new Set(), out = [];
+  for (const n of Array.isArray(list) ? list : []) if (names.includes(n) && !seen.has(n)) { seen.add(n); out.push(n); }
+  for (const n of names) if (!seen.has(n)) out.push(n);
+  return out;
+};
+const hlCleanOrder = (list) => cardOrder(list, HL_CARDS);
+// the pane, on every side: `cards` as HL_CARDS ([card name, the menu row's id, its words, its symbol])
+const CardArrange = ({ cards, order, solo, onOrder, onClose }) => {
+  const [held, setHeld] = useState(null);
+  const pane = useRef(null), list = useRef(null), rows = useRef({}), tops = useRef({}), refocus = useRef(null), ord = useRef(order);
+  ord.current = order;
+  // a row that changes place slides there from where it was (only transforms move); the grip moved by the keys keeps its focus
+  useLayoutEffect(() => {
+    for (const n of order) {
+      const el = rows.current[n];
+      if (!el) continue;
+      const top = el.offsetTop, was = tops.current[n];
+      if (was !== undefined && Math.abs(was - top) > 1 && el.animate) el.animate([{ transform: `translateY(${was - top}px)` }, { transform: "none" }], { duration: 240, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+      tops.current[n] = top;
+    }
+    if (refocus.current) { const g = rows.current[refocus.current] && rows.current[refocus.current].querySelector(".hlarr-grip"); refocus.current = null; if (g) g.focus({ preventScroll: true }); }
+  }, [order]);
+  useEffect(() => {
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    const away = (e) => { if (pane.current && !pane.current.contains(e.target) && !(e.target.closest && e.target.closest(".snav-arrange"))) onClose(); };
+    window.addEventListener("keydown", key, true); window.addEventListener("pointerdown", away, true);
+    return () => { window.removeEventListener("keydown", key, true); window.removeEventListener("pointerdown", away, true); };
+  }, []);
+  const move = (n, to) => {
+    const cur = ord.current, i = cur.indexOf(n), j = Math.max(0, Math.min(cur.length - 1, to));
+    if (i < 0 || i === j) return;
+    const next = cur.slice(); next.splice(i, 1); next.splice(j, 0, n);
+    onOrder(next);
+  };
+  // held: the row follows by place, not by the pointer: it takes the place of each row whose middle the pointer passes. The
+  // middles are read from the rows' layout (offsetTop), which the sliding does not move
+  const down = (n) => (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setHeld(n);
+    const mv = (ev) => {
+      const base = list.current.getBoundingClientRect().top;
+      let j = 0;
+      ord.current.forEach((m) => { if (m === n || !rows.current[m]) return; const el = rows.current[m]; if (ev.clientY > base + el.offsetTop + el.offsetHeight / 2) j++; });
+      move(n, j);
+    };
+    const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up); setHeld(null); };
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+  };
+  const names = cards.map((c) => c[0]), same = order.every((n, i) => n === names[i]);
+  return createPortal(
+    <div ref={pane} className={`hlarr glass lg-float${solo ? " solo" : ""}`} role="dialog" aria-label="Arrange the cards">
+      <div className="hlarr-head"><b>Arrange</b><button type="button" className="hlarr-reset" disabled={same} onClick={() => onOrder(names)}>Reset</button></div>
+      <small>Drag a card up or down. The page and the menu follow.</small>
+      <div ref={list} className="hlarr-list">
+        {order.map((n) => {
+          const c = cards.find((q) => q[0] === n), i = order.indexOf(n);
+          return (
+            <div key={n} ref={(el) => { if (el) rows.current[n] = el; else delete rows.current[n]; }} className={`hlarr-row${held === n ? " held" : ""}`} onPointerDown={down(n)}>
+              <span className="msym" aria-hidden="true">{c[3]}</span>
+              <span className="hlarr-t">{c[2]}</span>
+              <button type="button" className="hlarr-grip" aria-label={`Move ${c[2]}: the up and down arrows`}
+                      onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); refocus.current = n; move(n, i + (e.key === "ArrowUp" ? -1 : 1)); } }}>
+                <span className="msym" aria-hidden="true">drag_indicator</span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>, document.body);
+};
+const HL_TODAY_HINT = "flow-hl-today-hint";      // the app's, not an account's: said once
+function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, who }) {
+  useClock12();
+  const dev = useDevOpt();
   const today = hlKey(new Date());
   const [h, setH] = useState(hlBlank);
   const [loaded, setLoaded] = useState(false);
   const [day, setDay] = useState(today);
+  // the way back to today is the date itself; told once, the first time a day other than today is on screen (the green Today
+  // button that stood beside it went on 29 October 2026)
+  const [todayHint, setTodayHint] = useState(false);
+  const hintT = useRef(0);
+  useEffect(() => {
+    if (day === today) { clearTimeout(hintT.current); setTodayHint(false); return; }
+    try { if (localStorage.getItem(HL_TODAY_HINT) === "1") return; localStorage.setItem(HL_TODAY_HINT, "1"); } catch (e) { return; }      // no storage: never, rather than at every visit
+    setTodayHint(true);
+    clearTimeout(hintT.current);
+    hintT.current = setTimeout(() => setTodayHint(false), 5200);
+  }, [day]);
+  useEffect(() => () => clearTimeout(hintT.current), []);
   const [entering, setEntering] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
@@ -15791,6 +20256,25 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   const [nowMin, setNowMin] = useState(() => { const t = new Date(); return t.getHours() * 60 + t.getMinutes(); });
   const hRef = useRef(h), saveChain = useRef(Promise.resolve()), unreadable = useRef(false);
   useEffect(() => { const t = setTimeout(() => setEntering(false), 1200); return () => clearTimeout(t); }, []);
+  /* Home (25 October 2026): the board of widgets first (HomeDash, as on the other sides), the day page one press away;
+     Settings' Start screen (Classic) puts the day page first again. Its layout and that choice are kept apart from the
+     health data (HL_PREFS_KEY), in no backup */
+  const [view, setView] = useState("home");
+  const [homeOn, setHomeOn] = useState(true);
+  const [hdash, setHdash] = useState(null);
+  const [tpOpen, setTpOpen] = useState(false);          // the time plan (⌘T, the Time plan widget)
+  const [asgOpen, setAsgOpen] = useState(null);          // the assignment open (its id)
+  const [headsOff, setHeadsOff] = useState(false);       // the heads-up closed, for this visit
+  const [order, setOrder] = useState(HL_CARD_NAMES);      // the day page's cards, in his order (HlArrange)
+  const [arrangeOpen, setArrangeOpen] = useState(false);
+  useEffect(() => { if (view !== "day") setArrangeOpen(false); }, [view]);
+  const hPrefs = useRef({}), enterT = useRef(0);
+  // the Mac's notification of a deadline pressed (hlDueWatch): that assignment, opened
+  useEffect(() => (window.flowHealth && window.flowHealth.onDue ? window.flowHealth.onDue((id) => { if (hRef.current.asg.some((a) => a.id === id)) { setHeadsOff(true); setAsgOpen(id); } }) : undefined), []);
+  useEffect(() => () => clearTimeout(enterT.current), []);
+  const savePrefs = (patch) => { hPrefs.current = { ...hPrefs.current, ...patch }; store.set(HL_PREFS_KEY, JSON.stringify(hPrefs.current)).catch(() => {}); };
+  // the day page, coming in as it does when Health opens on it
+  const showDay = () => { setView("day"); setEntering(true); clearTimeout(enterT.current); enterT.current = setTimeout(() => setEntering(false), 1200); };
   useEffect(() => {
     const t = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 30000);
     return () => clearInterval(t);
@@ -15805,6 +20289,7 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   };
   const commit = (next) => { if (next === hRef.current) return; hRef.current = next; setH(next); persist(); };
   const up = (fn) => commit(fn(hRef.current));
+  useEffect(() => () => offerUndo(null), []);        // (an Undo of the week cleared goes when Health leaves the screen)
   useEffect(() => {
     (async () => {
       try {
@@ -15819,13 +20304,23 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
           }
           const c = cleanHealth(saved);
           hRef.current = c; setH(c);
-          hlSweep(c.board);
+          hlSweep(c);
+        }
+      } catch (e) {}
+      try {
+        const pr = await store.get(HL_PREFS_KEY);
+        const v = pr && pr.value ? JSON.parse(pr.value) : null;
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          hPrefs.current = v;
+          if (v.home === false) { setHomeOn(false); setView("day"); }
+          if (Array.isArray(v.order)) setOrder(hlCleanOrder(v.order));
+          setHdash(dgClean(v.dash, "health", HL_M));
         }
       } catch (e) {}
       setLoaded(true);
     })();
   }, []);
-  useWarmScreen(entering ? null : "health-day");
+  useWarmScreen(entering ? null : view === "home" ? "health-home" : "health-day");
   // the iPhone's file (hlPhoneRead): a file already taken in (saved at the same moment) is passed over; days whose steps
   // he typed himself keep them, as with the Apple Health import
   const [phoneSaid, setPhoneSaid] = useState("");
@@ -15848,8 +20343,16 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
         if (got.steps[k] > 0) steps[k] = got.steps[k]; else delete steps[k];
         delete ts[k];
       }
-      for (const k in got.weights) { if (k <= now) { weights[k] = got.weights[k]; delete tw[k]; } }
-      return { ...x, steps, weights, tests: { ...x.tests, steps: ts, weights: tw }, phone: { at: f.at, days: got.days, to: got.to } };
+      for (const k in got.weights) { if (k <= now && !x.typedKg[k]) { weights[k] = got.weights[k]; delete tw[k]; } }
+      // (29 October 2026: "if user manually writes it, then ignore apples data and use user data instead") a night he typed
+      // keeps his times; one the phone wrote is written again; his rating of it stays either way
+      const sleep = { ...x.sleep };
+      for (const k in got.sleep) {
+        const was = sleep[k];
+        if (k > now || (was && (was.bed || was.wake) && !was.ph)) continue;
+        sleep[k] = { ...got.sleep[k], ph: 1, ...(was && was.feel ? { feel: was.feel } : {}) };
+      }
+      return { ...x, steps, weights, sleep, tests: { ...x.tests, steps: ts, weights: tw }, phone: { at: f.at, days: got.days, nights: got.nights, to: got.to } };
     });
     if (asked) sayPhone(`Updated: ${got.days} day${got.days === 1 ? "" : "s"} from your iPhone`);
   };
@@ -15868,6 +20371,37 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   api.current = {
     pick: (k) => setDay(k),
     phoneNow: () => phoneCheck.current(true),
+    // the shopping list: a place typed again gets the new things on its own list, not a second list
+    shopPlace: (place, items) => up((x) => {
+      const have = x.shop.find((q) => q.place.trim().toLowerCase() === place.toLowerCase());
+      return { ...x, shop: have ? x.shop.map((q) => (q === have ? hlShopPut(q, items) : q)) : [...x.shop, hlShopPut({ id: uid(), place, items: [] }, items)].slice(0, 60) };
+    }),
+    shopAdd: (pid, items) => up((x) => ({ ...x, shop: x.shop.map((q) => (q.id === pid ? hlShopPut(q, items) : q)) })),
+    shopName: (pid, place) => up((x) => ({ ...x, shop: x.shop.map((q) => (q.id === pid ? { ...q, place } : q)) })),
+    shopTick: (tid) => up((x) => ({ ...x, shop: hlShopTick(x.shop, tid) })),
+    shopItemDel: (pid, tid) => {
+      const q = hRef.current.shop.find((o) => o.id === pid), at = q ? q.items.findIndex((t) => t.id === tid) : -1;
+      if (at < 0) return;
+      const was = q.items[at];
+      up((x) => ({ ...x, shop: x.shop.map((o) => (o.id === pid ? { ...o, items: o.items.filter((t) => t.id !== tid) } : o)) }));
+      offerUndo(was.text, () => up((x) => ({ ...x, shop: x.shop.map((o) => (o.id === pid ? { ...o, items: backInto(o.items, was, at) } : o)) })));
+    },
+    shopClear: (pid) => {
+      const q = hRef.current.shop.find((o) => o.id === pid);
+      if (!q || !q.items.some((t) => t.got)) return;
+      up((x) => ({ ...x, shop: x.shop.map((o) => (o.id === pid ? { ...o, items: o.items.filter((t) => !t.got) } : o)) }));
+      const n = q.items.filter((t) => t.got).length;
+      offerUndo(`${n} bought at ${q.place}`, () => up((x) => ({ ...x, shop: x.shop.map((o) => (o.id === pid
+        ? { ...o, items: [...q.items.filter((t) => t.got || o.items.some((c) => c.id === t.id)).map((t) => o.items.find((c) => c.id === t.id) || t), ...o.items.filter((c) => !q.items.some((t) => t.id === c.id))] }
+        : o)) })), "Cleared");
+    },
+    shopDel: (pid) => {
+      const at = hRef.current.shop.findIndex((o) => o.id === pid);
+      if (at < 0) return;
+      const was = hRef.current.shop[at];
+      up((x) => ({ ...x, shop: x.shop.filter((o) => o.id !== pid) }));
+      offerUndo(was.place, () => up((x) => ({ ...x, shop: backInto(x.shop, was, at) })));
+    },
     add: (f) => up((x) => ({ ...x, todos: [...x.todos, { id: uid(), from: day, done: {}, skip: {}, ...f }] })),
     toggle: (id) => up((x) => ({ ...x, todos: x.todos.map((t) => {
       if (t.id !== id) return t;
@@ -15877,19 +20411,197 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
     }) })),
     skip: (id) => up((x) => ({ ...x, todos: x.todos.map((t) => (t.id === id ? { ...t, skip: { ...t.skip, [day]: 1 } } : t)) })),
     del: (id) => up((x) => ({ ...x, todos: x.todos.filter((t) => t.id !== id) })),
+    // a repeating to-do taken off from this day on: it stops the day before (`len`: how many days it ran from `from`), so the
+    // days it was on keep it, ticks and all. Pressed on the first day there is nothing to keep, so it goes
+    end: (id) => up((x) => ({ ...x, todos: x.todos.flatMap((t) => (t.id !== id ? [t] : day <= t.from ? [] : [{ ...t, len: hlDays(t.from, day) }])) })),
+    // a class saved from the form: every week (from the week it was put in), or this week only (`once`, its date); its
+    // name goes into the quick list the first time
     saveCls: (f) => up((x) => {
-      const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), dow: f.dow, from: f.from, to: f.to, tint: f.tint };
-      return { ...x, classes: f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...(o.test ? { test: true } : {}) } : o)) : [...x.classes, c] };
+      const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), dow: f.dow, from: f.from, to: f.to, tint: f.tint,
+                  ...(HL_HEX.test(f.col || "") ? { col: f.col.toLowerCase() } : {}), ...(f.once ? { once: f.once } : f.since ? { since: f.since } : {}) };
+      const keep = (o) => ({ ...(f.once ? {} : { ...(o.since && !f.since ? { since: o.since } : {}), ...(o.until ? { until: o.until } : {}), ...(o.skip ? { skip: o.skip } : {}) }), ...(o.test ? { test: true } : {}) });
+      const lib = x.clsLib.some((q) => q.name.toLowerCase() === c.name.toLowerCase()) ? x.clsLib : [...x.clsLib, { name: c.name, room: c.room, tint: c.tint, ...(c.col ? { col: c.col } : {}) }].slice(-60);
+      const classes = f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...keep(o) } : o)) : [...x.classes, c];
+      const was = f.id && x.classes.find((o) => o.id === f.id), ko = was && hlNoteKey(was.name), kn = hlNoteKey(c.name);
+      let clsNotes = x.clsNotes;
+      if (ko && ko !== kn && clsNotes[ko] && !clsNotes[kn]) {
+        clsNotes = { ...clsNotes, [kn]: clsNotes[ko] };
+        if (!classes.some((o) => hlNoteKey(o.name) === ko)) delete clsNotes[ko];
+      }
+      return { ...x, clsLib: lib, classes, clsNotes };
     }),
-    delCls: (id) => up((x) => ({ ...x, classes: x.classes.filter((c) => c.id !== id) })),
+    // a class's notes (double click on it): its few words, and links, notes and files, each with the date of the lesson it
+    // was kept from and a star for what must not get lost under the rest
+    noteAbout: (key, about, html) => up((x) => {
+      const n = x.clsNotes[key] || { about: "", items: [] }, clsNotes = { ...x.clsNotes, [key]: { ...n, about: about.slice(0, 20000), ...(html != null ? { aboutH: about.trim() ? html : "" } : {}) } };
+      if (hlNoteEmpty(clsNotes[key])) delete clsNotes[key];
+      return { ...x, clsNotes };
+    }),
+    noteAdd: (key, it) => up((x) => {
+      const n = x.clsNotes[key] || { about: "", items: [] };
+      return { ...x, clsNotes: { ...x.clsNotes, [key]: { ...n, items: [...n.items, { id: uid(), at: Date.now(), ...it }].slice(-300) } } };
+    }),
+    noteSet: (key, id, p) => up((x) => {
+      const n = x.clsNotes[key];
+      return !n ? x : { ...x, clsNotes: { ...x.clsNotes, [key]: { ...n, items: n.items.map((q) => (q.id === id ? { ...q, ...p } : q)) } } };
+    }),
+    noteDel: (key, id) => {
+      const n = hRef.current.clsNotes[key], was = n && n.items.find((q) => q.id === id);
+      if (!was) return;
+      const at = n.items.indexOf(was);
+      up((x) => {
+        const m = x.clsNotes[key];
+        if (!m) return x;
+        const clsNotes = { ...x.clsNotes, [key]: { ...m, items: m.items.filter((q) => q.id !== id) } };
+        if (hlNoteEmpty(clsNotes[key])) delete clsNotes[key];
+        return { ...x, clsNotes };
+      });
+      offerUndo(was.t || "The note", () => up((x) => {
+        const m = x.clsNotes[key] || { about: "", items: [] };
+        if (m.items.some((q) => q.id === id)) return x;
+        const items = [...m.items];
+        items.splice(Math.min(at, items.length), 0, was);
+        return { ...x, clsNotes: { ...x.clsNotes, [key]: { ...m, items } } };
+      }));
+    },
+    // a class's lessons (30 October 2026): a folder each (Week 1, Week 2 …) with its words, and links, files and notes that
+    // each carry words of their own. lessonAdd gives the new one's id at once, so it can be opened
+    lessonAdd: (key, l) => {
+      const id = uid();
+      up((x) => {
+        const n = x.clsNotes[key] || { about: "", items: [] };
+        return { ...x, clsNotes: { ...x.clsNotes, [key]: { ...n, lessons: [...(n.lessons || []), { id, t: "", about: "", items: [], at: Date.now(), ...l }].slice(-80) } } };
+      });
+      return id;
+    },
+    lessonSet: (key, id, p) => up((x) => hlLesUp(x, key, (ls) => ls.map((l) => (l.id === id ? { ...l, ...p } : l)))),
+    lessonDel: (key, id) => {
+      const ls = (hRef.current.clsNotes[key] || {}).lessons || [], was = ls.find((l) => l.id === id);
+      if (!was) return;
+      const at = ls.indexOf(was);
+      up((x) => {
+        const y = hlLesUp(x, key, (q) => q.filter((l) => l.id !== id));
+        if (y === x || !hlNoteEmpty(y.clsNotes[key])) return y;
+        const clsNotes = { ...y.clsNotes };
+        delete clsNotes[key];
+        return { ...y, clsNotes };
+      });
+      offerUndo(was.t || "The lesson", () => up((x) => {
+        const m = x.clsNotes[key] || { about: "", items: [] }, q = [...(m.lessons || [])];
+        if (q.some((l) => l.id === id)) return x;
+        q.splice(Math.min(at, q.length), 0, was);
+        return { ...x, clsNotes: { ...x.clsNotes, [key]: { ...m, lessons: q } } };
+      }));
+    },
+    lesItemAdd: (key, lid, it) => up((x) => hlLesUp(x, key, (ls) => ls.map((l) => (l.id === lid ? { ...l, items: [...l.items, { id: uid(), at: Date.now(), about: "", ...it }].slice(-200) } : l)))),
+    lesItemSet: (key, lid, iid, p) => up((x) => hlLesUp(x, key, (ls) => ls.map((l) => (l.id === lid ? { ...l, items: l.items.map((q) => (q.id === iid ? { ...q, ...p } : q)) } : l)))),
+    lesItemDel: (key, lid, iid) => {
+      const l = ((hRef.current.clsNotes[key] || {}).lessons || []).find((q) => q.id === lid), was = l && l.items.find((q) => q.id === iid);
+      if (!was) return;
+      const at = l.items.indexOf(was);
+      up((x) => hlLesUp(x, key, (ls) => ls.map((q) => (q.id === lid ? { ...q, items: q.items.filter((o) => o.id !== iid) } : q))));
+      offerUndo(was.t || "The file", () => up((x) => hlLesUp(x, key, (ls) => ls.map((q) => {
+        if (q.id !== lid || q.items.some((o) => o.id === iid)) return q;
+        const items = [...q.items];
+        items.splice(Math.min(at, items.length), 0, was);
+        return { ...q, items };
+      }))));
+    },
+    // assignments (29 October 2026): a new one is due a week from today at 23:59 until he says otherwise; asgOpen opens one
+    // (from the card, the week's line, the heads-up or the Mac's notification)
+    asgNew: () => { const id = uid(); up((x) => ({ ...x, asg: [...x.asg, { id, title: "", sub: "", cls: "", kind: "assignment", due: hlAddDays(today, 7), at: "23:59", about: "", items: [] }] })); return id; },
+    asgSet: (id, p) => up((x) => ({ ...x, asg: x.asg.map((a) => (a.id === id ? { ...a, ...p } : a)) })),
+    asgDrop: (id) => up((x) => ({ ...x, asg: x.asg.filter((a) => a.id !== id) })),
+    asgDel: (id) => {
+      const at = hRef.current.asg.findIndex((a) => a.id === id), was = hRef.current.asg[at];
+      if (!was) return;
+      up((x) => ({ ...x, asg: x.asg.filter((a) => a.id !== id) }));
+      offerUndo(was.title || hlAsgKind(was.kind)[1], () => up((x) => (x.asg.some((a) => a.id === id) ? x : { ...x, asg: [...x.asg.slice(0, at), was, ...x.asg.slice(at)] })));
+    },
+    asgItem: (id, it) => up((x) => ({ ...x, asg: x.asg.map((a) => (a.id === id ? { ...a, items: [...a.items, { id: uid(), at: Date.now(), ...it }].slice(-100) } : a)) })),
+    asgItemDel: (id, iid) => {
+      const a = hRef.current.asg.find((o) => o.id === id), at = a ? a.items.findIndex((q) => q.id === iid) : -1, was = at >= 0 ? a.items[at] : null;
+      if (!was) return;
+      up((x) => ({ ...x, asg: x.asg.map((o) => (o.id === id ? { ...o, items: o.items.filter((q) => q.id !== iid) } : o)) }));
+      offerUndo(was.t || "The note", () => up((x) => ({ ...x, asg: x.asg.map((o) => {
+        if (o.id !== id || o.items.some((q) => q.id === iid)) return o;
+        const items = [...o.items];
+        items.splice(Math.min(at, items.length), 0, was);
+        return { ...o, items };
+      }) })));
+    },
+    asgOpen: (id) => setAsgOpen(id),
+    // a class dragged to another day or time (k: its new date, k0: the date it was dragged from). One on a date moves to the
+    // new day of that week; a weekly one, as asked: every week ("all"), only this week ("one": that date skipped, a class on
+    // the new date only), or from this week on ("after": the old one ends before it, a new one runs from the new date)
+    moveCls: (id, dow, from, to, k, how = "all", k0 = k) => up((x) => {
+      const o = x.classes.find((c) => c.id === id);
+      if (!o) return x;
+      const first = !!o.since && hlAddDays(k0, -7) < o.since;          // nothing of it before this week: "after" is every week
+      if (o.once || how === "all" || (how === "after" && first))
+        return { ...x, classes: x.classes.map((c) => (c.id !== id ? c : { ...c, dow, from, to, ...(c.once ? { once: k } : {}), ...(c.since && k < c.since ? { since: k } : {}) })) };
+      const { skip, until, since, ...base } = o;
+      const fresh = { ...base, id: uid(), dow, from, to, ...(how === "one" ? { once: k } : { since: k, ...(until && until >= k ? { until } : {}) }) };
+      return { ...x, classes: [...x.classes.map((c) => (c.id !== id ? c : how === "one" ? { ...c, skip: { ...c.skip, [k0]: 1 } } : { ...c, until: hlAddDays(k0, -1) })), fresh] };
+    }),
+    // taken off: on day k only, from day k on, or every week; with Undo, as every bin
+    delCls: (id, how = "all", k) => {
+      const was = hRef.current.classes.find((c) => c.id === id);
+      if (!was) return;
+      up((x) => ({ ...x, classes: how === "all" || was.once ? x.classes.filter((c) => c.id !== id)
+        : x.classes.map((c) => (c.id !== id ? c : how === "one" ? { ...c, skip: { ...c.skip, [k]: 1 } } : { ...c, until: hlAddDays(k, -1) })) }));
+      offerUndo(was.name, () => up((x) => ({ ...x, classes: x.classes.some((c) => c.id === id) ? x.classes.map((c) => (c.id === id ? was : c)) : [...x.classes, was] })));
+    },
+    libAdd: (c) => up((x) => (x.clsLib.some((q) => q.name.toLowerCase() === c.name.trim().toLowerCase()) || !c.name.trim() ? x : { ...x, clsLib: [...x.clsLib, { name: c.name.trim(), room: (c.room || "").trim(), tint: c.tint || 0 }].slice(-60) })),
+    libDel: (name) => up((x) => ({ ...x, clsLib: x.clsLib.filter((q) => q.name !== name) })),
+    mineSet: (keys) => up((x) => ({ ...x, mine: keys })),
+    // a kept file found in a new place (fileFind in main.cjs): its path changes wherever it is kept
+    fileMoved: (from, to) => up((x) => {
+      const fix = (list) => (list || []).map((q) => (q.file === from ? { ...q, file: to } : q));
+      const clsNotes = Object.fromEntries(Object.entries(x.clsNotes).map(([k, n]) => [k, { ...n, items: fix(n.items), ...(n.lessons ? { lessons: n.lessons.map((l) => ({ ...l, items: fix(l.items) })) } : {}) }]));
+      return { ...x, clsNotes, asg: x.asg.map((a) => ({ ...a, items: fix(a.items) })) };
+    }),
+    // a class of his in the list, changed (30 October 2026). With `also`, the classes on the timetable that go by its old
+    // name change with it (name, room, colour) and their notes follow a new name; without, they stay as they are
+    libSet: (from, p, also) => up((x) => {
+      const name = hlText(p.name, 60).trim(), kf = hlNoteKey(from), kn = hlNoteKey(name);
+      if (!name || !x.clsLib.some((o) => hlNoteKey(o.name) === kf) || (kn !== kf && x.clsLib.some((o) => hlNoteKey(o.name) === kn))) return x;
+      const q = { name, room: hlText(p.room, 40).trim(), tint: Number.isInteger(p.tint) && p.tint >= 0 && p.tint < HL_CLS.length ? p.tint : 0, ...(HL_HEX.test(p.col || "") ? { col: p.col.toLowerCase() } : {}) };
+      const clsLib = x.clsLib.map((o) => (hlNoteKey(o.name) === kf ? q : o));
+      if (!also) return { ...x, clsLib };
+      const classes = x.classes.map((c) => {
+        if (hlNoteKey(c.name) !== kf) return c;
+        const { col, ...rest } = c;
+        return { ...rest, name: q.name, room: q.room, tint: q.tint, ...(q.col ? { col: q.col } : {}) };
+      });
+      let clsNotes = x.clsNotes;
+      if (kn !== kf && clsNotes[kf]) {
+        const a = clsNotes[kf], b = clsNotes[kn];
+        const ls = [...(b && b.lessons || []), ...(a.lessons || [])].slice(-80);
+        clsNotes = { ...clsNotes, [kn]: b ? { about: b.about || a.about, items: [...b.items, ...a.items].slice(-300), ...(ls.length ? { lessons: ls } : {}) } : a };
+        delete clsNotes[kf];
+      }
+      return { ...x, clsLib, classes, clsNotes, ...(kn !== kf && Array.isArray(x.mine) ? { mine: x.mine.map((k) => (k === kf ? kn : k)) } : {}) };
+    }),
+    colAdd: (hex) => up((x) => (!HL_HEX.test(hex || "") || x.clsCols.includes(hex.toLowerCase()) ? x : { ...x, clsCols: [...x.clsCols, hex.toLowerCase()].slice(-12) })),
+    colDel: (hex) => up((x) => ({ ...x, clsCols: x.clsCols.filter((q) => q !== hex) })),
+    // the whole week at once (Clear week, ⌘⌫ on the week): Undo puts them back as they were, beside any added since
+    clearCls: () => {
+      const gone = hRef.current.classes;
+      if (!gone.length) return;
+      up((x) => ({ ...x, classes: [] }));
+      offerUndo(`${gone.length} class${gone.length === 1 ? "" : "es"}`, () => up((x) => ({ ...x, classes: [...gone.filter((c) => !x.classes.some((o) => o.id === c.id)), ...x.classes] })));
+    },
     // classes read off a picture: one save, and one colour per name (the next colours after those in use)
-    saveClsMany: (list) => up((x) => {
+    // (a class matched to one of his keeps its colour; with `week`, the picture's own week: each on its date only)
+    saveClsMany: (list, week) => up((x) => {
       const tint = {};
       let next = x.classes.length;
       const add = list.map((f) => {
         const k = f.name.trim().toLowerCase();
-        if (tint[k] === undefined) tint[k] = next++ % HL_CLS.length;
-        return { id: uid(), name: f.name.trim(), room: (f.room || "").trim(), dow: f.dow, from: f.from, to: f.to, tint: tint[k] };
+        if (tint[k] === undefined) tint[k] = Number.isInteger(f.tint) ? f.tint : next++ % HL_CLS.length;
+        return { id: uid(), name: f.name.trim(), room: (f.room || "").trim(), dow: f.dow, from: f.from, to: f.to, tint: tint[k],
+                 ...(HL_HEX.test(f.col || "") ? { col: f.col } : {}), ...(week ? { once: hlAddDays(week, f.dow) } : {}) };
       });
       return { ...x, classes: [...x.classes, ...add] };
     }),
@@ -15906,7 +20618,7 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
       up((x) => {
         const steps = { ...x.steps }, weights = { ...x.weights }, ts = { ...x.tests.steps }, tw = { ...x.tests.weights };
         for (const k in got.steps) { if (x.typed[k]) { kept++; continue; } steps[k] = got.steps[k]; delete ts[k]; }
-        for (const k in got.weights) { weights[k] = got.weights[k]; delete tw[k]; }
+        for (const k in got.weights) { if (x.typedKg[k]) continue; weights[k] = got.weights[k]; delete tw[k]; }
         return { ...x, steps, weights, tests: { ...x.tests, steps: ts, weights: tw } };
       });
       return { kept };
@@ -15917,8 +20629,27 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
       if (k > today) return x;
       const tw = { ...x.tests.weights };
       delete tw[k];
-      return { ...x, weights: { ...x.weights, [k]: Math.round(v * 10) / 10 }, profile: k === today ? { ...x.profile, kg: Math.round(v * 10) / 10 } : x.profile, tests: { ...x.tests, weights: tw } };
+      // (a weight he typed is his: the iPhone and an Apple Health export leave that day alone from then on)
+      return { ...x, weights: { ...x.weights, [k]: Math.round(v * 10) / 10 }, typedKg: { ...x.typedKg, [k]: 1 }, profile: k === today ? { ...x.profile, kg: Math.round(v * 10) / 10 } : x.profile, tests: { ...x.tests, weights: tw } };
     }),
+    // the night before day k: when he went to sleep and woke (either may be typed first), and how he slept, 1 to 5 (feel).
+    // A time typed makes the night his: the iPhone's file leaves it alone from then on (ph goes)
+    setSleep: (k, p) => up((x) => {
+      if (k > today) return x;
+      const q = { ...(x.sleep[k] || {}), ...p }, sleep = { ...x.sleep };
+      for (const f of ["bed", "wake"]) if (!hlTimeOk(q[f])) delete q[f];
+      if (!(q.feel >= 1 && q.feel <= 5)) delete q.feel;
+      if ("bed" in p || "wake" in p) delete q.ph;
+      if (q.bed || q.wake || q.feel) sleep[k] = q; else delete sleep[k];
+      return { ...x, sleep };
+    }),
+    // a night cleared from the sleep history, with Undo (one the iPhone sent comes back with its next file)
+    sleepDel: (k) => {
+      const was = hRef.current.sleep[k];
+      if (!was) return;
+      up((x) => { const sleep = { ...x.sleep }; delete sleep[k]; return { ...x, sleep }; });
+      offerUndo(`the night before ${hlNice(k)}`, () => up((x) => ({ ...x, sleep: { ...x.sleep, [k]: was } })), "Cleared");
+    },
     food: (k, n) => up((x) => { const food = { ...x.food }; if (n > 0) food[k] = Math.round(n); else delete food[k]; return { ...x, food }; }),
     goal: (g) => up((x) => ({ ...x, goal: g })),
     saveGym: (s) => up((x) => ({ ...x, gym: s.id ? x.gym.map((o) => (o.id === s.id ? { ...o, ...s } : o)) : [...x.gym, { ...s, id: uid() }] })),
@@ -15936,23 +20667,28 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   // ← and → step through the days, while nothing is being typed and nothing is open; ⌘N goes to a new to-do, as it
   // opens the quick log on the other sides
   useEffect(() => {
-    if (settingsOpen) return;
+    if (settingsOpen || tpOpen) return;
     const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); sideApi.current.go("addtodo"); return; }
-      if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (kbIs(e, "quick")) { e.preventDefault(); if (!e.repeat) sideApi.current.go("addtodo"); return; }
+      if (kbIs(e, "plan")) { e.preventDefault(); if (!e.repeat) setTpOpen(true); return; }      // ⌘T: the time plan
+      if (view !== "day" || (e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target, tag = (t.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
       setDay((d) => hlAddDays(d, e.key === "ArrowLeft" ? -1 : 1));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen]);
+  }, [settingsOpen, tpOpen, view]);
 
   /* ---------- what the page shows ---------- */
   const p = h.profile, kg = hlWeightOn(h, today), dd = hlDayOf(h, day), vals = hlRingVals(h, dd), band = hlBand(hlBmi(kg, p.cm));
-  const todayDow = hlDow(today);
-  const clsOn = h.classes.filter((c) => c.dow === hlDow(day)).sort((a, b) => (a.from < b.from ? -1 : 1));
-  const nextCls = day === today ? clsOn.find((c) => hlMin(c.to) > nowMin) : clsOn[0];
+  const clsOn = h.classes.filter((c) => hlClsOn(c, day)).sort((a, b) => (a.from < b.from ? -1 : 1));
+  const nextCls = day === today ? clsOn.find((c) => hlClsEnd(c) > nowMin) : clsOn[0];
+  // what is due soon or overdue (the heads-up), and the Assignments card's line (redone with the 30-second clock)
+  const asgNow = Date.now(), asgLeft = h.asg.filter((a) => !a.done).map((a) => ({ a, ms: hlDueMs(a) })).sort((p, q) => p.ms - q.ms);
+  const asgSoon = asgLeft.filter((r) => r.ms - asgNow < HL_SOON).map((r) => r.a);
+  const asgLate = asgLeft.filter((r) => r.ms < asgNow).length, asgNext = asgLeft.find((r) => r.ms >= asgNow);
+  const asgSub = asgNext ? `Next: ${asgNext.a.title || hlAsgKind(asgNext.a.kind)[1]} ${hlDueSay(asgNext.ms, asgNow).say}${asgLate ? ` · ${asgLate} overdue` : ""}` : asgLate ? `${asgLate} overdue` : "";
   const plan = h.goal && p.cm && kg ? hlPlan({ ...p, kg }, h.goal, today, h.goal.way) : null;
   let ringStreak = 0;
   for (let k = day <= today ? day : today; ringStreak < 400; k = hlAddDays(k, -1)) {
@@ -15965,11 +20701,16 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   const sideApi = useRef(null);
   sideApi.current = {
     go: (id) => {
-      if (id === "home") { onHome(); return; }
+      if (id === "settings") { setSettingsOpen(true); return; }
+      if (id === "home") { onHome(); return; }        // the crocodile: back to the start
+      if (id === "dash") { setView("home"); window.scrollTo({ top: 0 }); return; }        // Home, its widgets (the round house, the sidebar's row)
+      if (id === "arrange") { setArrangeOpen((v) => !v); return; }       // the button under Home: the cards' order
       if (id === "users") { onUsers(); return; }
       if (id === "reset") { onReset(); return; }
       if (id === "restore") { onRestore(); return; }
-      if (id === "today") { setDay(today); window.scrollTo({ top: 0 }); return; }
+      if (id === "today") { setDay(today); if (view !== "day") showDay(); window.scrollTo({ top: 0 }); return; }
+      // a part of the day page, from Home: the day page first, then the part once it is there
+      if (view !== "day") { setDay(today); showDay(); setTimeout(() => sideApi.current.go(id), 90); return; }
       const page = warm.page || document;
       const part = id === "addtodo" ? "todo" : id === "steps" ? "activity" : id;
       page.querySelector(SIDE_PARTS[part])?.scrollIntoView({ block: "start" });
@@ -15977,6 +20718,29 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
       if (id === "steps") setTimeout(() => page.querySelector(".hl-steps-in input")?.focus({ preventScroll: true }), 120);
     },
   };
+
+  // Home's layout, and what its widgets ask for: a to-do ticked for today, the time plan, a day opened, a part of today's page
+  const hdashNow = useMemo(() => hdash || dgDefault("health", HL_M), [hdash]);
+  const dashApi = useRef(null), hdashLive = useRef(null);         // hdashLive: the layout as Home last saved it
+  dashApi.current = {
+    save: (next) => { if (!loaded) return; hdashLive.current = next; savePrefs({ dash: next }); },
+    go: (to, at) => {
+      if (to === "tick") {
+        up((x) => ({ ...x, todos: x.todos.map((t) => { if (t.id !== at) return t; const done = { ...t.done }; if (done[today]) delete done[today]; else done[today] = 1; return { ...t, done }; }) }));
+        return;
+      }
+      if (to === "shoptick") { up((x) => ({ ...x, shop: hlShopTick(x.shop, at) })); return; }
+      if (to === "plan") { setTpOpen(true); return; }
+      if (to === "day") { setDay(at || today); showDay(); window.scrollTo({ top: 0 }); return; }
+      const part = { addtodo: "addtodo", steps: "steps", gym: "gym", weigh: "body", body: "body", diet: "diet", board: "board", week: "week", scan: "week", todo: "todo", activity: "activity", shop: "shop" }[to];
+      if (!part) return;
+      setDay(today); showDay();
+      // (the timetable's picture: its button pressed once the week is there, still within the press that asked for it)
+      setTimeout(() => { sideApi.current.go(part); if (to === "scan") document.querySelector(".hl-scan-btn")?.click(); }, 90);
+    },
+  };
+  const hlCtx = useHlDashCtx({ h, todayKey: today, api: dashApi, loaded });
+  const pickHome = (on) => { setHomeOn(on); savePrefs({ home: on }); if (on) setView("home"); else if (view === "home") showDay(); window.scrollTo({ top: 0 }); };
 
   /* ---------- backup ---------- */
   const fileRef = useRef(null);
@@ -15987,7 +20751,7 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   const exportData = async () => {
     const own = hlOwn(hRef.current);
     if (HL_EMPTY(own)) { flashBackup("Nothing of your own to export yet", 3600); return; }
-    const images = await shotPack({ board: own.board.filter((c) => c.img).map((c) => ({ imgs: [c.img] })) });
+    const images = await shotPack({ board: hlPics(own).map((id) => ({ imgs: [id] })) });
     const blob = new Blob([JSON.stringify({ app: "flow-health", version: 1, exportedAt: new Date().toISOString(), health: own,
       ...(Object.keys(images).length ? { images } : {}) }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob), a = document.createElement("a"), d = new Date();
@@ -16034,18 +20798,70 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
   const clearTest = () => { if (!hlHasTest(hRef.current)) { flashTest("No test data to clear"); return; } commit(hlClearTest(hRef.current)); flashTest("Test data cleared"); };
 
   const dayWord = day === today ? "Today" : HL_DOW_LONG[hlDow(day)];
+  // the day page's cards, each by its name: they stand in the order he arranged (the button under Home, top left)
+  const shopLeft = h.shop.reduce((n, q) => n + q.items.filter((t) => !t.got).length, 0);
+  const hlCards = {
+    "to-do": (
+          <FoldCard key="to-do" name="to-do" title="To-do" sub={dd.todos.length ? `${dd.done} of ${dd.todos.length} done` : ""}>
+            <HlTodos todos={h.todos} day={day} today={today} api={api} />
+          </FoldCard>
+    ),
+    "shopping": (
+          <FoldCard key="shopping" name="shopping" title="Shopping" sub={shopLeft ? `${shopLeft} to buy` : ""}>
+            <HlShop shop={h.shop} api={api} />
+          </FoldCard>
+    ),
+    "week": (
+          <FoldCard key="week" name="week" title="Week" sub={nextCls ? `${day === today ? "Next" : "First"}: ${nextCls.name} at ${clk(nextCls.from)}` : `${h.classes.length} a week`}>
+            <HlWeek classes={h.classes} lib={h.clsLib} cols={h.clsCols} notes={h.clsNotes} asg={h.asg} today={today} nowMin={nowMin} api={api} />
+          </FoldCard>
+    ),
+    "assignments": (
+          <FoldCard key="assignments" name="assignments" title="Assignments" sub={asgSub}>
+            <HlAsgList asg={h.asg} classes={h.classes} lib={h.clsLib} api={api} />
+          </FoldCard>
+    ),
+    "activity": (
+          <FoldCard key="activity" name="activity" title="Activity" sub={`${hlFmt(dd.steps)} of ${hlFmt(p.steps)} steps`}>
+            <HlActivity h={h} day={day} today={today} api={api} phoneSaid={phoneSaid} />
+          </FoldCard>
+    ),
+    "body": (
+          <FoldCard key="body" name="body" title="Body" sub={kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)}` : ""}>
+            <HlBody profile={p} kg={kg} api={api} />
+          </FoldCard>
+    ),
+    "diet": (
+          <FoldCard key="diet" name="diet" title="Diet goal" sub={plan && !plan.done ? `${hlFmt(plan.eat)} kcal · ${hlFmt(plan.steps)} steps a day` : ""}>
+            <HlDiet h={h} kg={kg} day={day} today={today} api={api} />
+          </FoldCard>
+    ),
+    "gym": (
+          <FoldCard key="gym" name="gym" title="Gym" sub={dd.gym.length ? `${dd.gym.map((s) => s.name).join(", ")} ${day === today ? "today" : "that day"}` : ""}>
+            <HlGym gym={h.gym} day={day} today={today} kg={kg} api={api} />
+          </FoldCard>
+    ),
+    "vision board": (
+          <FoldCard key="vision board" name="vision board" title="Vision board" sub={h.board.length ? `${h.board.length} pinned` : ""}>
+            <HlBoard board={h.board} api={api} />
+          </FoldCard>
+    ),
+  };
   return (
     <>
+      {view === "home" ? (
+        <HomeDash market="health" M={HL_M} who={who} loaded={loaded} layout={hdashLive.current || hdashNow} ctx={hlCtx} api={dashApi} busy={!!(settingsOpen || tpOpen)} />
+      ) : (
       <div className={`hl-page month-view${entering ? " enter" : ""}`}>
         <div data-mv="" style={S.topRow}>
           <h1 key={dayWord} className="hl-title" style={S.title}>{dayWord.split("").map((ch, i) => <span key={i} className={ch === "t" ? "tt" : undefined}>{ch}</span>)}</h1>
-          <div style={S.navBox}>
+          <div style={S.navBox} className="hl-nav">
             <span className="month-nav">
               <button className="nav-arrow" title="The day before (←)" onClick={() => setDay(hlAddDays(day, -1))}>‹</button>
               <button className="month-btn" style={S.monthLabelBtn} title={day === today ? "Today" : "Back to today"} onClick={() => setDay(today)}>{hlNice(day)}</button>
               <button className="nav-arrow" title="The day after (→)" onClick={() => setDay(hlAddDays(day, 1))}>›</button>
             </span>
-            {day !== today && <button className="hl-today" onClick={() => setDay(today)}>Today</button>}
+            <Linger on={todayHint ? 1 : null} show={(out) => <span className={`hl-today-hint${out ? " out" : ""}`} role="status">Press the date to jump back to today</span>} />
           </div>
         </div>
 
@@ -16087,10 +20903,10 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
               <span className="ht-val">{kg ? hlKg(kg) : "–"}<small> kg</small></span>
               <span className="ht-sub" style={kg && p.cm ? { color: band[2] } : undefined}>{kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)} · ${band[1]}` : "Type it under Body"}</span>
             </div>
-            <div className="hero-tile" style={{ "--tc": nextCls ? HL_CLS[nextCls.tint] : "#8e969e" }} title="The next thing on your timetable">
+            <div className="hero-tile" style={{ "--tc": nextCls ? hlClsCol(nextCls) : "#8e969e" }} title="The next thing on your timetable">
               <span className="ht-cap">{day === today ? "Next" : "First"}</span>
               <span className="ht-val hl-ellip">{nextCls ? nextCls.name : clsOn.length ? "Done for the day" : "Free day"}</span>
-              <span className="ht-sub">{nextCls ? `${nextCls.from}–${nextCls.to}${nextCls.room ? ` · ${nextCls.room}` : ""}` : `${clsOn.length} on the timetable`}</span>
+              <span className="ht-sub">{nextCls ? `${clk(nextCls.from)}–${clk(nextCls.to)}${nextCls.room ? ` · ${nextCls.room}` : ""}` : `${clsOn.length} on the timetable`}</span>
             </div>
             <div className="hero-tile" style={{ "--tc": "#e6c877" }} title="Your diet goal">
               <span className="ht-cap">Goal</span>
@@ -16100,31 +20916,20 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
           </div>
         </div>
 
-        <FoldCard name="to-do" title="To-do" sub={dd.todos.length ? `${dd.done} of ${dd.todos.length} done` : ""}>
-          <HlTodos todos={h.todos} day={day} today={today} api={api} />
-        </FoldCard>
-        <FoldCard name="week" title="Week" sub={nextCls ? `${day === today ? "Next" : "First"}: ${nextCls.name} at ${nextCls.from}` : `${h.classes.length} a week`}>
-          <HlWeek classes={h.classes} todayDow={todayDow} nowMin={nowMin} api={api} />
-        </FoldCard>
-        <FoldCard name="activity" title="Activity" sub={`${hlFmt(dd.steps)} of ${hlFmt(p.steps)} steps`}>
-          <HlActivity h={h} day={day} today={today} api={api} phoneSaid={phoneSaid} />
-        </FoldCard>
-        <FoldCard name="body" title="Body" sub={kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)}` : ""}>
-          <HlBody profile={p} kg={kg} api={api} />
-        </FoldCard>
-        <FoldCard name="diet" title="Diet goal" sub={plan && !plan.done ? `${hlFmt(plan.eat)} kcal · ${hlFmt(plan.steps)} steps a day` : ""}>
-          <HlDiet h={h} kg={kg} day={day} today={today} api={api} />
-        </FoldCard>
-        <FoldCard name="gym" title="Gym" sub={dd.gym.length ? `${dd.gym.map((s) => s.name).join(", ")} ${day === today ? "today" : "that day"}` : ""}>
-          <HlGym gym={h.gym} day={day} today={today} kg={kg} api={api} />
-        </FoldCard>
-        <FoldCard name="vision board" title="Vision board" sub={h.board.length ? `${h.board.length} pinned` : ""}>
-          <HlBoard board={h.board} api={api} />
-        </FoldCard>
+        {order.map((n) => hlCards[n])}
       </div>
+      )}
 
+      {tpOpen && <TimePlan onClose={() => setTpOpen(false)} />}
+      {asgOpen && (() => {
+        const a = h.asg.find((o) => o.id === asgOpen);
+        return a ? <HlAsg key={a.id} a={a} classes={h.classes} lib={h.clsLib} mine={h.mine} week1={hlWeek1(h.asg)} api={api} onClose={() => setAsgOpen(null)} /> : null;
+      })()}
+      {loaded && !entering && !headsOff && !asgOpen && asgSoon.length > 0 && (
+        <HlHeads list={asgSoon} classes={h.classes} lib={h.clsLib} onOpen={(id) => { setHeadsOff(true); setAsgOpen(id); }} onClose={() => setHeadsOff(true)} />
+      )}
       {settingsOpen && (
-        <SettingsPop onClose={() => setSettingsOpen(false)}>
+        <SettingsPop onClose={() => setSettingsOpen(false)} start={{ home: homeOn, pick: pickHome }}>
           <div className="set-row">
             <span className="set-k"><b>Step goal</b><small>The outer ring closes at it</small></span>
             <SetNum value={String(p.steps)} dp={0} unit="steps" onPick={(v) => { const n = Number(v); if (n >= 1000 && n <= 60000) api.current.profile({ steps: Math.round(n) }); }} />
@@ -16136,23 +20941,20 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
         </SettingsPop>
       )}
 
-      <SideNav api={sideApi} foot={sideFoot} spy={SIDE_SPY.health} spyKey={`health-${day}`} act={HL_ACT_BTNS}
+      <SideNav api={sideApi} foot={sideFoot} spy={SIDE_SPY.health} spyKey={view === "day" ? `health-${day}` : ""} act={HL_ACT_BTNS} home={homeOn && view !== "home"} arrange={view === "day" ? (arrangeOpen ? "on" : "off") : undefined}
                rows={[
                  { head: "Health" },
-                 { id: "today", icon: "today", text: "Today", tail: hlNice(today).slice(4), on: day === today },
+                 ...(homeOn ? [{ id: "dash", icon: "home", text: "Home", on: view === "home" }] : []),
+                 { id: "today", icon: "today", text: "Today", tail: hlNice(today).slice(4), on: view === "day" && day === today },
                  { head: day === today ? "Today" : hlNice(day) },
-                 { id: "todo", icon: "checklist", text: "To-do", sub: true },
-                 { id: "week", icon: "calendar_view_week", text: "Week", sub: true },
-                 { id: "activity", icon: "directions_walk", text: "Activity", sub: true },
-                 { id: "body", icon: "monitor_weight", text: "Body", sub: true },
-                 { id: "diet", icon: "restaurant", text: "Diet goal", sub: true },
-                 { id: "gym", icon: "fitness_center", text: "Gym", sub: true },
-                 { id: "board", icon: "dashboard", text: "Vision board", sub: true },
+                 ...order.map((n) => { const c = HL_CARDS.find((q) => q[0] === n); return { id: c[1], icon: c[3], text: c[2], sub: true }; }),
                  { head: "Account" },
+                 { id: "settings", icon: "settings", text: "Settings", tip: "Appearance, liquid glass, keyboard shortcuts and preferences" },
                  { id: "users", pic: who ? who.pic : "", img: who ? who.img : undefined, bg: who ? who.bg : undefined, bgImg: who ? who.bgImg : undefined, text: who ? who.first : "", tail: "Switch", tip: "Change account" },
-                 ...(SHOW_TEST_TOOLS ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." },
+                 ...(dev ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." },
                    ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : [])] : []),
                ]} />
+      {arrangeOpen && view === "day" && <CardArrange cards={HL_CARDS} order={order} solo={!(homeOn && view !== "home")} onOrder={(next) => { setOrder(next); savePrefs({ order: next }); }} onClose={() => setArrangeOpen(false)} />}
 
       <div style={S.footerRow}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
@@ -16160,8 +20962,8 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
           <button className="bk-btn ico" onClick={() => fileRef.current?.click()} aria-label="Import"><span className="msym">download</span><BkTip name="Import" say="Brings your health data back from a backup file" /></button>
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }} onChange={(e) => { importData(e.target.files?.[0]); e.target.value = ""; }} />
           <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
-          <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" say="Your step goal and move goal" /></button>
-          {SHOW_TEST_TOOLS && <>
+          <button className="bk-btn ico" onClick={() => setSettingsOpen(true)} aria-label="Settings"><span className="msym">settings</span><BkTip name="Settings" say="The start screen, your step goal and move goal" /></button>
+          {dev && <>
             <span style={{ width: 1, height: 14, background: "rgba(255,255,255,0.12)", margin: "0 2px" }} />
             <button className="bk-btn ico test" onClick={addTest} aria-label="Add test data"><span className="msym">science</span><BkTip name="Add test data" say="Two months of steps and weights, a timetable, to-dos, gym sessions" /></button>
             <button className="bk-btn ico" onClick={clearTest} aria-label="Clear test data"><span className="msym">delete_sweep</span><BkTip name="Clear test data" say="Removes the generated entries only" /></button>
@@ -16170,9 +20972,9 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
           {saveError && <span className="bk-msg" style={{ color: "#ff8d97" }} title="Your health data could not be stored (storage full or blocked). Export a backup now.">Couldn't save — export a backup</span>}
           <Linger on={backupMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`}>{m}</span>} />
           <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back what you had before this import">Undo</button>} />
-          {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
+          {dev && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
-        <button className="foot-logo" onClick={onHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
+        <FootLogo side="health" onHome={onHome} onApp={onApp} apps={apps} />
       </div>
     </>
   );
@@ -16184,7 +20986,9 @@ function HealthApp({ onHome, onUsers, onReset, onRestore, onOther, who }) {
    by transforms only. Pressed in focus, the three spin about their middle, each its own way, and turn to face
    forward as the stage fades ---------- */
 const RING3_SPEC = [{ r: 136, z: 0 }, { r: 94, z: 16 }, { r: 52, z: 32 }];
-const RING3_W = 36, RING3_DEPTH = 6, RING3_STEP = 2.4, RING3_ARC = [0.8, 0.66, 0.9];
+// (the blue one was 0.9: its gap, 33px on a ring 36px thick, was narrower than its two round ends, which met in a pinched
+// blob; his picture, 25 October 2026. At 0.75 the ends stand 46px apart)
+const RING3_W = 36, RING3_DEPTH = 6, RING3_STEP = 2.4, RING3_ARC = [0.8, 0.66, 0.75];
 const HEALTH_SPIN_MS = 1000;            // the rings spin this long before the stage starts to fade
 const hlShade = (hex, k) => { const n = parseInt(hex.slice(1), 16); return `rgb(${[n >> 16, (n >> 8) & 255, n & 255].map((v) => Math.round(v * k)).join(",")})`; };
 const HlRings3D = memo(() => (
@@ -16214,9 +21018,88 @@ const HlRings3D = memo(() => (
   </div>
 ));
 
+/* The crocodile in the footer (28 October 2026, his words: "make quick access to the different apps when hovering over the
+   flow icon on the footer, the apps come from behind the flow icon smooth animation, fade opacity animation aswell", and
+   "when pressing the flow footer button, it goes to the … selections panel"). Pressed: back to where this app is chosen
+   (goHome). Under the pointer (or with focus in it): the other two apps come out from behind it to the left, nearest first,
+   sliding and fading; a press goes straight into one (finance on the year last open, trading on the side last open) */
+/* The shortcuts are the apps' own icons (29 October 2026, his words: "make these on the hover footer their respected app
+   icons, not just buttons"): finance is the wallet of the year last open (a year with no wallet: this year's), trading
+   the coin, globe or die of the trading app last entered (none yet: the Bitcoin coin), Health its rings. Small flat
+   drawings of the stage's solids, self-contained (the stage's own defs are not on the page inside an app) and
+   data-dk, so they keep their colours in the light look. `apps` is { wallet: index in WALLETS, trade: "crypto" | "idx" | "fx" } */
+const FA_LEATHER = [["#8b7f6e", "#6a5f50"], ["#5c6166", "#34383c"], ["#c14a41", "#8e2f2a"]];      // WALLETS in order: puzzle, arena, python
+const FaWallet = ({ i }) => {
+  const [a, b] = FA_LEATHER[i] || FA_LEATHER[0], g = `faw${i}`;
+  return (
+    <svg viewBox="0 0 40 40" data-dk="" aria-hidden="true">
+      <defs><linearGradient id={g} x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stopColor={a} /><stop offset="1" stopColor={b} /></linearGradient></defs>
+      <rect x="9" y="4" width="22" height="14" rx="3.5" fill="#e6c877" />
+      <rect x="6" y="8" width="26" height="14" rx="3.5" fill="#d5d9de" />
+      <rect x="3" y="14" width="34" height="23" rx="6" fill={`url(#${g})`} />
+      <path d="M3.6 21.5H36.4" stroke="rgba(255,255,255,0.22)" strokeWidth="1" />
+      <rect x="25" y="22" width="12" height="9" rx="3" fill="rgba(0,0,0,0.28)" />
+      <circle cx="30.5" cy="26.5" r="1.7" fill="#f0d88a" />
+    </svg>
+  );
+};
+const FaCoin = () => (
+  <svg viewBox="0 0 400 400" data-dk="" aria-hidden="true">
+    <defs><linearGradient id="fac" x1="0.12" y1="0.06" x2="0.9" y2="0.96">
+      <stop offset="0" stopColor="#fdeebb" /><stop offset="0.3" stopColor="#eccb74" /><stop offset="0.56" stopColor="#d0a23f" /><stop offset="0.8" stopColor="#a97c23" /><stop offset="1" stopColor="#86601a" />
+    </linearGradient></defs>
+    <circle cx="200" cy="200" r="200" fill="url(#fac)" />
+    <circle cx="200" cy="200" r="178" fill="none" stroke="#fff3c9" strokeOpacity="0.55" strokeWidth="9" />
+    <path transform="translate(203 204) scale(0.088) translate(-2045.6 -2045.9)" d={BTC_PATH} fill="#fff1c2" />
+    <path transform="translate(200 200) scale(0.088) translate(-2045.6 -2045.9)" d={BTC_PATH} fill="#8a5c10" />
+  </svg>
+);
+const FaGlobe = () => (
+  <svg viewBox="0 0 400 400" data-dk="" aria-hidden="true">
+    <defs>
+      <linearGradient id="fag" x1="0" y1="0" x2="1" y2="1"><stop offset="0.06" stopColor="#d2261f" /><stop offset="0.5" stopColor="#a32422" /><stop offset="0.96" stopColor="#6f2529" /></linearGradient>
+      <clipPath id="fagc"><circle cx="200" cy="200" r="199.4" /></clipPath>
+    </defs>
+    <circle cx="200" cy="200" r="200" fill="url(#fag)" />
+    <path clipPath="url(#fagc)" fill="#fff" fillRule="evenodd" d={IDX_BANDS} />
+  </svg>
+);
+// the forex die seen corner on: the dollar on top, the euro on the left, the yen on the right (each face's text lies in its own plane)
+const FaDie = () => (
+  <svg viewBox="0 0 40 40" data-dk="" aria-hidden="true" style={{ fontWeight: 800 }}>
+    <path d="M20 3 35 11.5 20 20 5 11.5Z" fill="#f7f5ef" stroke="#f7f5ef" strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M5 11.5 20 20V37L5 28.5Z" fill="#d6d2c8" stroke="#d6d2c8" strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M35 11.5 20 20V37L35 28.5Z" fill="#b7b3a7" stroke="#b7b3a7" strokeWidth="1.2" strokeLinejoin="round" />
+    <text transform="matrix(15 -8.5 15 8.5 5 11.5)" x="0.5" y="0.74" fontSize="0.78" textAnchor="middle" fill="#17935f">$</text>
+    <text transform="matrix(1 0.5667 0 1 5 11.5)" x="7.5" y="14.5" fontSize="11" textAnchor="middle" fill="#2458c4">€</text>
+    <text transform="matrix(1 -0.5667 0 1 20 20)" x="7.5" y="14.5" fontSize="11" textAnchor="middle" fill="#cf3447">¥</text>
+  </svg>
+);
+const FOOT_APPS = { finance: "Finance", trade: "Trading", health: "Health" };
+const FOOT_MARKET = { crypto: "Crypto", idx: "Stocks", fx: "Forex" };
+const FootLogo = ({ side, onHome, onApp, apps = { wallet: HOME_WALLET, trade: "crypto" } }) => (
+  <span className="foot-apps">
+    {onApp && ["finance", "trade", "health"].filter((k) => k !== side).map((k, i) => {
+      const what = k === "finance" ? `${new Date().getFullYear() + ((WALLETS[apps.wallet] || WALLETS[HOME_WALLET]).year || 0)}` : k === "trade" ? FOOT_MARKET[apps.trade] || "Crypto" : "";
+      const label = `Go to ${FOOT_APPS[k]}${what ? ` · ${what}` : ""}`;
+      return (
+        <button key={k} className="fa-app" style={{ "--i": i + 1 }} title={label} aria-label={label} onClick={() => onApp(k)}>
+          {k === "health" ? <HlMini vals={[0.8, 0.66, 0.75]} /> : k === "finance" ? <FaWallet i={WALLETS[apps.wallet] ? apps.wallet : HOME_WALLET} /> : apps.trade === "idx" ? <FaGlobe /> : apps.trade === "fx" ? <FaDie /> : <FaCoin />}
+        </button>
+      );
+    })}
+    <button className="foot-logo" onClick={onHome} title="Back to choosing" aria-label="Back to choosing"><CrocLogo /></button>
+  </span>
+);
+
+// the words an insight stresses (it was made inside PnlCalendar's render, so each render was a new kind of element to
+// React and every one of them was put in the page afresh; the performance rules)
+const InsB = ({ children }) => <b style={{ color: "#e8eaec", fontWeight: 700 }}>{children}</b>;
+
 export default function PnlCalendar() {
   const light = useTheme();
   const dev = useDevOpt();
+  useKbs();                                       // a shortcut changed in the settings: written anew everywhere
   const now = new Date();
   // re-render just after midnight so "today" (outline, weekly chart, insights) never goes stale while the app is open
   const [dayTick, setDayTick] = useState(0);
@@ -16252,6 +21135,10 @@ export default function PnlCalendar() {
   const [currency, setCurrency] = useState("IDR");
   const [fxOpen, setFxOpen] = useState(null);       // the money exchanger: the currency it was opened from
   const [tpOpen, setTpOpen] = useState(false);      // the time plan (⌘T)
+  const [worthOpen, setWorthOpen] = useState(false); // Worth it? (⌘B)
+  const [wkOpen, setWkOpen] = useState(false);         // the weekend fund (⌘J, under Worth it? in the menu)
+  const wkApi = useRef(null);
+  const worthApi = useRef(null);
   const curTap = useRef(0);                         // when the currency pill was last pressed (a fast second press opens the exchanger)
   const [spending, setSpending] = useState({});
   // incStore is what is kept; incomes is what counts in each month (spreadIncomes, an income over several months in
@@ -16294,11 +21181,14 @@ export default function PnlCalendar() {
   /* goals: global savings targets that carry across every month */
   const [goals, setGoals] = useState([]);
   const [debts, setDebts] = useState([]);              // what he owes and is owed: see Debts
+  const [subs, setSubs] = useState([]);                // what is billed every month: see Subs
   const [plans, setPlans] = useState([]);              // what he means to spend on a day to come: see WeekPlans
   const [homeOn, setHomeOn] = useState(true);          // Home first (the dashboard), or the classic yearly panel first
   const [fdash, setFdash] = useState(null);            // Home's layout as he arranged it (dgClean); null: as it comes
   // finance's Home lives apart from the entries (FIN_PREFS_KEY): what he arranged is not his data and is in no backup
   const finPrefs = useRef({ home: true, dash: null });
+  const [cardOrd, setCardOrd] = useState(() => FIN_CARDS.map((c) => c[0]));       // the month's cards, in his order
+  const [arrOpen, setArrOpen] = useState(false);                                   // the pane that arranges them
   const saveFinPrefs = (patch) => { finPrefs.current = { ...finPrefs.current, ...patch }; store.set(FIN_PREFS_KEY, JSON.stringify(finPrefs.current)).catch(() => {}); };
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalName, setNewGoalName] = useState("");
@@ -16324,6 +21214,12 @@ export default function PnlCalendar() {
      account is chosen; the entries are read when `user` is set, and changing account loads the page again */
   const [acc, setAcc] = useState(null);          // { list, last }, once it is read
   const [user, setUser] = useState(null);        // the account chosen
+  // Health's deadlines, watched on every side while the app is open: the Mac's notification a day and 3 hours before (hlDueWatch)
+  useEffect(() => {
+    if (!user) return;
+    const t0 = setTimeout(hlDueWatch, 6000), t = setInterval(hlDueWatch, 60000);
+    return () => { clearTimeout(t0); clearInterval(t); };
+  }, [user]);
   const [gate, setGate] = useState(null);        // "new": the login · "pick": the select acc panel · "gone": chosen, the cover is fading · "done"
   const accFirst = useRef(false);
   const accApi = useRef(null);
@@ -16409,8 +21305,10 @@ export default function PnlCalendar() {
     if (isMYR) {
       const rm = v / MYR_RATE;
       let s;
-      if (rm >= 1_000_000) s = (Math.floor(rm / 10_000) / 100).toString().replace(".", ",") + "M";
-      else if (rm >= 1_000) s = (Math.floor(rm / 100) / 10).toString().replace(".", ",") + "k";
+      // ringgit write a point, as rupiah write a comma (30 October 2026: "when switching to another currency automatically change
+      // the decimal point"): 1.5k and 2.3M, as 11.5 under a thousand always was; it kept the comma of the rupiah's 1,5Rb until then
+      if (rm >= 1_000_000) s = (Math.floor(rm / 10_000) / 100).toString() + "M";
+      else if (rm >= 1_000) s = (Math.floor(rm / 100) / 10).toString() + "k";
       else s = oneDp(rm);                              // e.g. 11.49 → 11.5, 11 → 11.0
       return (neg && s !== "0.0" ? "-" : "") + s;
     }
@@ -16421,37 +21319,17 @@ export default function PnlCalendar() {
     else s = String(v);
     return (neg ? "-" : "") + s;
   };
-  const fmtCoarse = (n) => {
-    const neg = n < 0;
-    let v = Math.abs(n);
-    if (isMYR) v = Math.floor(v / MYR_RATE);
-    v = Math.floor(v);
-    let str;
-    if (v >= 1_000_000) str = Math.floor(v / 1_000_000) + (isMYR ? "M" : "jt");
-    else if (v >= 1_000) str = Math.floor(v / 1_000) + (isMYR ? "k" : "Rb");
-    else str = String(v);
-    return (neg ? "-" : "") + str;
-  };
-  // a scale's line: like fmtCoarse, but a round step that is not a whole jt (or k, M in ringgit) keeps its one decimal
-  // (1,5jt), decided by the line's own value `at`, so the figure keeps one width while it counts towards it
-  const fmtTick = (n, at = n) => {
-    const v = Math.abs(n) / (isMYR ? MYR_RATE : 1), a = Math.abs(at) / (isMYR ? MYR_RATE : 1);
-    const [d, u] = v >= 1e6 ? [1e6, isMYR ? "M" : "jt"] : v >= 1e3 ? [1e3, isMYR ? "k" : "Rb"] : [1, ""];
-    const half = a >= d && a < d * 1000 && Math.abs(a / d - Math.round(a / d)) > 1e-6;
-    return (n < 0 ? "-" : "") + (half ? (Math.floor((v / d) * 10) / 10).toFixed(1).replace(".", ",") : String(Math.floor(v / d))) + u;
-  };
   // while it counts: the resting units, each at one steady precision (see liveText), so nothing flickers
   const fmtLive = (n, busy, span) => {
     if (!busy || !span) return fmt(n);
     const amt = (x) => (isMYR ? Math.abs(x) / MYR_RATE : Math.floor(Math.abs(x)));
-    const text = liveText(amt(n), amt(span.from), amt(span.to), LIVE_UNITS[isMYR ? "MYR" : "IDR"], true);
+    const text = liveText(amt(n), amt(span.from), amt(span.to), LIVE_UNITS[isMYR ? "MYR" : "IDR"], !isMYR);
     return text === null ? fmt(n) : (n < 0 ? "-" : "") + text;
   };
   const cur = isMYR ? "RM" : "Rp";
   const toDisp = (idr) => (isMYR ? Math.floor(idr / MYR_RATE) : idr);
   // income chips / totals: RM with one decimal, Rp as before
   const chipAmt = (idr) => (isMYR ? oneDp(idr / MYR_RATE) : idr.toLocaleString("id-ID"));
-  const toIDR = (disp) => (isMYR ? Math.round(disp * MYR_RATE) : disp);
   // parse whatever is typed in the active currency into rupiah
   const amtToIDR = (str) => {
     if (!isMYR) return parseNum(str);
@@ -16548,14 +21426,15 @@ export default function PnlCalendar() {
           if (Array.isArray(data.goals)) setGoals(cleanGoals(data.goals));
           setDebts(cleanDebts(data.debts));
           setPlans(cleanPlans(data.plans));
+          setSubs(cleanSubs(data.subs));
         }
       } catch (e) {}
       try {
         const res = await store.get(FIN_PREFS_KEY);
         const p = res && res.value ? JSON.parse(res.value) : null;
         if (p && typeof p === "object") {
-          finPrefs.current = { home: p.home !== false, dash: dgClean(p.dash, "finance", FIN_M) };
-          setHomeOn(finPrefs.current.home); setFdash(finPrefs.current.dash);
+          finPrefs.current = { home: p.home !== false, dash: dgClean(p.dash, "finance", FIN_M), order: cardOrder(p.order, FIN_CARDS), ...(cleanAmount(p.wkd) > 0 ? { wkd: cleanAmount(p.wkd) } : {}) };
+          setHomeOn(finPrefs.current.home); setFdash(finPrefs.current.dash); setCardOrd(finPrefs.current.order);
         }
       } catch (e) {}
       setLoaded(true);
@@ -16565,7 +21444,7 @@ export default function PnlCalendar() {
   /* Saving: every call merges into the newest known data (never a stale snapshot from an older render),
      writes run strictly in order, and a failed write is shown to the user instead of being swallowed. */
   const latestData = useRef(null);
-  latestData.current = { spending, incomes: incStore, limits, currency, goals, debts, plans, rule: spendRule, ruleByMonth, ...(latestData.pending || {}) };
+  latestData.current = { spending, incomes: incStore, limits, currency, goals, debts, plans, subs, rule: spendRule, ruleByMonth, ...(latestData.pending || {}) };
   const saveChain = useRef(Promise.resolve());
   const [saveError, setSaveError] = useState(false);
   const persist = (next = {}) => {
@@ -16583,13 +21462,32 @@ export default function PnlCalendar() {
   // the Debts section's way in (a ref, so the section isn't redrawn every time this panel is)
   const debtApi = useRef(null);
   debtApi.current = { fmt, fmtLive, toIDR: amtToIDR, typed: dispStr, list: () => latestData.current.debts, save: (next) => { setDebts(next); persist({ debts: next }); } };
+  // the subscriptions' way in (Subs), and their bills: each one due up to today and not logged yet becomes that day's
+  // expense, at once when the entries are read, when one is added or changed, and just after midnight (dayTick)
+  const subApi = useRef(null);
+  // any stretch of days (RangePop): open with the month on screen, its 1st to today (or to its last day when it is over)
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const rangeApi = useRef(null);
+  rangeApi.current = { fmt, fmtLive, limitOf: (y, m) => limitOf(y, m), catOf: (it) => { const c = it.cat || inferCat(it.desc) || aiCats[it.id] || "other"; return c in CATS ? c : "other"; } };
+  subApi.current = { fmt, fmtLive, toIDR: amtToIDR, typed: dispStr, list: () => latestData.current.subs, save: (next) => { setSubs(next); persist({ subs: next }); } };
+  useEffect(() => {
+    if (!loaded || unreadable.current) return;
+    const today = dayKeyOf(new Date()), cur0 = latestData.current.subs;
+    const due = cur0.map((x) => [x, subDue(x, today)]).filter(([, ks]) => ks.length);
+    if (!due.length) return;
+    const sp = { ...latestData.current.spending };
+    for (const [x, ks] of due) for (const k of ks) sp[k] = [...(sp[k] || []).filter((it) => !it.zero), { id: uid(), amount: x.amount, desc: x.name, cat: x.cat, sub: x.id }];
+    const last = new Map(due.map(([x, ks]) => [x.id, ks[ks.length - 1]]));
+    const nextSubs = cur0.map((x) => (last.has(x.id) ? { ...x, last: last.get(x.id) } : x));
+    setSpending(sp); setSubs(nextSubs); persist({ spending: sp, subs: nextSubs });
+  }, [loaded, dayTick, subs]);
 
   /* ---------- backup: export / import the whole dataset ---------- */
   const fileRef = useRef(null);
   const [backupMsg, setBackupMsg] = useState("");
 
   const exportData = () => {
-    const own = financeBackup({ spending, incomes: incStore, limits, currency, goals, debts, plans, rule: spendRule, ruleByMonth });
+    const own = financeBackup({ spending, incomes: incStore, limits, currency, goals, debts, plans, subs, rule: spendRule, ruleByMonth });
     // an account with nothing of his own in it writes no file (11 October 2026: after Reset account he exported the
     // emptied account, and that file then "restored" nothing)
     if (!own) { flashBackup("Nothing of your own to export yet", 3600); return; }
@@ -16631,6 +21529,7 @@ export default function PnlCalendar() {
     setGoals(d.goals); setDebts(d.debts); setSpending(d.spending); setIncomes(d.incomes); setLimits(d.limits); setCurrency(d.currency);
     setSpendRule(d.rule || null); setRuleByMonth(d.ruleByMonth || {});
     if (d.plans) setPlans(d.plans);
+    if (d.subs) setSubs(d.subs);
     await persist(d);
   };
   const importData = async (file) => {
@@ -16659,10 +21558,11 @@ export default function PnlCalendar() {
       && (data.limits === undefined || isObj(data.limits)) && (data.goals === undefined || Array.isArray(data.goals))
       && (data.debts === undefined || Array.isArray(data.debts));
     if (!looksRight) return { msg: "That isn't a PnL backup file, nothing was changed" };
-    const prev = { spending, incomes: incStore, limits, currency, goals, debts, plans, rule: spendRule, ruleByMonth };
+    const prev = { spending, incomes: incStore, limits, currency, goals, debts, plans, subs, rule: spendRule, ruleByMonth };
     const next = {
       debts: cleanDebts(data.debts),
       plans: cleanPlans(data.plans),
+      subs: cleanSubs(data.subs),
       spending: migrateSpending(data.spending || {}),
       incomes: migrateIncomes(data.incomes || {}),
       limits: cleanLimits(data.limits),
@@ -17104,6 +22004,7 @@ export default function PnlCalendar() {
   const [recapDetail, setRecapDetail] = useState(null);     // "cat:food" | "catbig:food" | "income" | "regular" | "rank"
   const [recapDetailOpen, setRecapDetailOpen] = useState(false);
   const [recapHover, setRecapHover] = useState(null);
+  const [recapAvg, setRecapAvg] = useState("day");     // the wrapped's "On average" tile: per day, or per month (yearly wrapped only)
   const recapDetailRef = useRef(null);
   useEffect(() => { setRecapDetail(null); setRecapDetailOpen(false); setRecapHover(null); }, [recap]);
   const toggleRecapDetail = (key) => {
@@ -17119,10 +22020,13 @@ export default function PnlCalendar() {
     const cats = { food: 0, transport: 0, shopping: 0, bills: 0, other: 0 };
     const catItems = { food: {}, transport: {}, shopping: {}, bills: {}, other: {} };
     const places = {}, srcs = {}, txs = [];
-    let tx = 0, logged = 0, under = 0, spentTot = 0, incTot = 0;
+    let tx = 0, logged = 0, under = 0, spentTot = 0, incTot = 0, firstAt = null, lastAt = null;
     const addDay = (y, m, d, lim) => {
       const items = spending[keyOf(y, m, d)] || [];
       if (!items.length) return null;
+      const at = Date.UTC(y, m, d);                  // days are walked in order: the first and last logged ones bound the averages
+      if (firstAt === null) firstAt = at;
+      lastAt = at;
       let sp = 0;
       items.forEach((it) => {
         sp += it.amount;
@@ -17183,9 +22087,19 @@ export default function PnlCalendar() {
     const total = active.reduce((a, u) => a + u.value, 0);
     const catItemLists = {};
     CAT_ORDER.forEach((c) => { catItemLists[c] = Object.values(catItems[c]).sort((a, b) => b.sum - a.sum); });
+    // "On average": from the first logged day to today (or the period's end), but never short of the last logged day, so a
+    // year or month with later entries (test data) is not divided by too few days. A year that began mid-way counts from there.
+    let avgDays = 0, avgMonths = 0;
+    if (firstAt !== null) {
+      const t = new Date(), periodEnd = recap.kind === "year" ? Date.UTC(recap.y, 11, 31) : Date.UTC(recap.y, recap.m + 1, 0);
+      const upTo = Math.max(lastAt, Math.min(periodEnd, Date.UTC(t.getFullYear(), t.getMonth(), t.getDate())));
+      avgDays = Math.round((upTo - firstAt) / 864e5) + 1;
+      avgMonths = new Date(upTo).getUTCMonth() - new Date(firstAt).getUTCMonth() + 1;
+    }
     return {
       kind: recap.kind, y: recap.y, m: recap.m, lim,
       empty: active.length === 0,
+      avgDays, avgMonths, firstAt,
       units, active: active.length, best, worst, total, avg: active.length ? total / active.length : 0,
       ranked: [...active].sort((a, b) => b.value - a.value),
       catRows, catItemLists, txs, spentTot, incTot, tx, logged, under,
@@ -17550,20 +22464,32 @@ export default function PnlCalendar() {
   useEffect(() => {
     if (!launched || view === "trade" || view === "health") return;
     const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      const k = e.key.toLowerCase();
-      if (k === "e") { e.preventDefault(); setFxOpen((o) => o || finFxFrom.current); }
-      else if (k === "t") { e.preventDefault(); setTpOpen(true); }      // ⌘T: the time plan (it closes itself on ⌘T)
+      const k = kbIs(e, "fx") ? "fx" : kbIs(e, "plan") ? "plan" : kbIs(e, "worth") ? "worth" : kbIs(e, "weekend") ? "weekend" : null;
+      if (!k) return;
+      e.preventDefault();
+      if (e.repeat) return;       // held: once
+      if (k === "fx") setFxOpen((o) => o || finFxFrom.current);
+      else if (k === "plan") setTpOpen(true);      // ⌘T: the time plan (it closes itself on ⌘T)
+      else if (k === "weekend") setWkOpen(true);   // ⌘J: the weekend fund (it closes itself on ⌘J)
+      else setWorthOpen(true);                     // ⌘B: Worth it? (it closes itself on ⌘B)
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [launched, view]);
+  /* ⌘K: the next currency, at once, also with a pop-up open (24 October 2026, his words: "a shortcut for changing
+     currencies quickly and this works changing immediately when im in a ui"). Heard first: on the window while it
+     captures, set up before any pop-up sets up its own, and kept from them (a sheet keeps every key to itself). What it
+     does is the latest render's (curKey), so nothing it writes is out of date */
+  const curKey = useRef(null);
+  curKey.current = () => pickCurrency(currency === "MYR" ? "IDR" : "MYR");
+  useCmdKey("cur", curKey, launched && view !== "trade" && view !== "health");
+  // ⌘N: the quick log, inside the finance app only (24 October 2026: it opened on the selections panel, the wallets and
+  // the trading panel too, where no app is open; he called it a bug. Every other shortcut was already kept to its app)
   useEffect(() => {
-    if (launched && view === "trade") return;
+    if (!launched || view === "trade" || view === "health") return;
     const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "n") return;
-      if (!launched && (warm.hold || warm.tour || !loaded || !user)) return;
-      e.preventDefault(); setQuickOpen(true);
+      if (!kbIs(e, "quick")) return;
+      e.preventDefault(); if (!e.repeat) setQuickOpen(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -17592,13 +22518,20 @@ export default function PnlCalendar() {
   const sideApi = useRef(null);
   sideApi.current = {
     go: (id) => {
+      if (id === "settings") { setSettingsOpen(true); return; }
       if (id === "quick") { setQuickOpen(true); return; }
       if (id === "bill") { setBillOpen(true); return; }
+      if (id === "fx") { setFxOpen(currency); return; }
+      if (id === "plan") { setTpOpen(true); return; }
+      if (id === "worth") { setWorthOpen(true); return; }
+      if (id === "weekend") { setWkOpen(true); return; }
+      if (id === "cur") { curKey.current(); return; }
       if (id === "home") { goHome(); return; }
       if (id === "users") { switchUser(); return; }
       if (id === "reset") { resetUser(); return; }
       if (id === "restore") { restoreUser(); return; }
       if (id === "wrap") { openRecap(view === "month" ? { kind: "month", y: year, m: month } : { kind: "year", y: year }); return; }
+      if (id === "arrange") { setArrOpen((v) => !v); return; }        // the button under Home: the month's cards in his order
       if (id === "dash") { setSelected(null); setView("home"); window.scrollTo({ top: 0 }); return; }
       if (id === "year") {
         if (view === "month") { setYearRise(true); setView("year"); setTimeout(() => setYearRise(false), 700); }
@@ -17623,6 +22556,7 @@ export default function PnlCalendar() {
       if (to === "bill") { setBillOpen(true); return; }
       if (to === "fx") { setFxOpen(currency); return; }
       if (to === "plan") { setTpOpen(true); return; }
+      if (to === "worth") { setWorthOpen(true); return; }
       if (to === "wrap") { openRecap({ kind: "month", y: now.getFullYear(), m: now.getMonth() }); return; }
       if (to === "side") { sideApi.current.go(at); return; }
       window.scrollTo({ top: 0 });
@@ -17685,6 +22619,25 @@ export default function PnlCalendar() {
   const calGrid = useRef(null);
   const moveApi = useRef(null);
   moveApi.current = {
+    // a row put at place k among the day's others (rowDrag's order): that day's rows in their new order, saved
+    order: async (kind, id, k) => {
+      if (selected === null) return;
+      const put = (rows) => { const it = rows.find((x) => x.id === id); if (!it) return null; const rest = rows.filter((x) => x.id !== id); rest.splice(k, 0, it); return rest; };
+      if (kind === "inc") {
+        const mk = monthKeyOf(year, month), list = incStore[mk] || [], day = put(list.filter((it) => it.day === selected));
+        if (!day) return;
+        let i = 0;
+        const next = { ...incStore, [mk]: list.map((it) => (it.day === selected ? day[i++] : it)) };
+        setIncomes(next);
+        await persist({ incomes: next });
+        return;
+      }
+      const key = keyOf(year, month, selected), rows = put(spending[key] || []);
+      if (!rows) return;
+      const next = { ...spending, [key]: rows };
+      setSpending(next);
+      await persist({ spending: next });
+    },
     drop: (kind, id, to) => {
       if (selected === null || to === selected) return;
       const at = { kind, id, to, y: year, m: month, from: selected };
@@ -17701,12 +22654,35 @@ export default function PnlCalendar() {
         const next = { ...incStore, [mk]: list.map((it) => (it.id === id ? { ...it, day: to } : it)) };
         setIncomes(next);
         await persist({ incomes: next });
+        const was = list.find((it) => it.id === id);
+        offerUndo(`${(was && was.desc) || "income"} to ${to} ${MONTHS_SHORT[m]}`, () => moveApi.current.unmove({ kind, id, y, m, from, to }), "Moved");
         return;
       }
       const a = keyOf(y, m, from), b = keyOf(y, m, to), it = (spending[a] || []).find((x) => x.id === id);
       if (!it || it.zero || a === b) return;
+      const at = spending[a].findIndex((x) => x.id === id), mark = (spending[b] || []).filter((x) => x.zero);
       const rest = spending[a].filter((x) => x.id !== id), next = { ...spending, [b]: [...(spending[b] || []).filter((x) => !x.zero), it] };
       if (rest.length) next[a] = rest; else delete next[a];
+      setSpending(next);
+      await persist({ spending: next });
+      offerUndo(`${it.desc || "expense"} to ${to} ${MONTHS_SHORT[m]}`, () => moveApi.current.unmove({ kind, id, y, m, from, to, at, mark }), "Moved");
+    },
+    // Undo after a move (31 October 2026, his words: "add undo on the finances just like the one on timetable ui if i drag
+    // expense onto another date"): back to its day and its place there, from what is saved now; a no-spend mark the move
+    // took off the other day comes back if that day is left empty
+    unmove: async ({ kind, id, y, m, from, to, at = 0, mark = [] }) => {
+      if (kind === "inc") {
+        const mk = monthKeyOf(y, m), list = incStore[mk] || [];
+        if (!list.some((it) => it.id === id && it.day === to)) return;
+        const next = { ...incStore, [mk]: list.map((it) => (it.id === id ? { ...it, day: from } : it)) };
+        setIncomes(next);
+        await persist({ incomes: next });
+        return;
+      }
+      const a = keyOf(y, m, to), b = keyOf(y, m, from), it = (spending[a] || []).find((x) => x.id === id);
+      if (!it) return;
+      const rest = spending[a].filter((x) => x.id !== id), next = { ...spending, [b]: backInto((spending[b] || []).filter((x) => !x.zero), it, at) };
+      if (rest.length) next[a] = rest; else if (mark.length) next[a] = mark; else delete next[a];
       setSpending(next);
       await persist({ spending: next });
     },
@@ -18256,12 +23232,10 @@ export default function PnlCalendar() {
       return { t, total, any };
     };
     const dayTot = (dt) => (spending[keyOf(dt.getFullYear(), dt.getMonth(), dt.getDate())] || []).reduce((a, it) => a + it.amount, 0);
-    const B = ({ children }) => <b style={{ color: "#e8eaec", fontWeight: 700 }}>{children}</b>;
     const dLabel = (d) => `${d} ${MONTHS_SHORT[month]}`;
     const times = (r) => `${r >= 10 ? Math.round(r) : r.toFixed(1).replace(/\.0$/, "")}×`;
 
     const isCur = year === now.getFullYear() && month === now.getMonth();
-    const isPast = year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth());
     const dim = new Date(year, month + 1, 0).getDate();
     // any month other than the current one is read as a whole month, including future months with (test) data
     const elapsed = isCur ? now.getDate() : dim;
@@ -18294,7 +23268,7 @@ export default function PnlCalendar() {
           const name = c === "__all" ? "Total" : CATS[c].label;
           out.push({
             key: `cat-${c}`, tone: up ? "bad" : "good", icon: up ? "trending_up" : "trending_down",
-            text: <>{name} spending {isCur ? "is on pace to be" : "was"} <B>{Math.abs(pct)}% {up ? "higher" : "lower"}</B> than your {n}-month average ({fmt(avg)}).</>,
+            text: <>{name} spending {isCur ? "is on pace to be" : "was"} <InsB>{Math.abs(pct)}% {up ? "higher" : "lower"}</InsB> than your {n}-month average ({fmt(avg)}).</>,
           });
         });
       }
@@ -18310,20 +23284,20 @@ export default function PnlCalendar() {
     }
     if (crossed) {
       out.push({ key: "budget", tone: "bad", icon: "event_busy",
-        text: <>By <B>{dLabel(crossed)}</B> you had spent the whole month's limit ({fmt(budget)}).</> });
+        text: <>By <InsB>{dLabel(crossed)}</InsB> you had spent the whole month's limit ({fmt(budget)}).</> });
     } else if (isCur && elapsed >= 3) {
       const rate = cum / elapsed;      // what was spent up to today: with the whole month's total, entries already made for later days put the day in the past ("you'll pass it around 7 Oct", said on the 12th)
       const day = rate > 0 ? Math.ceil(budget / rate) : Infinity;
       if (day <= dim) {
         out.push({ key: "budget", tone: "bad", icon: "event_busy",
-          text: <>At your current pace ({fmt(rate)}/day) you'll pass your daily limits for the month ({fmt(budget)}) around <B>{dLabel(day)}</B>.</> });
+          text: <>At your current pace ({fmt(rate)}/day) you'll pass your daily limits for the month ({fmt(budget)}) around <InsB>{dLabel(day)}</InsB>.</> });
       } else {
         out.push({ key: "budget", tone: "good", icon: "event_available",
-          text: <>At this pace you'll finish the month about <B>{fmt(budget - rate * dim)} under</B> your daily limits for the month ({fmt(budget)}).</> });
+          text: <>At this pace you'll finish the month about <InsB>{fmt(budget - rate * dim)} under</InsB> your daily limits for the month ({fmt(budget)}).</> });
       }
     } else if (!isCur) {
       out.push({ key: "budget", tone: "good", icon: "event_available",
-        text: <>You finished {MONTHS_SHORT[month]} <B>{fmt(budget - cur.total)} under</B> your daily limits for the month ({fmt(budget)}).</> });
+        text: <>You finished {MONTHS_SHORT[month]} <InsB>{fmt(budget - cur.total)} under</InsB> your daily limits for the month ({fmt(budget)}).</> });
     }
 
     // 3. income pace
@@ -18332,10 +23306,10 @@ export default function PnlCalendar() {
       const rate = cur.total / elapsed;
       if (cur.total > inc) {
         out.push({ key: "income", tone: "bad", icon: "account_balance_wallet",
-          text: <>Spending has already passed this month's income by <B>{fmt(cur.total - inc)}</B>.</> });
+          text: <>Spending has already passed this month's income by <InsB>{fmt(cur.total - inc)}</InsB>.</> });
       } else if (rate > 0 && Math.ceil(inc / rate) <= dim) {
         out.push({ key: "income", tone: "bad", icon: "account_balance_wallet",
-          text: <>At this pace, spending will overtake this month's income around <B>{dLabel(Math.ceil(inc / rate))}</B>.</> });
+          text: <>At this pace, spending will overtake this month's income around <InsB>{dLabel(Math.ceil(inc / rate))}</InsB>.</> });
       }
     }
 
@@ -18354,10 +23328,10 @@ export default function PnlCalendar() {
         const r = weAvg / wdAvg;
         if (r >= 1.5) {
           out.push({ key: "weekend", tone: "warn", icon: "weekend",
-            text: <>You usually spend <B>{times(r)} more</B> per day on weekends ({fmt(weAvg)} vs {fmt(wdAvg)} on weekdays).</> });
+            text: <>You usually spend <InsB>{times(r)} more</InsB> per day on weekends ({fmt(weAvg)} vs {fmt(wdAvg)} on weekdays).</> });
         } else if (r <= 0.67) {
           out.push({ key: "weekend", tone: "good", icon: "weekend",
-            text: <>Weekends are your lighter days: <B>{fmt(weAvg)}/day</B> vs {fmt(wdAvg)} on weekdays.</> });
+            text: <>Weekends are your lighter days: <InsB>{fmt(weAvg)}/day</InsB> vs {fmt(wdAvg)} on weekdays.</> });
         }
       }
     }
@@ -18373,7 +23347,7 @@ export default function PnlCalendar() {
       }
       if (streak >= 3) {
         out.push({ key: "streak", tone: "good", icon: "local_fire_department",
-          text: <>Your last <B>{streak} logged days</B> were all under the daily limit.</> });
+          text: <>Your last <InsB>{streak} logged days</InsB> were all under the daily limit.</> });
       }
     }
 
@@ -18392,7 +23366,7 @@ export default function PnlCalendar() {
       const top = Object.entries(map).sort((a, b) => b[1].n - a[1].n || b[1].sum - a[1].sum)[0];
       if (top && top[1].n >= 3) {
         out.push({ key: "freq", tone: "neutral", icon: "storefront",
-          text: <><B>{prettyName(top[0])}</B> shows up {top[1].n} times this month, {fmt(top[1].sum)} in total.</> });
+          text: <><InsB>{prettyName(top[0])}</InsB> shows up {top[1].n} times this month, {fmt(top[1].sum)} in total.</> });
       }
     }
 
@@ -18415,7 +23389,7 @@ export default function PnlCalendar() {
         if (Math.abs(pct) >= 10) {
           const up = pct > 0;
           out.push({ key: "mom", tone: up ? "warn" : "good", icon: up ? "arrow_upward" : "arrow_downward",
-            text: <>{isCur ? `By day ${elapsed}` : "This month"} you've spent <B>{fmt(Math.abs(curSoFar - prevSoFar))} {up ? "more" : "less"}</B> than {MONTHS_FULL[pd.getMonth()]} ({up ? "+" : "−"}{Math.abs(pct)}%).</> });
+            text: <>{isCur ? `By day ${elapsed}` : "This month"} you've spent <InsB>{fmt(Math.abs(curSoFar - prevSoFar))} {up ? "more" : "less"}</InsB> than {MONTHS_FULL[pd.getMonth()]} ({up ? "+" : "−"}{Math.abs(pct)}%).</> });
         }
       }
     }
@@ -18426,7 +23400,7 @@ export default function PnlCalendar() {
       if (over.length) {
         const worst = over.reduce((a, b) => (b.total > a.total ? b : a));
         out.push({ key: "over", tone: over.length >= logged.length / 2 ? "bad" : "warn", icon: "report",
-          text: <><B>{over.length} day{over.length === 1 ? "" : "s"}</B> over your daily limit so far; the biggest was {dLabel(worst.d)} at {fmt(worst.total)}.</> });
+          text: <><InsB>{over.length} day{over.length === 1 ? "" : "s"}</InsB> over your daily limit so far; the biggest was {dLabel(worst.d)} at {fmt(worst.total)}.</> });
       }
     }
 
@@ -18434,7 +23408,7 @@ export default function PnlCalendar() {
     {
       const z = days.filter((x) => x.zero && x.total === 0).length;
       if (z > 0) out.push({ key: "zero", tone: "good", icon: "do_not_disturb_on",
-        text: <><B>{z} no-spend day{z === 1 ? "" : "s"}</B> this month, keeping {fmt(z * lim)} of your limit untouched.</> });
+        text: <><InsB>{z} no-spend day{z === 1 ? "" : "s"}</InsB> this month, keeping {fmt(z * lim)} of your limit untouched.</> });
     }
 
     // 10. small purchases add up
@@ -18443,7 +23417,7 @@ export default function PnlCalendar() {
       const small = logged.flatMap((x) => x.items).filter((it) => !it.zero && it.amount < SMALL);
       const sum = small.reduce((a, it) => a + it.amount, 0);
       if (small.length >= 8 && cur.total > 0) out.push({ key: "small", tone: "neutral", icon: "local_cafe",
-        text: <>{small.length} small buys under {fmt(SMALL)} added up to <B>{fmt(sum)}</B>, {Math.round((sum / cur.total) * 100)}% of this month's spending.</> });
+        text: <>{small.length} small buys under {fmt(SMALL)} added up to <InsB>{fmt(sum)}</InsB>, {Math.round((sum / cur.total) * 100)}% of this month's spending.</> });
     }
 
     // 11. priciest weekday over the last 8 weeks
@@ -18457,7 +23431,7 @@ export default function PnlCalendar() {
       const avg = sum.map((v, i) => v / (cnt[i] || 1)), overall = sum.reduce((a, b) => a + b, 0) / 56;
       let top = 0; for (let i = 1; i < 5; i++) if (avg[i] > avg[top]) top = i;   // Mon–Fri only; weekends have their own insight
       if (overall > 0 && avg[top] / overall >= 1.3) out.push({ key: "dow", tone: "neutral", icon: "calendar_month",
-        text: <><B>{["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays"][top]}</B> are your priciest weekday, averaging {fmt(avg[top])} ({times(avg[top] / overall)} your usual day).</> });
+        text: <><InsB>{["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays"][top]}</InsB> are your priciest weekday, averaging {fmt(avg[top])} ({times(avg[top] / overall)} your usual day).</> });
     }
 
     // 12. biggest single purchase
@@ -18465,7 +23439,7 @@ export default function PnlCalendar() {
       let big = null;
       logged.forEach((x) => x.items.forEach((it) => { if (!it.zero && (!big || it.amount > big.amount)) big = { ...it, d: x.d }; }));
       if (big && big.amount >= lim) out.push({ key: "big", tone: "neutral", icon: "shopping_bag",
-        text: <>Biggest purchase: <B>{big.desc ? prettyName(canonKey(big.desc)) : "an unlabelled expense"}</B>, {fmt(big.amount)} on {dLabel(big.d)}.</> });
+        text: <>Biggest purchase: <InsB>{big.desc ? prettyName(canonKey(big.desc)) : "an unlabelled expense"}</InsB>, {fmt(big.amount)} on {dLabel(big.d)}.</> });
     }
 
     // 13. average daily spend vs the limit
@@ -18473,7 +23447,7 @@ export default function PnlCalendar() {
       const avg = logged.reduce((a, x) => a + x.total, 0) / logged.length;
       const pct = Math.round((avg / lim) * 100);
       out.push({ key: "avg", tone: pct > 100 ? "warn" : "good", icon: "speed",
-        text: <>You average <B>{fmt(avg)} a day</B>, {pct}% of your {fmt(lim)} limit.</> });
+        text: <>You average <InsB>{fmt(avg)} a day</InsB>, {pct}% of your {fmt(lim)} limit.</> });
     }
 
     // 14. category share of the month
@@ -18482,7 +23456,7 @@ export default function PnlCalendar() {
       if (top && top[1] > 0 && cur.total > 0) {
         const share = Math.round((top[1] / cur.total) * 100);
         if (share >= 35) out.push({ key: "share", tone: "neutral", icon: CATS[top[0]].icon,
-          text: <><B>{CATS[top[0]].label}</B> makes up {share}% of this month's spending ({fmt(top[1])}).</> });
+          text: <><InsB>{CATS[top[0]].label}</InsB> makes up {share}% of this month's spending ({fmt(top[1])}).</> });
       }
     }
 
@@ -18505,7 +23479,7 @@ export default function PnlCalendar() {
         eta.push({ g, n, when });
       });
       eta.sort((a, b) => a.n - b.n).slice(0, 2).forEach(({ g, n, when }) => out.push({ key: `eta-${g.id}`, tone: n <= 12 ? "good" : "neutral", icon: "flag",
-        text: <>At your usual pace, <B>{g.name}</B> will be fully funded around <B>{MONTHS_FULL[when.getMonth()]} {when.getFullYear()}</B>{n > 24 ? `, about ${Math.round(n / 12)} years away` : ""}.</> }));
+        text: <>At your usual pace, <InsB>{g.name}</InsB> will be fully funded around <InsB>{MONTHS_FULL[when.getMonth()]} {when.getFullYear()}</InsB>{n > 24 ? `, about ${Math.round(n / 12)} years away` : ""}.</> }));
     }
 
     const order = { bad: 0, warn: 1, good: 2, neutral: 3 };
@@ -18896,13 +23870,15 @@ export default function PnlCalendar() {
                 tag). Every line says what the code above works out, no more. Its note hangs under this whole line,
                 from the rating's left end (.score-row), so it is inside the card at any width */}
             <InfoTip title="What the scores mean">
-              <span><i style={{ background: band.color }} /><b>Score</b> How much of this month's income you kept, from 0 to 100: income minus spending, divided by income.</span>
-              <span><i style={{ background: band.color }} /><b>Rating</b> The word for that score: Awful up to 15, Moderate to 35, Balanced to 50, Good to 60, Great to 75, Excellent to 90, Exceptional above. While the projection says this month ends short, it stops at {scoreBand(SCORE_CAP).word}.</span>
-              <span><i style={{ background: cond.color }} /><b>Trend</b> The score against the average of your last 3 months with income. 3 points higher is Improving, 3 lower is Declining, in between is Stable. New means no earlier month.</span>
-              <span><i style={{ background: boxes[0].color }} /><b>Vs last month</b> Money left this month minus money left last month.</span>
-              <span><i style={{ background: discColor }} /><b>Limit discipline</b> Days at or under your daily limit ({fmt(scoreNow.lim)}), out of the days you logged.</span>
-              <span><i style={{ background: cons.color }} /><b>Consistency</b> How even your daily spending is, from most to least: Steady, Consistent, Variable, Inconsistent, Erratic.</span>
-              <span className="info-foot">Only Score makes the number. Press the number for every sum.</span>
+              {/* short and plain (30 October 2026: "too long and text clutter … but i want the user to also easily understand"): what
+                  each figure is in a line; the cut-offs of the rating and the trend are in the code, not on the card */}
+              <span><i style={{ background: band.color }} /><b>Score</b> How much of your income you kept, from 0 to 100.</span>
+              <span><i style={{ background: band.color }} /><b>Rating</b> A word for your score, from Awful to Exceptional. Capped at {scoreBand(SCORE_CAP).word} while the month is on track to end short.</span>
+              <span><i style={{ background: cond.color }} /><b>Trend</b> Your score against the last 3 months: Improving, Stable or Declining. New means no earlier month.</span>
+              <span><i style={{ background: boxes[0].color }} /><b>Vs last month</b> What you have left, compared with last month.</span>
+              <span><i style={{ background: discColor }} /><b>Limit discipline</b> Days you stayed at or under your daily limit ({fmt(scoreNow.lim)}).</span>
+              <span><i style={{ background: cons.color }} /><b>Consistency</b> How steady your daily spending is, from Steady to Erratic.</span>
+              <span className="info-foot">Press the score to see the sums.</span>
             </InfoTip>
           </div>
           <div style={S.scoreLabel}>MONEY EFFICIENCY</div>
@@ -18932,6 +23908,11 @@ export default function PnlCalendar() {
   /* ---------- how the score is worked out (the number in the ring, pressed) ----------
      Every figure the score card shows, with the sum behind it. Only the first part makes the number itself. */
   const closeScoreView = () => { setScoreView("closing"); setTimeout(() => setScoreView(null), 190); };
+  /* "How the score is worked out" (30 October 2026, his words: "so much text clutter. replace some with graphics, remove unnecessary
+     text or sum stuff up without removing its ability for the user to easily read and understand and important points"). It was
+     five stacks of rows and notes. Now the score on top as the bar it is (spent against kept, of the income), the rating's seven
+     bands as one strip with a marker, and four small cards (trend, against last month, limit discipline, consistency), each a
+     figure, a bar and one line. The sums are still all there, as the bars' figures; what went is the words that said them twice */
   const renderScoreInfo = () => {
     if (!scoreNow) return null;
     const closing = scoreView === "closing";
@@ -18942,22 +23923,30 @@ export default function PnlCalendar() {
     const cond = hasInc ? trendOf(savePct) : { text: "NO INCOME", color: "#8a9299", delta: null };
     const cons = consistencyOf(st.cv);
     const pts = (n) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)} pts`;
+    const money = (n) => `${n < 0 ? "− " : ""}${fmt(Math.abs(n))}`;
     const BANDS = [[0, 15], [16, 35], [36, 50], [51, 60], [61, 75], [76, 90], [91, 100]];
-    const CONS = [["Steady", "up to 22%", 0.1], ["Consistent", "22–40%", 0.3], ["Variable", "40–60%", 0.5], ["Inconsistent", "60–80%", 0.7], ["Erratic", "over 80%", 0.9]];
-    const head = { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", color: "#8e969e", margin: "16px 0 7px" };
-    const row = { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 14, fontSize: 13.5, color: "#aab1b8", padding: "3px 0" };
-    const val = { fontWeight: 600, color: "#e8eaec", fontVariantNumeric: "tabular-nums", textAlign: "right" };
-    const sum = { ...row, marginTop: 4, paddingTop: 7, borderTop: "1px solid #33373b" };
-    const note = { fontSize: 12, color: "#8e969e", lineHeight: 1.5, margin: "6px 0 0" };
-    const chips = { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 };
-    const chip = (on, color) => ({ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 8, fontVariantNumeric: "tabular-nums",
-      color: on ? color : "#8e969e", background: on ? "rgba(255,255,255,0.06)" : "none", border: `1px solid ${on ? color : "rgba(255,255,255,0.10)"}` });
-    const Row = (label, value, color) => (
-      <div style={row}><span>{label}</span><span style={color ? { ...val, color } : val}>{value}</span></div>
+    const CONS = [["Steady", 22, 0.1], ["Consistent", 18, 0.3], ["Variable", 20, 0.5], ["Inconsistent", 20, 0.7], ["Erratic", 20, 0.9]];
+    const GREEN = "#8fd7a4", RED = "#e2808c";
+    const share = (x) => Math.max(0, Math.min(100, x));
+    const spentW = hasInc ? share((st.spent / st.inc) * 100) : 0;
+    const bandNow = BANDS.find(([lo, hi]) => (band.capped ? hi === SCORE_CAP : savePct >= lo && savePct <= hi)) || BANDS[0];
+    // two bars side by side, on one scale: [label, value shown, share of the longest, colour]
+    const duo = (rows) => (
+      <div className="sc-duo">
+        {rows.map(([label, text, w, c], i) => (
+          <div key={label} className="sc-duo-r">
+            <span>{label}</span>
+            <span className="sc-bar"><i style={{ width: `${share(w)}%`, background: c, animationDelay: `${180 + i * 70}ms` }} /></span>
+            <b>{text}</b>
+          </div>
+        ))}
+      </div>
     );
+    const kept0 = Math.abs(kept), prev = prevMonthSaved, top = Math.max(kept0, prev === null ? 0 : Math.abs(prev), 1);
+    const sw = Math.round(st.sd / (st.mean || 1) * 100);
     return (
       <div style={{ ...S.backdrop, animation: closing ? "fadeOut .19s ease both" : "fadeIn .2s ease backwards" }} onClick={closeScoreView}>
-        <div role="dialog" aria-modal="true" aria-label="How the score is worked out" className="glass" style={{ ...S.modal, width: "min(520px, 94vw)", maxHeight: "90vh", overflowY: "auto", animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }}
+        <div role="dialog" aria-modal="true" aria-label="How the score is worked out" className="glass sc-pop" style={{ ...S.modal, width: "min(560px, 94vw)", maxHeight: "90vh", overflowY: "auto", animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .4s var(--ease) backwards" }}
              onClick={(e) => e.stopPropagation()}>
           <div style={S.modalHead}>
             <span style={{ ...S.panelTitle, display: "inline-flex", alignItems: "center", gap: 9 }}>
@@ -18967,48 +23956,65 @@ export default function PnlCalendar() {
             <button className="x-btn" style={S.closeBtn} onClick={closeScoreView}>✕</button>
           </div>
 
-          <div style={{ ...head, marginTop: 2 }}>THE SCORE · {MONTHS_FULL[month].toUpperCase()} {year}</div>
-          {Row("Income", fmt(st.inc))}
-          {Row("Spent", `− ${fmt(st.spent)}`)}
-          <div style={sum}><span>Kept</span><span style={{ ...val, color: kept >= 0 ? "#8fd7a4" : "#e2808c" }}>{kept < 0 ? "− " : ""}{fmt(Math.abs(kept))}</span></div>
-          {hasInc
-            ? <div style={row}><span>Kept ÷ income = {fmt(Math.abs(kept))} ÷ {fmt(st.inc)}</span><span style={{ ...val, fontSize: 20, fontWeight: 800, color: band.color }}>{savePct}</span></div>
-            : <p style={note}>No income is logged this month, so there is no score yet.</p>}
-          <p style={note}>The score is the share of the month's income you kept, from 0 to 100. Spending more than you earned gives 0. Money put into a goal is not spending, so it counts as kept.</p>
-          <div style={chips}>
-            {BANDS.map(([lo, hi]) => { const b = scoreBand(hi), on = hasInc && (band.capped ? hi === SCORE_CAP : savePct >= lo && savePct <= hi);
-              return <span key={lo} style={chip(on, b.color)}>{lo}–{hi} {b.word}</span>; })}
+          <div className="sc-k">THE SCORE · {MONTHS_FULL[month].toUpperCase()} {year}</div>
+          {hasInc ? (
+            <>
+              <div className="sc-hero">
+                <div className="sc-num" style={{ color: band.color }}><b>{savePct}</b><span>{band.word}</span></div>
+                <div className="sc-split">
+                  <div className="sc-bar tall"><i style={{ width: "100%", background: band.color }} /><i style={{ width: `${spentW}%`, background: RED, animationDelay: "120ms" }} /></div>
+                  <div className="sc-legend">
+                    <span><i style={{ background: RED }} />Spent {fmt(st.spent)}</span>
+                    <span><i style={{ background: band.color }} />Kept {money(kept)}</span>
+                    <span>of {fmt(st.inc)} income</span>
+                  </div>
+                </div>
+              </div>
+              <p className="sc-cap">Score = kept ÷ income, out of 100. Overspending scores 0; money put into a goal counts as kept.</p>
+              <div className="sc-strip">
+                {BANDS.map(([lo, hi]) => <span key={lo} className={bandNow[0] === lo ? "on" : ""} style={{ flexGrow: hi - lo + 1, background: scoreBand(hi).color }} />)}
+                <em style={{ left: `${share(savePct)}%`, background: band.color }} />
+              </div>
+              <div className="sc-strip-l"><span>0</span><span style={{ color: band.color }}>{band.word} · {bandNow[0]}–{bandNow[1]}</span><span>100</span></div>
+              {band.capped && <p className="sc-cap sc-warn">{savePct} would read {scoreBand(savePct).word}, but this month is on track to end about {fmt(projShort)} short, so the rating stops at {band.word}.</p>}
+            </>
+          ) : <p className="sc-cap">No income is logged this month, so there is no score yet.</p>}
+
+          <div className="sc-grid">
+            <div className="sc-card">
+              <div className="sc-k">TREND</div>
+              <div className="sc-big" style={{ color: cond.color }}>{cond.text}{cond.delta !== null && cond.delta !== undefined && <small>{pts(cond.delta)}</small>}</div>
+              {duo([["This month", hasInc ? `${savePct}` : "—", hasInc ? (savePct / Math.max(savePct, savingsTrend || 0, 10)) * 100 : 0, band.color],
+                    ...(savingsTrend !== null ? [["Last months", savingsTrend.toFixed(1), (savingsTrend / Math.max(savePct, savingsTrend, 10)) * 100, "#8fa3b8"]] : [])])}
+              <p className="sc-cap">{savingsTrend === null ? "No earlier month with income yet." : "Average of up to 3 earlier months. 3+ points apart is Improving or Declining."}</p>
+            </div>
+
+            <div className="sc-card">
+              <div className="sc-k">VS LAST MONTH</div>
+              <div className="sc-big" style={{ color: prev === null ? "#8e969e" : kept - prev >= 0 ? GREEN : RED }}>{prev === null ? "—" : `${kept - prev >= 0 ? "+ " : "− "}${fmt(Math.abs(kept - prev))}`}</div>
+              {duo([["This month", money(kept), (kept0 / top) * 100, kept >= 0 ? GREEN : RED],
+                    ["Last month", prev === null ? "none" : money(prev), prev === null ? 0 : (Math.abs(prev) / top) * 100, "#8fa3b8"]])}
+              <p className="sc-cap">Money kept, this month against last.</p>
+            </div>
+
+            <div className="sc-card">
+              <div className="sc-k">LIMIT DISCIPLINE</div>
+              <div className="sc-big" style={{ color: "#e3cd77" }}>{Math.round(st.disc * 100)}%</div>
+              <div className="sc-bar tall"><i style={{ width: `${share(st.days ? (st.green / st.days) * 100 : 0)}%`, background: GREEN }} />{st.red > 0 && <i style={{ left: `${share(st.days ? (st.green / st.days) * 100 : 0)}%`, width: `${share(st.days ? (st.red / st.days) * 100 : 0)}%`, background: RED, animationDelay: "120ms" }} />}</div>
+              <p className="sc-cap">{st.green} of {st.days} days at or under {fmt(st.lim)}{st.red ? `, ${st.red} over` : ""}.</p>
+            </div>
+
+            <div className="sc-card">
+              <div className="sc-k">CONSISTENCY</div>
+              <div className="sc-big" style={{ color: cons.color }}>{cons.word}</div>
+              <div className="sc-strip sm">
+                {CONS.map(([w, len, mid]) => <span key={w} className={cons.word === w ? "on" : ""} style={{ flexGrow: len, background: consistencyOf(mid).color }} />)}
+                <em style={{ left: `${share(sw)}%`, background: cons.color }} />
+              </div>
+              <p className="sc-cap">Daily spending swings ± {fmt(Math.round(st.sd))} around {fmt(Math.round(st.mean))}: {sw}% of the average.</p>
+            </div>
           </div>
-          {band.capped && <p style={note}>{savePct} would read {scoreBand(savePct).word}. The projection has this month ending about {fmt(projShort)} short, so the rating stops at {band.word} for as long as it does.</p>}
-
-          <div style={head}>TREND · <span style={{ color: cond.color }}>{cond.text}</span></div>
-          {Row("This month", hasInc ? `${savePct}` : "—")}
-          {Row("Average of the last months with income (3 at most)", savingsTrend === null ? "none yet" : savingsTrend.toFixed(1))}
-          {cond.delta !== null && cond.delta !== undefined && <div style={sum}><span>Difference</span><span style={{ ...val, color: cond.color }}>{pts(cond.delta)}</span></div>}
-          <p style={note}>3 points or more above the average is Improving, 3 or more below is Declining, in between is Stable.</p>
-
-          <div style={head}>VS LAST MONTH</div>
-          {Row("Kept this month", `${kept < 0 ? "− " : ""}${fmt(Math.abs(kept))}`)}
-          {Row("Kept last month", prevMonthSaved === null ? "nothing logged" : `${prevMonthSaved < 0 ? "− " : ""}${fmt(Math.abs(prevMonthSaved))}`)}
-          {prevMonthSaved !== null && <div style={sum}><span>Difference</span>
-            <span style={{ ...val, color: kept - prevMonthSaved >= 0 ? "#8fd7a4" : "#e2808c" }}>{kept - prevMonthSaved >= 0 ? "+ " : "− "}{fmt(Math.abs(kept - prevMonthSaved))}</span></div>}
-
-          <div style={head}>LIMIT DISCIPLINE</div>
-          {Row("Daily limit", fmt(st.lim))}
-          {Row("Days with spending logged", st.days)}
-          {Row("At or under the limit", st.green, "#8fd7a4")}
-          {Row("Over the limit", st.red, st.red ? "#e2808c" : undefined)}
-          <div style={sum}><span>{st.green} ÷ {st.days}</span><span style={{ ...val, color: "#e3cd77" }}>{Math.round(st.disc * 100)}%</span></div>
-
-          <div style={head}>CONSISTENCY · <span style={{ color: cons.color }}>{cons.word}</span></div>
-          {Row("Average spent on a logged day", fmt(Math.round(st.mean)))}
-          {Row("Usual swing from that average", `± ${fmt(Math.round(st.sd))}`)}
-          <div style={sum}><span>Swing ÷ average</span><span style={{ ...val, color: cons.color }}>{Math.round(st.sd / (st.mean || 1) * 100)}%</span></div>
-          <div style={chips}>
-            {CONS.map(([w, range, mid]) => { const c = consistencyOf(mid), on = c.word === cons.word;
-              return <span key={w} style={chip(on, c.color)}>{w} {range}</span>; })}
-          </div>
-          <p style={note}>Trend, last month, limit discipline and consistency are shown beside the score. They don't change the number.</p>
+          <p className="sc-cap sc-foot">Only the score is the number. The four above sit beside it and don't change it.</p>
         </div>
       </div>
     );
@@ -19283,10 +24289,8 @@ export default function PnlCalendar() {
               {/* hero */}
               <div {...tile("wr-hero", r.total >= 0 ? "#3ddc97" : "#ff5d6c", null)}>
                 <div style={S.wrLabel}>{title}</div>
-                <div className="wr-hero-num" style={{ ...S.wrHeroNum,
-                     backgroundImage: r.total >= 0 ? "linear-gradient(100deg, #ffffff 10%, #9ff2cb 55%, #3ddc97)" : "linear-gradient(100deg, #ffffff 10%, #ffb3ba 55%, #ff5d6c)" }}>
-                  <CountNum value={r.total} duration={900} render={signed} />
-                </div>
+                <WrHeroNum value={r.total} render={signed}
+                     grad={{ backgroundImage: r.total >= 0 ? "linear-gradient(100deg, #ffffff 10%, #9ff2cb 55%, #3ddc97)" : "linear-gradient(100deg, #ffffff 10%, #ffb3ba 55%, #ff5d6c)" }} />
                 <div style={S.wrHeroSub}>
                   {isYear ? "Net for the year (income − expenses)" : "PnL for the month against your daily limit"}
                   {kept !== null && <><br /><span style={{ color: "#e8eaec" }}>You kept <b>{Math.max(0, kept)}%</b> of the {fmt(r.incTot)} you earned.</span></>}
@@ -19432,6 +24436,37 @@ export default function PnlCalendar() {
                 )}
                 {r.placeList.length > 0 && <span className="msym wr-more">arrow_outward</span>}
               </div>
+
+              {/* on average: what each kind of spending comes to per day, or (yearly wrapped) per month */}
+              {r.catRows.length > 0 && (() => {
+                const per = isYear && recapAvg === "month" ? "month" : "day";
+                const n = per === "month" ? r.avgMonths : r.avgDays;
+                const avgOf = (v) => v / (n || 1);
+                const from = new Date(r.firstAt);
+                return (
+                  <div {...tile("wr-avg", "#7fb6e0", null)}>
+                    <div className="wr-avg-head">
+                      <div style={{ ...S.wrLabel, marginBottom: 0 }}><span className="msym wr-ico">{per === "month" ? "calendar_month" : "today"}</span>On average, per {per}</div>
+                      {isYear && <SlideSeg value={per} onPick={setRecapAvg} options={[["day", "Daily"], ["month", "Monthly"]]} />}
+                    </div>
+                    <div className="wr-avg-total">
+                      <CountNum value={avgOf(r.spentTot)} duration={600} render={fmtLive} /><small>spent per {per}</small>
+                    </div>
+                    <div style={S.wrSmall}>across {n} {per}{n === 1 ? "" : "s"}, counting from {from.getUTCDate()} {MONTHS_SHORT[from.getUTCMonth()]}</div>
+                    <div className="wr-avg-grid">
+                      {r.catRows.map((c) => (
+                        <div key={c.c} className="wr-avg-c">
+                          <span className="wr-avg-ico" style={{ color: CAT_COLORS[c.c], background: `${CAT_COLORS[c.c]}22` }}><span className="msym">{CATS[c.c].icon}</span></span>
+                          <span>
+                            <span style={{ ...S.wrSmall, display: "block", marginTop: 0 }}>{CATS[c.c].label}</span>
+                            <span className="wr-avg-v"><CountNum value={avgOf(c.v)} duration={600} render={fmtLive} /></span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* top-10 panel that opens under the grid */}
@@ -19485,8 +24520,7 @@ export default function PnlCalendar() {
     const rest = insights.filter((it) => !main.includes(it));
     const shown = insOpen && !insClosing;
     return (
-      <div className="ins-box">
-        <SecHead icon="lightbulb" title="Insights" />
+      <InsFold count={insights.length}>
         <div key={`ins-main-${year}-${month}`}>
           {insights.length === 0
             ? <div style={S.insEmpty}>Not enough data yet. Insights appear once you've logged a few days.</div>
@@ -19510,7 +24544,7 @@ export default function PnlCalendar() {
             </button>
           </>
         )}
-      </div>
+      </InsFold>
     );
   };
 
@@ -19551,7 +24585,7 @@ export default function PnlCalendar() {
                       <span key={goalIconOf(g)} className="msym goal-sym-ico" style={{ color: done ? "#8fd7a4" : undefined }}>{goalIconOf(g)}</span>
                     </button>
                     {goalIconMenu === g.id && (
-                      <div className={`goal-sym-pop glass${gi >= 2 && gi >= list.length - 2 ? " up" : ""}`}>
+                      <div className={`goal-sym-pop glass lg-float${gi >= 2 && gi >= list.length - 2 ? " up" : ""}`}>
                         <button className={`goal-sym-opt auto${!g.icon ? " on" : ""}`} title="Auto: pick from the goal's name" onClick={() => setGoalIcon(g.id, null)}>
                           <span className="msym" style={{ fontSize: 18 }}>auto_awesome</span><span>Auto</span>
                         </button>
@@ -19706,8 +24740,9 @@ export default function PnlCalendar() {
     const xTickEls = (isMonthMode
       ? Array.from({ length: Math.floor(N / 5) }, (_, k) => ({ x: PL + (((k + 1) * 5) / N) * iw, label: String((k + 1) * 5) }))
       : MONTHS_SHORT.map((nm, m) => ({ x: X(m), label: nm })));
-    const Tooltip = ({ x, y, label, value }) => (
-      <g className="ch-tip" pointerEvents="none">
+    // (a plain function, not a component made in this render: one made here was a new kind of element at every render)
+    const tooltipEl = ({ x, y, label }) => (
+      <g key={label} className="ch-tip" pointerEvents="none">
         <line x1={x} y1={PT} x2={x} y2={PT + ih} stroke="#4a5055" strokeWidth="1" />
         <circle className="tip-dot" cx={x} cy={y} r="5" fill="#ffffff" />
       </g>
@@ -19726,8 +24761,8 @@ export default function PnlCalendar() {
       }
       return s;
     };
-    const HGrad = ({ id, pts, on, off }) => (
-      <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={PL} y1="0" x2={PL + iw} y2="0">
+    const hGrad = (id, pts, on, off) => (
+      <linearGradient key={id} id={id} gradientUnits="userSpaceOnUse" x1={PL} y1="0" x2={PL + iw} y2="0">
         {colorStops(pts, on, off).map((s, k) => <stop key={k} offset={s.o} stopColor={s.c} />)}
       </linearGradient>
     );
@@ -19794,10 +24829,10 @@ export default function PnlCalendar() {
               <stop offset="0%" stopColor={GREY} stopOpacity="0.34" />
               <stop offset="100%" stopColor={GREY} stopOpacity="0.05" />
             </linearGradient>
-            <HGrad id="pnlLineG" pts={full} on="#3ddc97" off={GREY} />
-            <HGrad id="pnlLineR" pts={full} on="#ff5d6c" off={GREY} />
-            <HGrad id="pnlMaskData" pts={full} on="#fff" off="#000" />
-            <HGrad id="pnlMaskEmpty" pts={full} on="#000" off="#fff" />
+            {hGrad("pnlLineG", full, "#3ddc97", GREY)}
+            {hGrad("pnlLineR", full, "#ff5d6c", GREY)}
+            {hGrad("pnlMaskData", full, "#fff", "#000")}
+            {hGrad("pnlMaskEmpty", full, "#000", "#fff")}
             <mask id="pnlDataMask" maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
               <rect x="0" y="0" width={W} height={H} fill="url(#pnlMaskData)" />
             </mask>
@@ -19847,7 +24882,7 @@ export default function PnlCalendar() {
                       onMouseEnter={() => setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: fmt(p.v) })}
                       onClick={() => chartGo(isMonthMode, p.i)} />
               ))}
-              <HoverSlot hub={hoverHubP} render={(hoverPt) => <Tooltip key={hoverPt.label} {...hoverPt} />} />
+              <HoverSlot hub={hoverHubP} render={(hoverPt) => tooltipEl(hoverPt)} />
             </Fragment>
           )}
         </svg>
@@ -19916,7 +24951,7 @@ export default function PnlCalendar() {
             ) : null)}
             {showExp && expFull.length > 1 && (
               <>
-                <defs><HGrad id="expLineG" pts={expFull} on="#ff5d6c" off={GREY} /></defs>
+                <defs>{hGrad("expLineG", expFull, "#ff5d6c", GREY)}</defs>
                 <path className="line-sweep slow ch-morph" pathLength="1" d={expLine} fill="none"
                       stroke="url(#expLineG)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
               </>
@@ -19929,7 +24964,7 @@ export default function PnlCalendar() {
                     onMouseEnter={() => setHoverPt({ x: p.x, y: p.y, label: labelOf(p.i), value: fmt(p.v) })}
                     onClick={() => chartGo(isMonthMode, p.i)} />
             ))}
-            <HoverSlot hub={hoverHubP} render={(hoverPt) => <Tooltip key={hoverPt.label} {...hoverPt} />} />
+            <HoverSlot hub={hoverHubP} render={(hoverPt) => tooltipEl(hoverPt)} />
           </Fragment>
         )}
       </svg>
@@ -20478,6 +25513,22 @@ export default function PnlCalendar() {
     clearTimeout(homeTimer.current);
     homeTimer.current = setTimeout(resetToWallets, OPEN_COVER_MS);
   };
+  // the footer's quick apps: straight into another app, the page cross-fading (glassFade). Their icons are the wallet of the
+  // year on screen (a year with no wallet: this year's) and the trading app last entered, as every side's footer shows them
+  const walletOfYear = WALLETS.findIndex((w) => (w.year || 0) === year - now.getFullYear());
+  const footApps = { wallet: walletOfYear < 0 ? HOME_WALLET : walletOfYear, trade: tradeKind };
+  const jumpApp = (kind) => glassFade(() => flushSync(() => {
+    setSelected(null); setCatView(null); setChartOpen(false); setChartAt(null); setCatMenu(null);
+    setView(kind === "finance" ? (homeOn ? "home" : "year") : kind === "trade" ? "trade" : "health");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }));
+  // old exports (xcleanRun): a round 20 seconds after launch, then every 6 hours; the notice when files are to go
+  const [xNote, setXNote] = useState(null);
+  useEffect(() => {
+    const go = () => xcleanRun().then((r) => { if (r && r.soon > 0) setXNote({ soon: r.soon, at: Date.now() }); });
+    const t = setTimeout(go, 20000), iv = setInterval(go, 6 * 3600e3);
+    return () => { clearTimeout(t); clearInterval(iv); };
+  }, []);
   const resetToWallets = () => {
     setSelected(null);
     setCatView(null);
@@ -20508,9 +25559,11 @@ export default function PnlCalendar() {
     const home = view === "trade" || view === "health" ? homeWallet : ofYear < 0 ? HOME_WALLET : ofYear;
     setHomeWallet(home);
     setActiveWallet(home);
-    setChoice(null);
-    setPickFocus("wallet");
-    setMarketFocus("crypto");
+    // back to where this app is chosen (28 October 2026): the wallets for finance, the trading panel (its side in the
+    // middle) for a trading side, the selections panel with the rings in the middle for Health
+    if (view === "trade") { setChoice("markets"); setPickFocus("coin"); setMarketFocus(tradeKind); }
+    else if (view === "health") { setChoice(null); setPickFocus("rings"); setMarketFocus("crypto"); }
+    else { setChoice("wallet"); setPickFocus("wallet"); setMarketFocus("crypto"); }
     setHoverCoin(false);
     setTradeIn(false);
     setGreetOn(false);
@@ -20688,7 +25741,7 @@ export default function PnlCalendar() {
         /* a button reached with the keyboard is ringed in the same white as a box in use (the engine's own ring is
            the system's accent colour). :where() keeps it as weak as it can be, so a button that says outline: none
            further down still has none */
-        :where(button, a, [role="button"], [tabindex]):focus-visible { outline: 2px solid rgba(255,255,255,0.7); outline-offset: 2px; }
+        html.kb :where(button, a, [role="button"], [tabindex]):focus-visible { outline: 2px solid rgba(255,255,255,0.7); outline-offset: 2px; }
         * { -webkit-font-smoothing: antialiased; }
 
         .stage-bg {
@@ -20934,13 +25987,15 @@ export default function PnlCalendar() {
           background: rgba(255,255,255,0.055) !important; border: 1px solid rgba(255,255,255,0.16) !important;
           backdrop-filter: blur(22px) saturate(170%); -webkit-backdrop-filter: blur(22px) saturate(170%);
           box-shadow: 0 12px 30px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.22) !important;
-          transition: color .18s ease, transform .22s var(--ease-soft);
+          transition: color .18s ease, transform .22s var(--ease-soft), translate .55s var(--ease);
         }
-        .calc-fab.glass.above { bottom: 112px; }
+        /* (23 October 2026, the jumps hunt) its raised place on the yearly panel is an offset that glides, the separate
+           translate (a hover lift and a press stay transform's): it jumped 86px between the views, as bottom 112px */
+        .calc-fab.glass.above { translate: 0 -86px; }
         .calc-fab.glass:hover { color: #ffffff; transform: translateY(-2px); }
         .calc-fab.glass:active { transform: scale(0.94); }
         .calc-fab .msym { font-size: 23px; }
-        @media (max-width: 1420px) { .calc-fab.glass:not(.above) { bottom: 88px; } }
+        @media (max-width: 1420px) { .calc-fab.glass:not(.above) { translate: 0 -62px; } }
         .pc-modal { width: min(1080px, 95vw) !important; padding: 18px 22px 22px !important; }
         .glass > .pc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; z-index: 3; }
         .pc-cur2 { animation: fadeRight .3s ease backwards; }
@@ -21246,7 +26301,10 @@ export default function PnlCalendar() {
             linear-gradient(103deg, #2f6b53 0%, #123326 20%, #a8dcc2 44%, #102c21 66%, #3a7d61 100%);
         }
 
+        /* (the jumps hunt) the year arrows come in where they stand, as the panel does, instead of popping up */
+        @keyframes ynavIn { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
         .year-nav {
+          animation: ynavIn .5s var(--ease) .12s backwards;
           position: fixed; right: 26px; bottom: 26px; z-index: 30;
           display: flex; flex-direction: column; align-items: center; gap: 2px;
           border-radius: 16px; padding: 7px 6px;
@@ -22166,6 +27224,15 @@ export default function PnlCalendar() {
                    background: radial-gradient(90% 80% at 0% 0%, color-mix(in srgb, var(--acc) 24%, transparent), transparent 65%),
                                radial-gradient(70% 70% at 100% 100%, rgba(127,182,224,0.14), transparent 70%), rgba(255,255,255,0.04); }
         .wr-tile.wr-wide { grid-column: span 2; }
+        .wr-tile.wr-avg { grid-column: 1 / -1; }
+        .wr-avg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+        .wr-avg-total { display: flex; align-items: baseline; gap: 8px; font-size: 25px; font-weight: 800; letter-spacing: -0.02em; color: #e8eaec; font-variant-numeric: tabular-nums; }
+        .wr-avg-total small { font-size: 12px; font-weight: 600; letter-spacing: 0; color: #8a9299; }
+        .wr-avg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+        .wr-avg-c { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.035); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); }
+        .wr-avg-ico { width: 34px; height: 34px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .wr-avg-ico .msym { font-size: 19px; }
+        .wr-avg-v { display: block; font-size: 16px; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; }
         .wr-tile.wr-row { display: flex; align-items: center; gap: 14px; }
         .wr-ico { font-size: 15px !important; color: var(--acc); }
         @keyframes wrIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
@@ -22297,10 +27364,87 @@ export default function PnlCalendar() {
         .goal-icon-btn:hover { color: var(--c-ink); background: rgba(255,255,255,0.07); }
         .goal-icon-btn.del:hover { color: var(--c-red-dim); }
         .goal-act.add { color: var(--c-green-soft); }
-        .goal-new { display: inline-flex; align-items: center; gap: 6px; margin: 12px 0 4px; background: none;
-                    border: 1px dashed rgba(255,255,255,0.16); color: var(--c-ink-3); border-radius: 10px; padding: 7px 12px;
-                    font-size: 12.5px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .22s var(--ease); }
-        .goal-new:hover { color: var(--c-ink); border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04); }
+        /* any stretch of days: the small way in under the month's tiles, and its pop-up (RangePop) */
+        .hero-range-row { display: flex; justify-content: flex-end; margin: 8px -8px -10px 0; }
+        .hero-range { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: none; border-radius: 7px; background: none; cursor: pointer;
+                      font: inherit; font-size: 11px; font-weight: 600; color: #6f777f; transition: color .16s ease, background-color .16s ease; }
+        .hero-range .msym { font-size: 14px; }
+        .hero-range:hover { color: var(--c-ink-2); background: rgba(255,255,255,0.06); }
+        .rg-pop { display: flex; flex-direction: column; width: min(720px, calc(100vw - 48px)); max-height: min(720px, calc(100vh - 64px)); padding: 22px 20px 18px; border-radius: 28px; overflow: hidden; }
+        .rg-kicker { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #8a9299; }
+        .rg-kicker .msym { font-size: 15px; color: #7fb6e0; }
+        .rg-title { margin-top: 4px; font-size: 20px; font-weight: 700; color: var(--c-ink-hi); font-variant-numeric: tabular-nums; }
+        .rg-title small { margin-left: 10px; font-size: 12.5px; font-weight: 600; color: #8e969e; }
+        .rg-body { min-height: 0; overflow-y: auto; display: grid; grid-template-columns: 268px minmax(0, 1fr); gap: 22px; padding-top: 6px; }
+        @media (max-width: 720px) { .rg-body { grid-template-columns: minmax(0, 1fr); } }
+        .rg-side { display: flex; flex-direction: column; gap: 12px; }
+        .rg-cal { padding: 10px; border-radius: 18px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.06); }
+        .rg-cal-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .rg-cal-h b { font-size: 13px; color: var(--c-ink-hi); }
+        .rg-cal-h button { width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; display: grid; place-items: center; cursor: pointer; background: none; color: var(--c-ink-2); }
+        .rg-cal-h button:hover { background: rgba(255,255,255,0.08); color: #ffffff; }
+        .rg-cal-h .msym { font-size: 20px; }
+        .rg-cal-g { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+        .rg-dow { text-align: center; font-size: 10px; font-weight: 700; color: #6f777f; padding: 2px 0 4px; }
+        .rg-cal-g button { position: relative; height: 30px; padding: 0; border: none; border-radius: 9px; cursor: pointer; background: none; font: inherit; font-size: 12.5px;
+                           font-weight: 500; color: var(--c-ink-2); font-variant-numeric: tabular-nums; transition: background-color .12s ease, color .12s ease; }
+        .rg-cal-g button:hover { background: rgba(255,255,255,0.08); color: #ffffff; }
+        .rg-cal-g button.has::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: #6f777f; }
+        .rg-cal-g button.today { color: #7fb6e0; font-weight: 700; }
+        .rg-cal-g button.in { background: rgba(120,165,225,0.14); color: #dfe9f6; border-radius: 4px; }
+        .rg-cal-g button.edge { background: #8ec8f8; color: #0d1a26; font-weight: 700; border-radius: 9px; }
+        .rg-cal-g button.edge::after { background: #0d1a26; }
+        .rg-say { margin-top: 6px; font-size: 11.5px; color: #8e969e; text-align: center; }
+        .rg-pre { display: flex; flex-wrap: wrap; gap: 6px; }
+        .rg-main { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+        .rg-cap { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8a9299; }
+        .rg-big { display: flex; flex-direction: column; gap: 4px; }
+        .rg-num { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; color: #ff8d97; font-variant-numeric: tabular-nums; line-height: 1.1; }
+        .rg-sub { font-size: 12.5px; color: #8e969e; }
+        .rg-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .rg-tiles > div { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.06); }
+        .rg-tiles b { font-size: 16px; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; }
+        .rg-tiles b small, .rg-tiles > div > small { font-size: 11.5px; font-weight: 500; color: #8e969e; }
+        .rg-stack { margin-top: 0; }
+        .rg-cats { display: flex; flex-direction: column; gap: 4px; }
+        .rg-cat { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 38px; align-items: center; gap: 8px; font-size: 13px; color: var(--c-ink-2); }
+        .rg-cat .msym { font-size: 17px; }
+        .rg-cat b { color: #e8eaec; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .rg-cat small { text-align: right; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .rg-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+        .rg-facts > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .rg-facts b { font-size: 13.5px; font-weight: 700; color: #e8eaec; overflow-wrap: anywhere; }
+        .rg-facts small { font-size: 11.5px; font-weight: 500; color: #8e969e; }
+        .rg-none { padding: 18px 0; font-size: 13px; color: #8e969e; }
+        /* subscriptions (Subs): a row each, the day picker and the category chips when one is added or changed */
+        .sub-sum { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 0 6px 10px; font-size: 12.5px; color: #8e969e; }
+        .sub-sum b { color: #e8eaec; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .sub-list { display: flex; flex-direction: column; gap: 2px; }
+        .sub-item { animation: fadeIn .3s ease backwards; transition: opacity .24s ease, transform .26s ease; }
+        .sub-item.leaving { opacity: 0; transform: translateX(-8px); }
+        .sub-row { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-radius: 12px; transition: background-color .16s ease; }
+        .sub-row:hover { background: rgba(255,255,255,0.035); }
+        .sub-ico { flex: none; width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; }
+        .sub-ico .msym { font-size: 19px; }
+        .sub-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .sub-tx b { font-size: 14px; font-weight: 700; color: #e8eaec; overflow-wrap: anywhere; }
+        .sub-tx small { font-size: 12px; color: #8e969e; }
+        .sub-tx small em { font-style: normal; color: #ffd069; }
+        .sub-amt { flex: none; font-size: 13.5px; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .sub-form { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 6px 4px; }
+        .sub-form-row { align-self: stretch; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .sub-cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #8a9299; margin-bottom: -4px; }
+        .sub-days { display: grid; grid-template-columns: repeat(7, 36px); gap: 4px; }
+        .sub-days button { height: 30px; padding: 0; border: none; border-radius: 9px; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--c-ink-2);
+                           background: rgba(255,255,255,0.045); font-variant-numeric: tabular-nums; transition: background-color .15s ease, color .15s ease; }
+        .sub-days button:hover { color: #ffffff; background: rgba(255,255,255,0.1); }
+        .sub-days button.on { color: #a9c6ea; background: rgba(120,165,225,0.16); box-shadow: inset 0 0 0 1px rgba(120,165,225,0.4); }
+        .sub-first { font-size: 12px; line-height: 1.4; color: #8e969e; }
+        /* (31 October 2026: the dashed outline of the early days became a pill, as the newer add buttons are) */
+        .goal-new { display: inline-flex; align-items: center; gap: 6px; margin: 12px 0 4px; height: 32px; background: rgba(255,255,255,0.05);
+                    border: 1px solid rgba(255,255,255,0.09); color: var(--c-ink-2); border-radius: 99px; padding: 0 14px 0 10px;
+                    font-size: 12.5px; font-weight: 600; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .22s var(--ease); }
+        .goal-new:hover { color: var(--c-ink-hi); border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.09); }
         /* month-end projection (money flow, above the insights) */
         .proj-box { margin-top: 14px; border-radius: 14px; background: rgba(255,255,255,0.03);
                     border: 1px solid rgba(255,255,255,0.07); padding: 2px 12px 12px;
@@ -22312,7 +27456,10 @@ export default function PnlCalendar() {
         .sec-head .msym { font-size: 18px; color: var(--c-ink-2); }
         .sec-t { font-size: 11.5px; font-weight: 700; color: var(--c-ink-3); text-transform: uppercase; letter-spacing: 0.14em; }
         .sec-r { margin-left: auto; font-size: 12px; color: var(--c-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .ins-box .sec-head { padding-bottom: 11px; }
+        .ins-box .sec-head { padding-bottom: 11px; flex: 1; }
+        .ins-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 0; border: none; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+        .ins-head:hover .plain-arrow { color: var(--c-ink); }
+        .ins-head .sec-r { margin-left: 4px; }
         .debt-sec .sec-head { padding: 0 0 12px; }
         .wp .sec-head { padding: 0 0 9px; }
         .proj-main { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding: 0 2px; }
@@ -22351,6 +27498,42 @@ export default function PnlCalendar() {
                     border-top: 1px solid rgba(255,255,255,0.05); cursor: pointer; padding: 10px 0; color: var(--c-ink-3); font: inherit;
                     font-size: 12.5px; font-weight: 600; transition: color .16s ease, transform .22s var(--ease); }
         .ins-more:hover, .ins-more:hover .plain-arrow { color: var(--c-ink); }
+        /* "How the score is worked out": the score as a bar, the rating as a strip with a marker, four small cards */
+        .sc-k { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; color: #8e969e; margin: 14px 0 8px; }
+        .sc-pop > .sc-k:first-of-type { margin-top: 2px; }
+        .sc-hero { display: flex; align-items: center; gap: 18px; }
+        .sc-num { flex: none; display: flex; flex-direction: column; align-items: flex-start; min-width: 92px; }
+        .sc-num b { font-size: 46px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+        .sc-num span { margin-top: 5px; font-size: 12.5px; font-weight: 700; }
+        .sc-split { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+        .sc-bar { position: relative; display: block; height: 6px; border-radius: 99px; background: rgba(255,255,255,0.07); overflow: hidden; }
+        .sc-bar.tall { height: 12px; }
+        .sc-bar > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px; transform-origin: left; animation: scGrow .55s var(--ease) backwards; }
+        .sc-hero .sc-bar > i:nth-child(2) { left: 0; border-radius: 99px 0 0 99px; }
+        @keyframes scGrow { from { transform: scaleX(0); } }
+        .sc-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: #aab1b8; font-variant-numeric: tabular-nums; }
+        .sc-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+        .sc-legend i { width: 8px; height: 8px; border-radius: 3px; }
+        .sc-cap { margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: #8e969e; }
+        .sc-warn { color: #e3cd77; }
+        .sc-foot { margin-top: 14px; }
+        .sc-strip { position: relative; display: flex; gap: 2px; margin-top: 12px; height: 8px; }
+        .sc-strip > span { height: 100%; border-radius: 3px; opacity: 0.3; transition: opacity .2s ease; }
+        .sc-strip > span.on { opacity: 1; }
+        .sc-strip > em { position: absolute; top: -4px; width: 4px; height: 16px; margin-left: -2px; border-radius: 3px; box-shadow: 0 0 0 2px #1d2024; }
+        .sc-strip.sm { height: 7px; margin-top: 4px; }
+        .sc-strip.sm > em { top: -4px; height: 15px; }
+        .sc-strip-l { display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; font-weight: 600; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .sc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+        .sc-card { min-width: 0; padding: 12px 14px 13px; border-radius: 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column; }
+        .sc-card .sc-k { margin: 0 0 6px; }
+        .sc-card .sc-cap { margin-top: auto; padding-top: 9px; font-size: 11.5px; }
+        .sc-big { font-size: 20px; font-weight: 800; line-height: 1.15; margin-bottom: 9px; font-variant-numeric: tabular-nums; }
+        .sc-big small { margin-left: 8px; font-size: 12px; font-weight: 700; opacity: 0.85; }
+        .sc-duo { display: flex; flex-direction: column; gap: 6px; }
+        .sc-duo-r { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; align-items: center; gap: 8px; font-size: 11.5px; color: #8e969e; }
+        .sc-duo-r b { min-width: 36px; text-align: right; font-weight: 700; color: #e8eaec; font-variant-numeric: tabular-nums; }
+        @media (max-width: 520px) { .sc-grid { grid-template-columns: 1fr; } .sc-hero { flex-direction: column; align-items: stretch; } }
         .ins-count { font-size: 11px; font-weight: 700; color: #1e2124; background: var(--c-ink-2); border-radius: 99px;
                      padding: 1px 7px; line-height: 16px; }
         .ins-row { display: flex; align-items: flex-start; gap: 11px; padding: 9px 0;
@@ -22363,6 +27546,8 @@ export default function PnlCalendar() {
         /* completed: a thin strike that draws itself across the name */
         .goal-name-text.done, .debt-name.done { color: var(--c-ink-3); }
         .debt-name { position: relative; padding: 1px 3px; margin: -1px -3px; }
+        /* a debt's description (29 October 2026): one grey line under its name, in line with the name past the icon */
+        .debt-note { margin: 3px 0 0 27px; font-size: 12px; line-height: 1.4; color: var(--c-mute-2); overflow-wrap: anywhere; }
         /* debts: a section of the Goals card, under the goals */
         .debt-sec { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--c-line); }
         .debt-group { display: flex; align-items: center; gap: 8px; margin: 12px 2px 0; font-size: 11px; font-weight: 700; letter-spacing: .12em;
@@ -22544,8 +27729,13 @@ export default function PnlCalendar() {
         .rule-empty-t { flex: 1 1 360px; max-width: 72ch; font-size: 13px; line-height: 1.5; color: var(--c-mute-hi); }
         .rule-empty-t b { display: block; margin-bottom: 3px; font-size: 14px; font-weight: 700; color: var(--c-ink-hi); }
         .rule-start { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 16px 0 12px; border-radius: 99px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700;
-                      color: #1a1d20; border: 1px solid rgba(255,255,255,0.3); background: linear-gradient(180deg, #f0dc8e, var(--c-gold)); transition: transform .22s var(--ease), filter .2s ease; }
-        .rule-start:hover { filter: brightness(1.06); }
+                      color: #1a1d20; border: 1px solid rgba(255,255,255,0.3); background: linear-gradient(180deg, #f0dc8e, var(--c-gold)); transition: transform .22s var(--ease); position: relative; }
+        /* (the hovers of .rule-start, .tcfg-go and .hl-cls brightened with a filter, which the element only had under the pointer,
+           so everything under it was drawn again and the filter animated, against the performance rules; a white layer that
+           only fades does the same, 23 October 2026) */
+        .rule-start::after, .tcfg-go::after, .hl-cls::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: light-dark(#fff, #fff); opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+        .rule-start:hover::after, .tcfg-go:hover:not(:disabled)::after { opacity: 0.08; }
+        .hl-cls:hover::after { opacity: 0.1; }
         .rule-start .msym { font-size: 18px; }
         /* the pop-up (RulePop) */
         .rule-modal { width: min(700px, 94vw); padding-bottom: 0; }
@@ -22613,6 +27803,17 @@ export default function PnlCalendar() {
                                  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
         .rule-btn:hover, .limit-rule:hover { color: var(--c-ink-hi); border-color: rgba(255,255,255,0.18); }
         .limit-rule { margin-left: 8px; height: 24px; font-size: 11.5px; color: var(--c-gold); }
+        /* the daily limit's capsule: the Log pill's glass and height, the label quiet, the figure firm, the rule a gold tag inside */
+        .limit-pill { height: 36px; padding: 0 4px 0 8px; gap: 2px !important; border-radius: 99px; border: 1px solid rgba(255,255,255,0.05); background: var(--lg-lens);
+                      box-shadow: 0 4px 12px -6px rgba(0,0,0,0.5); }
+        .limit-pill .limit-label { font-size: 12.5px !important; padding: 4px 6px; border-radius: 99px; }
+        .limit-pill .limit-input { width: 96px !important; padding: 5px 10px !important; border-radius: 99px !important; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .limit-pill.ruled { padding-right: 4px; }
+        .limit-pill.ruled .limit-input { width: 84px !important; cursor: default; }
+        .limit-pill .limit-rule { display: inline-flex; align-items: center; gap: 4px; margin-left: 0; height: 28px; padding: 0 10px 0 8px; border: none;
+                                  background: color-mix(in srgb, var(--c-gold) 14%, transparent); }
+        .limit-pill .limit-rule .msym { font-size: 15px; }
+        .limit-pill .limit-rule:hover { background: color-mix(in srgb, var(--c-gold) 22%, transparent); color: var(--c-gold); }
         .rule-note { font-size: 12px; color: var(--c-mute); margin: 2px 0 8px; }
         .rule-rows { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
         .rule-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 190px 120px; align-items: center; gap: 16px; animation: fadeUpPop .5s var(--ease) backwards; }
@@ -22638,15 +27839,16 @@ export default function PnlCalendar() {
         .tcfg-est { font-size: 12.5px; color: var(--c-ink-3); }
         .tcfg-go { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 700;
                    color: #1a1d20; background: linear-gradient(180deg, #f0dc8e, var(--c-gold)); border: 1px solid rgba(255,255,255,0.3);
-                   box-shadow: 0 6px 18px rgba(227,205,119,0.25), inset 0 1px 0 rgba(255,255,255,0.5); transition: transform .15s ease, filter .15s ease, opacity .15s; }
-        .tcfg-go:hover { filter: brightness(1.06); transform: translateY(-1px); }
+                   box-shadow: 0 6px 18px rgba(227,205,119,0.25), inset 0 1px 0 rgba(255,255,255,0.5); transition: transform .15s ease, opacity .15s; position: relative; }
+        .tcfg-go:hover { transform: translateY(-1px); }
         .tcfg-go:active { transform: scale(0.97); }
         .tcfg-go:disabled { opacity: .4; cursor: not-allowed; transform: none; }
         .bk-btn.test { color: var(--c-gold); border-color: rgba(227,205,119,0.3); }
         /* the footer's buttons are symbols: no border, the same highlight under the pointer */
-        .bk-btn.ico { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; padding: 0; border-color: transparent; background: none; }
+        .bk-btn.ico { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: 9px; border-color: transparent; background: none; }
         .bk-btn.ico:hover { border-color: transparent; background: rgba(255,255,255,0.08); }
-        .bk-btn.ico .msym { font-size: 17px; }
+        /* no margin: the text buttons' icon gap (margin-right 5px, set on .bk-btn .msym) pushed the symbol left of centre, so the highlight looked longer on the right. No backticks in here: this sheet is a template string */
+        .bk-btn.ico .msym { font-size: 17px; margin: 0; }
         /* the note above a footer symbol: small, solid, and only moved and faded (it is always there) */
         .bk-btn.ico { position: relative; }
         .bk-tip { position: absolute; left: -5px; bottom: calc(100% + 8px); z-index: 30; padding: 6px 10px 7px; border-radius: 9px; white-space: nowrap; text-align: left; pointer-events: none;
@@ -22683,6 +27885,43 @@ export default function PnlCalendar() {
         .set-tag { flex-shrink: 0; height: 24px; padding: 0 10px; border-radius: 99px; display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 600;
                    color: #8fe7bd; background: rgba(61,220,151,0.12); white-space: nowrap; }
         .set-tag.bad { color: #ff9ea8; background: rgba(255,93,108,0.12); }
+        /* Keyboard (KbFold): one line that unfolds into every shortcut, key caps to press for the ones that can change */
+        .kb-head { position: relative; width: 100%; font: inherit; color: inherit; background: none; border: 0; text-align: left; cursor: pointer; }
+        /* (out of the line's flow, so the words under the name have the whole width once it has faded) */
+        .kb-peek { position: absolute; top: 0; bottom: 0; right: 41px; display: inline-flex; align-items: center; gap: 4px; pointer-events: none; transition: opacity .2s ease, transform .3s var(--ease); }
+        .kb-head.open .kb-peek { opacity: 0; transform: translateX(8px); }
+        .kb-peek kbd { font: inherit; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 6px; color: var(--c-ink-3); background: rgba(255,255,255,0.06); }
+        .kb-chev { flex-shrink: 0; line-height: 0; color: var(--c-mute); transition: color .15s ease; }
+        .kb-head:hover .kb-chev { color: var(--c-ink); }
+        .kb-chev svg { width: 15px; height: 15px; display: block; transition: transform .34s cubic-bezier(0.34,1.1,0.64,1); }
+        .kb-head.open .kb-chev svg { transform: rotate(180deg); }
+        .kb-fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .34s cubic-bezier(0.4,0,0.2,1); }
+        .kb-fold.open { grid-template-rows: 1fr; }
+        .kb-fold > div { min-height: 0; overflow-x: visible; overflow-y: clip; }
+        .kb-in { opacity: 0; transform: translateY(-8px); transition: opacity .22s ease, transform .34s cubic-bezier(0.4,0,0.2,1); }
+        .kb-fold.open .kb-in { opacity: 1; transform: none; }
+        .kb-sub { padding: 12px 14px 2px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--c-mute); border-top: 1px solid rgba(255,255,255,0.055); }
+        .set-card .kb-sub + .set-row { border-top: 0; }
+        .set-card .kb-row { min-height: 50px; padding-top: 9px; padding-bottom: 9px; }
+        .kb-row.fix .set-k b { font-weight: 500; color: var(--c-ink-2); }
+        .kb-r { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+        .kb-r i { font-style: normal; font-size: 12px; color: var(--c-mute); }
+        .kb-cap { min-width: 48px; height: 28px; padding: 0 9px; border: 0; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: 0.05em;
+                  color: var(--c-ink); background: rgba(255,255,255,0.075); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.09), 0 1px 0 rgba(0,0,0,0.35);
+                  transition: background-color .15s ease, transform .22s var(--ease); }
+        .kb-cap:hover { background: rgba(255,255,255,0.12); }
+        .kb-cap:active { transform: scale(0.95); }
+        .kb-cap.rec { color: #1d1830; background: light-dark(#cbbcff, #b8a4ff); box-shadow: none; letter-spacing: 0; animation: kbRec 1.1s ease-in-out infinite; }
+        @keyframes kbRec { 50% { opacity: 0.6; } }
+        .kb-cap.just { animation: kbJust .5s var(--ease); }
+        @keyframes kbJust { from { transform: scale(1.14); } }
+        .kb-cap.fix { min-width: 0; height: 24px; padding: 0 7px; display: inline-flex; align-items: center; cursor: default; font-size: 11.5px; font-weight: 600; color: var(--c-ink-2);
+                      background: rgba(255,255,255,0.04); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); }
+        .kb-undo { border: 0; background: none; padding: 3px; border-radius: 6px; cursor: pointer; line-height: 0; color: var(--c-mute); transition: color .15s ease, transform .22s var(--ease); }
+        .kb-undo:hover { color: var(--c-ink); }
+        .kb-undo:active { transform: rotate(-40deg) scale(0.92); }
+        .kb-undo .msym { font-size: 17px; }
+        .set-k small.kb-bad { color: #ff9ea8; }
         .set-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 0; border-top: 1px solid rgba(255,255,255,0.06); }
         .set-k { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
         .set-k b { font-size: 13.5px; font-weight: 600; color: var(--c-ink); }
@@ -22754,7 +27993,7 @@ export default function PnlCalendar() {
         .sb-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; min-height: 28px;
                    font-size: 11.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--c-ink-3); }
         .sb-step { display: inline-flex; align-items: center; gap: 4px; }
-        .sb-step button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 9px; cursor: pointer;
+        .sb-step button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 99px; cursor: pointer;
                           background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: var(--c-ink-2);
                           transition: background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease; }
         .sb-step button:hover:not(:disabled) { color: #ffffff; border-color: rgba(255,255,255,0.24); background: rgba(255,255,255,0.10); }
@@ -22779,7 +28018,7 @@ export default function PnlCalendar() {
         .sb-unit button { padding: 1px 7px; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
         .sb-how button { padding: 5px 9px; font-size: 11.5px; white-space: nowrap; }
         .amt-field.auto::placeholder { color: var(--c-mute-hi); }           /* a figure worked out for him, not a hint: it has to be read */
-        .sb-more, .sb-x { display: inline-flex; align-items: center; justify-content: center; height: 28px; padding: 0; border-radius: 9px; cursor: pointer;
+        .sb-more, .sb-x { display: inline-flex; align-items: center; justify-content: center; height: 28px; padding: 0; border-radius: 99px; cursor: pointer;
                           background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: var(--c-ink-2);
                           transition: background .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease, transform .22s var(--ease); }
         .sb-more { gap: 3px; padding: 0 11px 0 7px; font-size: 11.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
@@ -22823,8 +28062,35 @@ export default function PnlCalendar() {
         .sb-add:disabled { opacity: 0.45; cursor: default; }
         .sb-add.done { opacity: 1; color: var(--c-green-pale); background: rgba(61,220,151,0.10); border-color: rgba(61,220,151,0.34); }
         .bk-msg { color: #5ee3a9; font-size: 11.5px; animation: fadeRight .3s ease backwards; }
-        .bk-pop { animation: fadeRight .3s ease backwards; }
-        .wk-tick { transition: opacity .3s ease; }
+        .bk-pop { animation: fadeRight .3s ease backwards; height: 30px; border-radius: 9px; }
+        .xc-note { position: fixed; left: 50%; bottom: 22px; z-index: 300; display: flex; align-items: center; gap: 10px; padding: 9px 10px 9px 14px; border-radius: 14px;
+                   font-size: 12.5px; font-weight: 600; color: #f0d88a; transform: translateX(-50%); animation: xcIn .34s var(--ease) backwards; transition: opacity .24s ease, transform .26s var(--ease); }
+        .xc-note.out { opacity: 0; transform: translate(-50%, 10px); }
+        .xc-note > .msym { font-size: 18px; }
+        .xc-note button { height: 26px; padding: 0 10px; border: none; border-radius: 8px; background: rgba(240,216,138,0.14); color: #f0d88a; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .xc-note button:hover { background: rgba(240,216,138,0.24); }
+        .xc-note .xc-x { width: 26px; padding: 0; background: none; color: var(--c-ink-3); font-size: 16px; }
+        @keyframes xcIn { from { opacity: 0; transform: translate(-50%, 12px); } }
+        /* every pop-up and sheet one glass (28 October 2026, his pictures of Worth it? and the quick log side by side: "both at
+           the same liquid glass level but huge difference in their actual liquid glass transparency"). They had four fills:
+           .glass's 0.62 under a heavy blur (the blur smeared the page into a flat dark), the quick log's 0.7 + 0.24k without one,
+           the calculator's 0.9k, the category menu's 0.55 + 0.35k. Now one, set by the slider alone (--lg-k): 0.44 at the clear
+           end, 0.9 at the default, 0.97 tinted; no blur under any (the quick log's way: a blur under a pane over moving content
+           is drawn again every frame) */
+        .glass[role="dialog"], .cat-pop.glass, .lg-float {
+          backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))), rgba(255,255,255,0) 45%),
+                      light-dark(rgba(32,34,38,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(224,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) !important;
+        }
+        /* a pane over the live page with nothing dimming it (.lg-float: the Arrange pane, the colour picker, his classes' list, the
+           category menus; since 31 October also the time pane, the quick log's calendar, a goal's symbols, the calculators' settings; 29 October 2026, his picture of the Arrange pane: "this ui doesnt follow the liquid glass setting. make
+           sure all the ui follow it and future ui's"). The pop-ups' fill above, which follows the slider, and under it the frost of
+           .glass and the sidebar, also by the slider: without it the page's words read straight through it at the clear end.
+           A new pane over the page: .glass with role="dialog" if a dim stands behind it, and .lg-float as well if none does */
+        .lg-float, .glass[role="dialog"].lg-float, .cat-pop.glass {
+          backdrop-filter: blur(calc(6px + 10px * var(--lg-kb))) saturate(calc(1.15 + 0.6 * var(--lg-kb))) !important;
+          -webkit-backdrop-filter: blur(calc(6px + 10px * var(--lg-kb))) saturate(calc(1.15 + 0.6 * var(--lg-kb))) !important;
+        }
         /* on its way out (Linger): it fades where it stands, and takes no press meanwhile */
         .bk-msg.out, .bk-pop.out { animation: fadeOut ${FOOT_OUT_MS}ms ease forwards; pointer-events: none; }
         /* ---------- open app panel ---------- */
@@ -23068,8 +28334,19 @@ export default function PnlCalendar() {
                                      line-height: 1; text-transform: uppercase; -webkit-font-smoothing: none; margin: 20px 0 20px; }
         /* its comma and decimal point (pxSeps): 0.125em is one font pixel. The point is drawn one column further in than
            the comma. Each piece has to take the face and the hard edges of the figure: the page-wide rules on * give it Inter, smoothed */
-        .hero-num .pxs { font-family: inherit; -webkit-font-smoothing: inherit; margin: 0 -0.375em 0 -0.25em; }
-        .hero-num .pxs.c { margin-left: -0.125em; }
+        .hero-num .pxs, .wr-px .pxs { font-family: inherit; -webkit-font-smoothing: inherit; margin: 0 -0.375em 0 -0.25em; }
+        .hero-num .pxs.c, .wr-px .pxs.c { margin-left: -0.125em; }
+        /* the wrapped's figure (WrHeroNum): the pixel layer sets the size, the normal-face layer lies over it, vertically
+           centred, 1.2 times as big (its capitals then match the pixel ones, as the header year's do), and is only seen
+           while the opening flicker plays. Both are as wide as the box, so the gradient runs the same way over each. */
+        .wr-hero-num { position: relative; line-height: 1; padding: 6px 0 4px; }
+        .wr-hero-num .wr-px, .wr-hero-num .wr-nm { -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap;
+                                                   animation: ybP1 1.15s ease-in-out .3s backwards; }
+        .wr-hero-num .wr-px { display: block; font-family: 'Press Start 2P', 'Inter', sans-serif; font-weight: 400; letter-spacing: 0;
+                              text-transform: uppercase; -webkit-font-smoothing: none; }
+        .wr-hero-num .wr-nm { position: absolute; inset: 6px 0 4px 0; display: flex; align-items: center; opacity: 0; pointer-events: none;
+                              font-size: 1.2em; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+                              animation-name: ybN1; }
         .term .ht-val { font-stretch: 150%; }
         /* the day tiles and month boxes stay in Inter: the page-wide rule on * beats any face a tile hands down, so only this spacing reaches their text */
         .term .cell, .term .ycell { letter-spacing: -0.05em; }
@@ -23255,7 +28532,6 @@ export default function PnlCalendar() {
         /* the chart's modes say what they show beside their symbols (+ Income, − Spending, +/− PnL; the trading charts'
            Running total and Each month / day): the symbols alone meant nothing to somebody new */
         .mode-w { margin-left: 7px; font-size: 12.5px; font-weight: 600; letter-spacing: 0; }
-        .cat-pop.glass { background: light-dark(rgba(32,35,40,calc(0.55 + 0.35 * var(--lg-k))), rgba(221,224,230,calc(0.55 + 0.35 * var(--lg-k)))); }      /* 0.9 at the default; it follows the slider, never quite see-through. The light twin by hand: the light look's rewriting can't see a colour with calc() in it */      /* a small menu over busy rows: a denser pane, so what is behind doesn't read through */
         .icon-opt { position: relative; }
         .icon-opt[data-name]:hover::after { content: attr(data-name); position: absolute; left: 50%; bottom: calc(100% + 6px); z-index: 3; padding: 4px 8px; border-radius: 7px; white-space: nowrap;
                                              font-size: 11px; font-weight: 600; color: var(--c-ink-hi); background: rgb(44,48,54); box-shadow: 0 6px 14px -4px rgba(0,0,0,0.6);
@@ -23367,7 +28643,7 @@ export default function PnlCalendar() {
         .snav-root.open .snav-scrim { opacity: 1; pointer-events: auto; transition-duration: .5s; }
         /* the panel: parked off the left edge while shut, slid in as one piece. No blur behind it and nothing see-through:
            the page passes under it */
-        .snav { position: fixed; left: 10px; top: 10px; bottom: 10px; width: 228px; display: flex; flex-direction: column; gap: 2px; padding: 62px 12px 12px;
+        .snav { position: fixed; left: 10px; top: 10px; bottom: 10px; width: 264px; max-width: calc(100vw - 20px); display: flex; flex-direction: column; gap: 2px; padding: 62px 14px 12px;
                 border-radius: 20px; background: linear-gradient(180deg, #25282c 0%, #1c1f22 100%);
                 box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.075), inset 0 1px 0 rgba(255,255,255,0.06);
                 user-select: none; -webkit-user-select: none; will-change: transform; pointer-events: none;
@@ -23378,6 +28654,29 @@ export default function PnlCalendar() {
         .snav-root.open .sd-in { opacity: 1; transform: translateX(0); transition: opacity .46s ease, transform .56s var(--ease); transition-delay: calc(90ms + var(--i) * 22ms); }
         .snav-name { position: absolute; left: 64px; top: 25px; font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 11px; letter-spacing: 2px; color: var(--c-ink);
                      -webkit-font-smoothing: none; }
+        /* Find existing destinations without a second navigation system. Typing redraws only this menu. */
+        .sd-search { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px; margin: 0 0 12px; flex: none;
+                     border: 1px solid rgba(255,255,255,0.1); border-radius: 11px; background: rgba(0,0,0,0.13); color: var(--c-mute-hi); }
+        .sd-search:focus-within { border-color: #8fa3b8; box-shadow: 0 0 0 2px rgba(143,163,184,0.12); }
+        .sd-search > .msym { font-size: 18px; flex: none; }
+        .sd-search input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; box-shadow: none; background: none; color: var(--c-ink-hi); font: inherit; font-size: 12px; }
+        .sd-search input::placeholder { color: var(--c-mute-hi); opacity: 1; }
+        .sd-search button { width: 24px; height: 26px; display: grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--c-mute-hi); cursor: pointer; }
+        .sd-search button:hover { background: rgba(255,255,255,0.08); color: var(--c-ink-hi); }
+        .sd-search button .msym { font-size: 16px; }
+        .sd-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 8px; margin: 0 -2px; }
+        .sd-found { display: flex; flex-direction: column; gap: 4px; }
+        .sd-found-count { padding: 2px 10px 8px; font-size: 11px; color: var(--c-mute-hi); }
+        .sd-result { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 11px; background: none; color: var(--c-ink-1); text-align: left; cursor: pointer; }
+        .sd-result:hover, .sd-result:focus-visible { background: rgba(255,255,255,0.08); }
+        .sd-result > .msym { font-size: 18px; flex: none; color: var(--c-mute-hi); }
+        .sd-result > span:nth-child(2) { min-width: 0; flex: 1; }
+        .sd-result b { display: block; font-size: 13px; font-weight: 600; }
+        .sd-result small { display: block; margin-top: 3px; font-size: 11px; color: var(--c-mute-hi); }
+        .sd-result kbd { font: inherit; font-size: 11px; color: var(--c-mute-hi); }
+        .sd-result .sd-result-arrow { font-size: 15px; }
+        .sd-no-match { margin: 4px 10px; font-size: 12px; line-height: 1.6; color: var(--c-mute-hi); }
+        .sd-find-hint { display: flex; justify-content: space-between; padding: 16px 10px 8px; font-size: 11px; color: var(--c-mute-hi); }
         .sd-act, .sd-row { display: flex; align-items: center; gap: 10px; width: 100%; border: none; cursor: pointer; text-align: left; position: relative; flex-shrink: 0; }
         .sd-act { height: 38px; padding: 0 11px; margin-bottom: 8px; border-radius: 11px; font-size: 13.5px; font-weight: 650; color: #eef0f2;
                   background: rgba(255,255,255,0.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); transition: background .15s ease, transform .2s var(--ease); }
@@ -23385,14 +28684,35 @@ export default function PnlCalendar() {
         .sd-act:active { transform: scale(0.98); }
         .sd-act .msym { font-size: 19px; }
         .sd-act kbd { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--c-ink-3); }
+        /* two actions as one bar, half each (Health's Add to-do and Log steps): the bar is the button's look, the halves share it */
+        .sd-split { display: flex; height: 38px; margin-bottom: 8px; border-radius: 11px; font-size: 13.5px; font-weight: 650; color: #eef0f2;
+                    background: rgba(255,255,255,0.09); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+        .sd-half { position: relative; flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 6px; border: none; background: none;
+                   color: inherit; font: inherit; font-size: 13px; cursor: pointer; transition: background .15s ease, transform .2s var(--ease); }
+        .sd-half:first-child { border-radius: 11px 0 0 11px; }
+        .sd-half:last-child { border-radius: 0 11px 11px 0; }
+        .sd-half + .sd-half::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 1px; background: rgba(255,255,255,0.14); }
+        .sd-half:hover { background: rgba(255,255,255,0.1); }
+        .sd-half .msym { flex: none; font-size: 18px; }
+        .sd-half .sd-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* the other tools: one row of symbols under Log, each with its name and keys in the footer's small note */
+        .sd-tools { display: grid; grid-template-columns: repeat(var(--tools, 5), minmax(0, 1fr)); gap: 5px; margin-bottom: 4px; }
+        .sd-tool { position: relative; height: 36px; padding: 0; border: none; border-radius: 10px; display: grid; place-items: center; cursor: pointer; color: #b3bac0;
+                   background: rgba(255,255,255,0.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); transition: background .15s ease, color .15s ease, transform .2s var(--ease); }
+        .sd-tool:hover { color: #ffffff; background: rgba(255,255,255,0.12); }
+        .sd-tool:active { transform: scale(0.94); }
+        .sd-tool .msym { font-size: 19px; }
+        .sd-tool .sd-tip { left: 0; }
+        .sd-tool:nth-last-child(-n+3) .sd-tip { left: auto; right: 0; }
+        .sd-tool:hover .sd-tip, .sd-tool:focus-visible .sd-tip { opacity: 1; transform: translateY(0); transition-delay: .22s; }
         .sd-head { margin: 16px 11px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #8b939a;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-        .sd-row { height: 34px; padding: 0 11px; border-radius: 9px; background: none; font-size: 13.5px; font-weight: 550; color: #b3bac0; transition: color .15s ease, background .15s ease; }
+        .sd-row { height: 36px; padding: 0 11px; border-radius: 10px; background: none; font-size: 13.5px; font-weight: 550; color: #b3bac0; transition: color .15s ease, background .15s ease, transform .22s var(--ease); }
         .sd-row .msym { font-size: 18px; color: #858d95; transition: color .15s ease; }
         .sd-row i { margin-left: auto; font-style: normal; font-size: 12px; font-weight: 500; color: #8b939a; font-variant-numeric: tabular-nums; }
         .sd-row:hover { color: #ffffff; background: rgba(255,255,255,0.055); }
         .sd-row:hover .msym { color: var(--c-ink-1); }
-        .sd-row.on { color: #ffffff; background: rgba(255,255,255,0.10); }
+        .sd-row.on { color: #ffffff; background: rgba(255,255,255,0.08); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); }
         .sd-row.on .msym, .sd-row.at .msym { color: var(--c-ink); }
         .sd-row.sub { height: 32px; font-size: 13px; }
         .sd-row.at { color: #ffffff; }
@@ -23416,8 +28736,8 @@ export default function PnlCalendar() {
         .sd-say small { font-size: 11px; font-weight: 500; color: var(--c-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
         /* a goal's bin shows when the pointer is on its row (the review: a red-bordered bin on every row was the loudest
            thing in the card). A debt's bin is in its edit line and always there */
-        .goal-row:not(.debt-row) .trash-btn { opacity: 0; transition: opacity .18s ease, background .18s ease, border-color .18s ease, color .18s ease, transform .22s var(--ease); }
-        .goal-row:not(.debt-row):hover .trash-btn, .goal-row:not(.debt-row) .trash-btn:focus-visible { opacity: 1; }
+        /* a goal's bin is always there, in the usual red like every bin (30 October 2026: "the trash button dissapears when not
+           hovered, fix it"; he tried white and went back to the usual red). It was hidden until the row was hovered */
         .cal-wrap, .flow-card, .debt-sec { scroll-margin-top: 22px; }
         .goal-icon-btn.on { color: var(--c-ink); }
         /* ---- accounts: the login screen and the select acc panel. One cover on the opening screen's own backdrop;
@@ -23557,10 +28877,41 @@ export default function PnlCalendar() {
         .ql { width: min(620px, 92vw); margin-top: 17vh; border-radius: 18px; padding: 14px 16px 12px; animation: qlIn .26s var(--ease) backwards; }
         /* the backdrop behind it already blurs the page: a second blur on top of it is not drawn, the glass tint stands in
            for what it showed (the glass colour over the darkened, blurred page, worked out) */
-        .ql.glass { backdrop-filter: none; -webkit-backdrop-filter: none; background: light-dark(rgba(34,35,37,calc(0.7 + 0.24 * var(--lg-k))), rgba(223,224,227,calc(0.7 + 0.24 * var(--lg-k)))); }      /* 0.94 at the default; it follows the slider */
         .ql.out { opacity: 0; transform: translateY(-8px) scale(0.985); transition: opacity .18s ease, transform .18s ease; }
         @keyframes qlIn { from { opacity: 0; transform: translateY(-12px) scale(0.975); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .ql-line { display: flex; align-items: center; gap: 10px; }
+        /* the day a quick log files to (QlDate): a chip on the line, tinted once another day is picked; its month under it */
+        .ql-day-w { position: relative; flex: none; display: inline-flex; }
+        .ql-day { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px 0 10px; border-radius: 99px; border: 1px solid rgba(255,255,255,0.08);
+                  background: rgba(255,255,255,0.04); color: var(--c-ink-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+                  transition: background .18s ease, border-color .18s ease, color .18s ease, transform .22s var(--ease); }
+        .ql-day .msym { font-size: 16px; }
+        .ql-day:hover, .ql-day.on { color: var(--c-ink-hi); border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); }
+        .ql-day.set { color: #d6cbff; border-color: rgba(195,178,255,0.35); background: rgba(195,178,255,0.10); }
+        .ql-day-t { animation: fxSay .28s var(--ease) backwards; }
+        .ql-cal { position: absolute; top: calc(100% + 8px); right: 0; z-index: 5; width: 264px; padding: 12px; border-radius: 18px; animation: qlCalIn .3s var(--ease) backwards; }
+        /* no blur of its own, as the quick log has none (the lag check: its first opening lost a frame) */
+        .ql-cal.glass { backdrop-filter: none; -webkit-backdrop-filter: none; background-color: light-dark(rgba(40,42,46,0.98), rgba(236,237,240,0.98)); }
+        @keyframes qlCalIn { from { opacity: 0; transform: translateY(-6px) scale(0.97); } to { opacity: 1; transform: none; } }
+        .ql-cal-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .ql-cal-h b { font-size: 13px; font-weight: 700; color: var(--c-ink-hi); animation: fxSay .28s var(--ease) backwards; }
+        .ql-cal-h button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: var(--c-ink-2); cursor: pointer;
+                           transition: background .18s ease, transform .22s var(--ease); }
+        .ql-cal-h button:hover:not(:disabled) { background: rgba(255,255,255,0.08); }
+        .ql-cal-h button:disabled { opacity: 0.3; cursor: default; }
+        .ql-cal-h .msym { font-size: 20px; }
+        .ql-cal-g { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; animation: fxSay .3s var(--ease) backwards; }
+        .ql-cal-g i { font-style: normal; font-size: 10.5px; font-weight: 600; color: var(--c-mute); text-align: center; padding: 2px 0 4px; }
+        .ql-cal-g button { height: 32px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--c-ink-1); font: inherit; font-size: 12.5px; font-weight: 500;
+                           font-variant-numeric: tabular-nums; cursor: pointer; transition: background .15s ease, color .15s ease, transform .22s var(--ease); }
+        .ql-cal-g button:hover:not(:disabled) { background: rgba(255,255,255,0.08); }
+        .ql-cal-g button.now { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28); }
+        .ql-cal-g button.on { background: #c3b2ff; color: #1d1830; font-weight: 700; }
+        .ql-cal-g button:disabled { color: var(--c-mute); opacity: 0.35; cursor: default; }
+        .ql-cal-q { display: flex; gap: 6px; margin-top: 10px; }
+        .ql-cal-q button { flex: 1; height: 30px; border-radius: 99px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.04); color: var(--c-ink-2);
+                           font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s ease, color .15s ease, transform .22s var(--ease); }
+        .ql-cal-q button:hover, .ql-cal-q button.on { color: var(--c-ink-hi); background: rgba(255,255,255,0.09); }
         .ql-note { flex-shrink: 0; width: 34px; height: 30px; padding: 0; border: none; border-radius: 9px; display: grid; place-items: center; cursor: pointer;
                    color: var(--c-ink-3); background: rgba(255,255,255,0.06); transition: color .18s ease, background .18s ease; }
         .ql-note .msym { font-size: 18px; }
@@ -23639,7 +28990,7 @@ export default function PnlCalendar() {
           100% { transform: translateY(0); }
         }
         .chip-flip { will-change: transform; }
-        .ghost-plus { background: none; border: 1px solid #3a3f44; color: var(--c-ink-3); transition: background .18s ease, color .18s ease, border-color .18s ease, transform .22s var(--ease); }
+        .ghost-plus { background: none; border: 1px solid rgba(255,255,255,0.10); color: var(--c-ink-3); transition: background .18s ease, color .18s ease, border-color .18s ease, transform .22s var(--ease); }
         .ghost-plus:hover { background: var(--c-green) !important; border-color: var(--c-green) !important; color: #111 !important; font-weight: 800 !important; }
         .limit-input { background: transparent; border: 1px solid transparent; transition: background .2s ease, border-color .2s ease; }
         .limit-input:hover, .limit-input:focus { background: rgba(8,10,13,0.32) !important; border-color: rgba(255,255,255,0.10) !important; outline: none; }      /* the wells' own fill: it was the raised grey box from before the glass */
@@ -23655,7 +29006,7 @@ export default function PnlCalendar() {
         .entry-row input { background: transparent; border: none; outline: none; }
         /* several items added up into one expense (PartLines). The button beside the description, the total that
            stands in for the amount box, the count on a logged row */
-        .split-btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 38px; padding: 0; border-radius: 11px; cursor: pointer;
+        .split-btn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; padding: 0; border-radius: 99px; cursor: pointer;
                      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); color: var(--c-ink-3);
                      transition: background .18s ease, border-color .18s ease, color .18s ease, transform .22s var(--ease); }
         .split-btn:hover { color: var(--c-ink); border-color: rgba(255,255,255,0.24); background: rgba(255,255,255,0.10); }
@@ -23873,6 +29224,14 @@ export default function PnlCalendar() {
         .wp-do:hover { color: #c9f2dd; background: rgba(61,220,151,0.14); border-color: rgba(61,220,151,0.5); }
         .wp-do .msym { font-size: 18px; }
         .wp-row .trash-btn { margin-left: 0 !important; }
+        /* a handle you can see (30 October 2026, his words: "make me be able to drag incomes and expenses on a date to another date on
+           the calendar": it could be, by the 1px bar between the amount and the name, which nothing showed): six dots at the row's left,
+           the same drag. The bar stays */
+        .row-grab { flex: none; width: 22px; height: 30px; margin-right: 2px; display: grid; place-items: center; cursor: grab; touch-action: none; border-radius: 8px;
+                    color: var(--c-mute); transition: color .15s ease, background .15s ease; }
+        .row-grab .msym { font-size: 18px; }
+        .row-grab:hover { color: var(--c-ink); background: rgba(255,255,255,0.07); }
+        .row-grab.held { cursor: grabbing; color: var(--c-ink); }
         .row-grip { position: relative; width: 1px; height: 20px; background: #3a3f44; flex-shrink: 0; cursor: grab; touch-action: none; }
         .row-grip::before { content: ""; position: absolute; inset: -9px -7px; }
         .row-grip::after { content: ""; position: absolute; left: -1px; top: -2px; width: 3px; height: 24px; border-radius: 2px; background: var(--c-ink-2); pointer-events: none;
@@ -23886,6 +29245,47 @@ export default function PnlCalendar() {
                     box-shadow: 0 0 0 2px var(--c-ink-hi), 0 0 28px rgba(255,255,255,0.24); transition: opacity .18s ease, transform .22s var(--ease); will-change: transform, opacity; }
         .cal-ring.on { opacity: 1; }
         .dnd-chip { position: fixed; left: 0; top: 0; z-index: 400; pointer-events: none; will-change: transform; }
+        .dnd-line { position: fixed; left: 0; top: 0; z-index: 399; height: 3px; border-radius: 3px; pointer-events: none; background: #ffffff;
+                    box-shadow: 0 0 10px rgba(255,255,255,0.55); opacity: 0; will-change: transform; transition: opacity .14s ease, transform .16s var(--ease); }
+        .dnd-line.on { opacity: 1; }
+        /* the formatting strip (RichBox), Word's Font group, bare */
+        .rt { display: flex; flex-direction: column; gap: 6px; flex: 0 1 auto; min-height: 0; }
+        .rt-bar { display: flex; align-items: center; gap: 2px; padding: 3px; align-self: flex-start; border-radius: 11px; background: rgba(255,255,255,0.04);
+                  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); }
+        .rt-btn { min-width: 30px; height: 28px; padding: 0 6px; display: inline-grid; place-items: center; border: none; border-radius: 8px; background: none; cursor: pointer;
+                  color: var(--c-ink-2); font: inherit; font-size: 15px; line-height: 1; transition: background .15s ease, color .15s ease; }
+        .rt-btn:hover { background: rgba(255,255,255,0.07); color: var(--c-ink-hi); }
+        .rt-btn.on { background: rgba(255,255,255,0.13); color: var(--c-ink-hi); }
+        .rt-btn b { font-weight: 800; } .rt-btn i { font-family: Georgia, "Times New Roman", serif; font-size: 16px; font-style: italic; } .rt-btn u { text-underline-offset: 2px; }
+        .rt-btn .msym { font-size: 18px; }
+        .rt-sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255,255,255,0.1); }
+        .rt-col { position: relative; display: inline-flex; }
+        .rt-a { display: inline-flex; flex-direction: column; gap: 2px; padding-top: 3px; border-radius: 8px 0 0 8px; }
+        .rt-a span { font-weight: 700; font-size: 14px; }
+        .rt-a .rt-sw { display: block; width: 16px; height: 4px; border-radius: 1px; }
+        .rt-arr { min-width: 18px; padding: 0; border-radius: 0 8px 8px 0; }
+        .rt-arr .msym { font-size: 18px; }
+        .rt-pal { position: absolute; z-index: 5; top: calc(100% + 6px); left: 0; width: 248px; padding: 8px; border-radius: 14px; animation: fadeIn .14s ease backwards; }
+        .rt-auto { width: 100%; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px; border: none; border-radius: 8px; background: none; cursor: pointer;
+                   color: var(--c-ink); font: inherit; font-size: 13px; }
+        .rt-auto:hover { background: rgba(255,255,255,0.07); }
+        .rt-auto .rt-sw { width: 16px; height: 16px; border-radius: 3px; }
+        .rt-pal-t { padding: 8px 6px 6px; font-size: 12px; font-weight: 600; color: #9aa1a8; }
+        .rt-sws { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; padding: 0 2px 2px; }
+        .rt-sw-b { aspect-ratio: 1; padding: 0; border: none; border-radius: 4px; background: none; cursor: pointer; display: grid; }
+        .rt-sw-b .rt-sw { border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); transition: transform .12s ease; }
+        .rt-sw-b:hover .rt-sw { transform: scale(1.15); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12), 0 0 0 2px rgba(255,255,255,0.6); }
+        .rt-ed { overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; max-height: 44vh; }
+        .rt-ed:empty::before { content: attr(data-ph); color: var(--c-mute); pointer-events: none; }
+        .rt-ed b { font-weight: 750; } .rt-ed u { text-underline-offset: 2px; }
+        ${RT_CSS}
+        /* the kinds of an assignment fill their bar, five equal columns (31 October 2026, his words: "make all of these buttons fit the whole bar") */
+        .hl-as-kinds { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        .hl-as-kinds .jr-chip { justify-content: center; min-width: 0; }
+        .wk-open { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px 0 8px; border-radius: 99px; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 650;
+                   color: #f6d38a; background: rgba(245,200,110,0.10); border: 1px solid rgba(245,200,110,0.22); transition: background .2s ease, border-color .2s ease; }
+        .wk-open .msym { font-size: 16px; }
+        .wk-open:hover { background: rgba(245,200,110,0.17); border-color: rgba(245,200,110,0.38); }
         .dnd-chip-in { display: flex; align-items: center; height: 38px; max-width: 330px; padding: 0 15px 0 13px; border-radius: 12px; white-space: nowrap; font-size: 14px;
                        background: #2b2f34; box-shadow: 0 20px 44px rgba(0,0,0,0.5), 0 3px 10px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.13);
                        opacity: 0; transform: scale(0.8); transition: opacity .16s ease, transform .26s var(--ease); }
@@ -24068,9 +29468,15 @@ export default function PnlCalendar() {
         .bk-tip, .info-tip { box-shadow: 0 22px 50px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 0 rgba(255,255,255,0.12); }
 
         /* ---- the sidebar: solid, as it was, with the same lit edge ---- */
-        .snav { background: linear-gradient(180deg, #282c31 0%, #1d2024 55%, #191b1f 100%);
-                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.13); }
-        .sd-act { background: var(--lg-lens), rgba(255,255,255,0.03); box-shadow: inset 1px 1px 0 rgba(255,255,255,0.14), inset -1px -1px 0 rgba(255,255,255,0.05), inset 0 0 0 1px rgba(255,255,255,0.04); }
+        /* (the sidebar follows the slider as the pop-ups do, 28 October 2026: it was a solid gradient at every setting) */
+        .snav { background: linear-gradient(180deg, light-dark(rgba(40,44,49,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(227,230,235,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 0%, light-dark(rgba(29,32,36,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(222,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 55%, light-dark(rgba(25,27,31,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(217,221,226,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 100%);
+                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.13);
+                /* frosted like the cards (29 October 2026: "the side bar background liquid glass … is too transparent though other ui look
+                   like this"): with the fill let through by the slider and no blur, the page's own words showed through it. The same blur
+                   and colour as .glass, always on: the panel is off the screen when shut, so it draws nothing then */
+                backdrop-filter: blur(calc(6px + 10px * var(--lg-kb))) saturate(calc(1.15 + 0.6 * var(--lg-kb)));
+                -webkit-backdrop-filter: blur(calc(6px + 10px * var(--lg-kb))) saturate(calc(1.15 + 0.6 * var(--lg-kb))); }
+        .sd-act, .sd-split { background: var(--lg-lens), rgba(255,255,255,0.03); box-shadow: inset 1px 1px 0 rgba(255,255,255,0.14), inset -1px -1px 0 rgba(255,255,255,0.05), inset 0 0 0 1px rgba(255,255,255,0.04); }
         .sd-act:hover { background: var(--lg-lens), rgba(255,255,255,0.09); }
 
         /* ---- pop-ups ---- */
@@ -24094,9 +29500,13 @@ export default function PnlCalendar() {
         .dash-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px 24px; flex-wrap: wrap; margin: 6px 0 24px; }
         .dash-px { margin: 0; font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 32px; font-weight: 400; line-height: 1; letter-spacing: 0;
                    text-transform: uppercase; color: var(--c-ink-hi); -webkit-font-smoothing: none; text-shadow: 0 0 28px color-mix(in srgb, var(--sh) 42%, transparent); }
-        .dash-sub { display: flex; align-items: center; gap: 9px; margin-top: 14px; font-size: 14px; color: var(--c-mute-hi); }
+        .dash-sub { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 14px; font-size: 14px; color: var(--c-mute-hi); }
         .dash-sub b { font-weight: 600; color: var(--c-ink-1); }
         .dash-sub i { width: 3px; height: 3px; border-radius: 50%; background: var(--c-mute); }
+        .dash-date { display: inline-flex; align-items: center; gap: 5px; margin: -5px -7px; padding: 5px 7px; border: 0; border-radius: 8px; background: none; font: inherit; color: inherit; cursor: pointer; }
+        .dash-date .msym { font-size: 13px; color: var(--c-mute-hi); transition: transform .3s var(--ease); }
+        .dash-date:hover { background: rgba(255,255,255,0.055); color: var(--c-ink-hi); }
+        .dash-date:hover .msym { transform: translate(1px, -1px); }
         .dash-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .dg-btn, .dg-snap { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 15px 0 11px; border-radius: 99px; cursor: pointer;
                             font: inherit; font-size: 13px; font-weight: 600; color: var(--c-ink); white-space: nowrap;
@@ -24110,6 +29520,13 @@ export default function PnlCalendar() {
         .dg-btn.pri { color: #1d1830; border-color: transparent; background: linear-gradient(180deg, light-dark(#d6c9ff, #c4b2ff), light-dark(#b7a3ff, #a690f6));
                       box-shadow: inset 0 1px 0 rgba(255,255,255,0.45), 0 8px 22px -10px rgba(160,135,255,0.7); }
         .dg-btn.pri:hover:not(:disabled) { color: #120e22; background: linear-gradient(180deg, light-dark(#e0d6ff, #cfc0ff), light-dark(#c3b2ff, #b29ef8)); }
+        /* The daily action leads; arranging the board stays a quiet utility until editing starts. */
+        .dg-btn.action-log, .log-pill:not(.wi-pill) { color: light-dark(#142a20, #ffffff); border-color: transparent;
+          background: linear-gradient(180deg, light-dark(#b5e9ce, #29835e), light-dark(#80d3ab, #1a694b));
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), 0 5px 16px -9px rgba(85,201,148,0.5); }
+        .dg-btn.action-log:hover, .log-pill:not(.wi-pill):hover { color: light-dark(#10251b, #ffffff);
+          background: linear-gradient(180deg, light-dark(#c6f0db, #32966d), light-dark(#91dfbb, #237f5a)); }
+        .dg-btn.action-log kbd, .log-pill:not(.wi-pill) kbd { color: light-dark(#294c3b, #e3f4ec); }
         .dg-btn.big { height: 42px; padding: 0 22px 0 16px; font-size: 14px; }
         .dg-snap { gap: 11px; padding: 0 6px 0 14px; }
         .dg-tog { position: relative; width: 40px; height: 24px; border-radius: 99px; background: rgba(255,255,255,0.13); overflow: hidden; flex: none; }
@@ -24117,9 +29534,12 @@ export default function PnlCalendar() {
         .dg-tog b { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: light-dark(#f4f6f8, #ffffff); box-shadow: 0 2px 6px rgba(0,0,0,0.35); transition: transform .34s var(--ease-soft); }
         .dg-snap.on .dg-tog::before { opacity: 1; }
         .dg-snap.on .dg-tog b { transform: translateX(16px); }
-        .dg-hint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -10px 0 16px; font-size: 12.5px; color: var(--c-mute-hi); animation: fadeIn .3s ease backwards; }
+        .dg-hint { display: flex; align-items: center; gap: 10px 22px; flex-wrap: wrap; margin: -10px 0 16px; padding: 10px 2px; font-size: 12px; color: var(--c-mute-hi); animation: fadeIn .3s ease backwards; }
         .dg-hint .msym { font-size: 17px; color: var(--c-ink-3); }
         .dg-hint span:last-child { color: var(--c-ink-3); }
+        .dg-hint-part { display: inline-flex; align-items: center; gap: 7px; }
+        .dg-hint-state { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+        .dg-hint-state kbd { margin-left: 10px; padding: 2px 5px; border: 1px solid rgba(255,255,255,0.12); border-radius: 5px; font: inherit; font-size: 10px; }
 
         /* the board: each widget is a cell placed by a transform (its width and height only change when it is resized) */
         .dg-board { position: relative; min-height: 120px; user-select: none; -webkit-user-select: none; }
@@ -24135,21 +29555,40 @@ export default function PnlCalendar() {
         .dg-cell.lift::after { opacity: 1; }
         .dg-grid { position: absolute; inset: 0; pointer-events: none; animation: fadeIn .3s ease backwards;
                    background-image: radial-gradient(circle, rgba(255,255,255,0.2) 1.4px, transparent 1.9px);
-                   background-size: calc(var(--u) / 2) calc(var(--u) / 2); background-position: calc(var(--u) / 4 - 8px) calc(var(--u) / 4 - 8px); }
+                   background-size: calc(var(--u) * var(--gs, 0.5)) calc(var(--u) * var(--gs, 0.5)); background-position: calc(var(--u) * var(--gs, 0.5) / 2 - 8px) calc(var(--u) * var(--gs, 0.5) / 2 - 8px); }
+        .dg-gsz { cursor: default; gap: 7px; padding: 0 4px 0 12px; transition: opacity .2s ease; }
+        .dg-gsz:active { transform: none; }
+        .dg-gsz.off { opacity: 0.45; }
+        .dg-gsz.off .dg-gseg { pointer-events: none; }
+        .dg-gseg { margin-left: 2px; border-radius: 99px; }
+        .dg-gseg button { min-width: 30px; height: 26px; padding: 0 8px; border-radius: 99px; font-size: 13px; font-weight: 700; color: var(--c-mute-hi); }
+        .dg-gseg button.on { color: var(--c-ink-hi); }
+        .dg-gseg .seg-box, .dg-gseg .seg-fill { border-radius: 99px; }
         .dg-slot { position: absolute; left: 0; top: 0; border-radius: 26px; pointer-events: none; opacity: 0;
                    border: 1.5px dashed color-mix(in srgb, var(--wc, #ffffff) 55%, transparent); background: color-mix(in srgb, var(--wc, #ffffff) 8%, transparent);
                    transition: opacity .2s ease, transform .16s var(--ease); }
         .dg-slot.now { transition: none; }
         .dg-slot.on { opacity: 1; }
         .dg-slot.over { z-index: 6; background: color-mix(in srgb, var(--wc, #ffffff) 12%, transparent); }
+        /* while resizing (.over) the outline steps to its place as it steps to its size: its width came at once while its
+           place slid, so taken by a left or top edge it stood out past the far side at every step (31 October 2026, his
+           frame of it past the board's right side) */
+        .dg-slot.over { transition: opacity .2s ease; }
+        /* (25 October 2026, his words: "when resizing the widgets i want a white outline for the preset widget sizes (small
+           medium large) … if i resize to another size then go back to the normal colors … only the outline … a fading opacity
+           animation that is smooth and seamless") a white outline over the dashed one while the size is one of the widget's
+           own: a layer that only fades (opacity), so nothing else is drawn again */
+        .dg-slot::after { content: ""; position: absolute; inset: -1.5px; border-radius: inherit; border: 2px solid #ffffff; box-shadow: 0 0 16px rgba(255,255,255,0.16);
+                          opacity: 0; pointer-events: none; transition: opacity .24s cubic-bezier(0.4, 0, 0.2, 1); }
+        .dg-slot.preset::after { opacity: 1; }
 
         /* the pane */
         .wdg { position: relative; height: 100%; border-radius: 26px; overflow: hidden; display: flex; flex-direction: column; color: var(--c-ink);
-               background: radial-gradient(130% 95% at 0% 0%, color-mix(in srgb, var(--wc) 22%, transparent), transparent 62%),
-                           radial-gradient(90% 80% at 100% 110%, color-mix(in srgb, var(--wc) 10%, transparent), transparent 70%),
+               background: radial-gradient(110% 80% at 0% 0%, color-mix(in srgb, var(--wc) 12%, transparent), transparent 62%),
+                           radial-gradient(90% 80% at 100% 110%, color-mix(in srgb, var(--wc) 5%, transparent), transparent 70%),
                            linear-gradient(180deg, rgba(255,255,255,calc(0.055 * var(--lg-k))), rgba(255,255,255,calc(0.014 * var(--lg-k))) 42%, rgba(255,255,255,calc(0.006 * var(--lg-k)))),
                            rgba(27,30,35,calc(0.58 * var(--lg-k)));
-               box-shadow: var(--lg-edge), var(--lg-drop); transition: transform .4s var(--ease) .1s; }
+               box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 0 0 1px rgba(255,255,255,0.055), 0 12px 28px -18px rgba(0,0,0,0.65); transition: transform .4s var(--ease) .1s; }
         .wdg[data-c="s"] { border-radius: 24px; }
         .wdg::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: rgba(24,27,32,0.88); opacity: 0; transition: opacity .25s ease; }
         .dg-cell.lift .wdg { transform: scale(1.035); transition-delay: 0s; }
@@ -24166,10 +29605,15 @@ export default function PnlCalendar() {
         .wd-in { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 15px 16px 16px; }
         .wdg[data-c="s"] .wd-in { padding: 13px 14px 14px; gap: 6px; }
         .dg-board.edit .wd-in { pointer-events: none; }
-        /* editing: a round button takes a widget off (top left), an arc at the bottom right resizes it, as on iOS */
+        /* editing: a round button takes a widget off (top left), its edges and corners resize it (.dg-egs) */
+        /* the − (and the resize corner it had then) are surfaces of their own for as long as editing lasts (25 October 2026, his words:
+           "theres some lag on the closing or exiting the edit widget thingy (when pressing done), the lag is with the
+           buttons"). Made one only for their pop in and out, two per widget all at once, the graphics process was stuck
+           11 to 14ms on the very frame Done was pressed, just as the toolbar starts (and again as the pop-in ended);
+           measured with the donebisect journey, nothing at all with these held */
         .dg-rm { position: absolute; top: -9px; left: -9px; z-index: 3; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
                  display: grid; place-items: center; color: #1f2226; background: light-dark(#e6e9ed, #f4f5f7); box-shadow: 0 4px 12px -2px rgba(0,0,0,0.5);
-                 animation: dgIn .32s var(--ease) backwards; }
+                 animation: dgIn .32s var(--ease) backwards; will-change: transform, opacity; }
         .dg-rm .msym { font-size: 20px; }
         .dg-rm:hover { background: #ffffff; }
         /* stack another widget in this box: the − button's twin, in the middle of the top edge (a corner would meet the next
@@ -24187,7 +29631,7 @@ export default function PnlCalendar() {
         .dg-stack { position: relative; height: 100%; border-radius: 26px; box-shadow: var(--lg-drop); transition: transform .4s var(--ease) .1s; }
         .dg-stk { height: 100%; overflow-x: hidden; overflow-y: auto; scroll-snap-type: y mandatory; border-radius: inherit; }
         .dg-pg { height: 100%; scroll-snap-align: start; scroll-snap-stop: always; }
-        .dg-stack .wdg { box-shadow: var(--lg-edge); transform: none !important; animation: none !important; }
+        .dg-stack .wdg { box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 0 0 1px rgba(255,255,255,0.055); transform: none !important; animation: none !important; }
         .dg-cell.lift .dg-stack { transform: scale(1.035); transition-delay: 0s; }
         .dg-cell.hold .dg-stack { transform: scale(0.965); }
         .dg-cell.gone .dg-stack { transform: scale(0.6); opacity: 0; transition: transform .2s var(--ease-soft), opacity .18s ease; }
@@ -24208,10 +29652,39 @@ export default function PnlCalendar() {
         .dg-gal-none { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; color: var(--c-mute-hi); font-size: 12.5px; }
         .dg-gal-none .msym { font-size: 30px; color: var(--c-ink-3); }
         .dg-gal-none b { font-size: 14px; color: var(--c-ink-1); }
-        .dg-rz { position: absolute; right: -2px; bottom: -2px; z-index: 3; width: 36px; height: 36px; cursor: nwse-resize; touch-action: none; animation: dgIn .32s var(--ease) backwards; }
-        .dg-rz::after { content: ""; position: absolute; right: 8px; bottom: 8px; width: 18px; height: 18px; border-right: 3px solid rgba(255,255,255,0.72); border-bottom: 3px solid rgba(255,255,255,0.72);
-                        border-bottom-right-radius: 16px; transition: border-color .2s ease; }
-        .dg-rz:hover::after { border-color: #ffffff; }
+        /* resizing from every edge and corner (25 October 2026, his words: "make me be able to rescale widgets on all sides,
+           but only on hover does it show the edge lines"; until then only by an arc at the bottom right, shown all the
+           time). Each edge and corner is a strip 14px across, half outside the widget, with a 2px line on the widget's own
+           edge: together the lines trace the widget, round corners and all. They show only on the widget under the
+           pointer (or reached with Tab), fading in as one, and the one under the pointer comes up white; hidden while a
+           widget is dragged or resized (the outline of where it lands says it then). Opacity only */
+        .dg-egs { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: 0; transition: opacity .2s ease; }
+        .dg-cell:hover .dg-egs, .dg-cell:focus-visible .dg-egs { opacity: 1; }
+        .dg-board.dragging .dg-egs, .dg-board.leaving .dg-egs { opacity: 0; }
+        .dg-board.leaving .dg-eg { pointer-events: none; }
+        .dg-eg { position: absolute; pointer-events: auto; touch-action: none; }
+        .dg-eg::after { content: ""; position: absolute; opacity: 0.4; transition: opacity .15s ease; }
+        .dg-eg:hover::after { opacity: 1; }
+        .dg-eg.t, .dg-eg.b { left: 26px; right: 26px; height: 14px; cursor: ns-resize; }
+        .dg-eg.t { top: -7px; }
+        .dg-eg.b { bottom: -7px; }
+        .dg-eg.l, .dg-eg.r { top: 26px; bottom: 26px; width: 14px; cursor: ew-resize; }
+        .dg-eg.l { left: -7px; }
+        .dg-eg.r { right: -7px; }
+        .dg-eg.t::after, .dg-eg.b::after { left: 0; right: 0; top: 6px; height: 2px; background: #ffffff; }
+        .dg-eg.l::after, .dg-eg.r::after { top: 0; bottom: 0; left: 6px; width: 2px; background: #ffffff; }
+        .dg-eg.tl, .dg-eg.tr, .dg-eg.bl, .dg-eg.br { width: 33px; height: 33px; }
+        .dg-eg.tl { left: -7px; top: -7px; cursor: nwse-resize; }
+        .dg-eg.tr { right: -7px; top: -7px; cursor: nesw-resize; }
+        .dg-eg.bl { left: -7px; bottom: -7px; cursor: nesw-resize; }
+        .dg-eg.br { right: -7px; bottom: -7px; cursor: nwse-resize; }
+        /* a corner's line is the widget's own corner: a 27px box, its 2px line centred 26px from the corner's centre as the
+           widget's edge is, so it meets the edges' lines end to end (at 26px it left a pixel's gap at each end) */
+        .dg-eg.tl::after, .dg-eg.tr::after, .dg-eg.bl::after, .dg-eg.br::after { width: 27px; height: 27px; border: 0 solid #ffffff; }
+        .dg-eg.tl::after { left: 6px; top: 6px; border-left-width: 2px; border-top-width: 2px; border-top-left-radius: 27px; }
+        .dg-eg.tr::after { right: 6px; top: 6px; border-right-width: 2px; border-top-width: 2px; border-top-right-radius: 27px; }
+        .dg-eg.bl::after { left: 6px; bottom: 6px; border-left-width: 2px; border-bottom-width: 2px; border-bottom-left-radius: 27px; }
+        .dg-eg.br::after { right: 6px; bottom: 6px; border-right-width: 2px; border-bottom-width: 2px; border-bottom-right-radius: 27px; }
         .dg-none { position: absolute; inset: 0 0 auto 0; min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center;
                    border-radius: 26px; border: 1.5px dashed rgba(255,255,255,0.12); color: var(--c-mute-hi); font-size: 13px; }
         .dg-none > .msym { font-size: 34px; color: var(--c-ink-3); }
@@ -24223,6 +29696,9 @@ export default function PnlCalendar() {
         .wd-ico { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; font-size: 17px; color: var(--wc);
                   background: color-mix(in srgb, var(--wc) 17%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wc) 24%, transparent); }
         .wd-name { font-size: 13px; font-weight: 600; color: var(--c-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+        .wd-head > .wd-ico { background: none; box-shadow: none; border-radius: 0; }
+        .wd-title-link { padding: 3px 0; border: 0; background: none; text-align: left; cursor: pointer; }
+        .wd-title-link:hover { color: var(--c-ink-hi); }
         .wd-sp { flex: 1; }
         .wd-chip { display: inline-flex; align-items: center; gap: 1px; height: 24px; padding: 0 5px 0 10px; border-radius: 99px; flex: none; cursor: pointer;
                    font: inherit; font-size: 11.5px; font-weight: 600; color: var(--c-ink-1); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.07); }
@@ -24234,8 +29710,8 @@ export default function PnlCalendar() {
         .wd-chip.sm { padding: 0 8px; }
         .wd-chip.sm .msym { display: none; }
         .wd-go { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; flex: none; padding: 0; cursor: pointer; color: var(--c-ink-1);
-                 background: var(--lg-lens); border: 1px solid rgba(255,255,255,0.07); }
-        .wd-go:hover { color: #ffffff; border-color: rgba(255,255,255,0.18); }
+                 background: rgba(255,255,255,0.025); border: 1px solid transparent; }
+        .wd-go:hover { color: #ffffff; background: var(--lg-lens); border-color: rgba(255,255,255,0.14); }
         .wd-go .msym { font-size: 16px; }
         .wd-big, .wd-big * { font-family: system-ui, -apple-system, 'Inter', sans-serif; }
         .wd-big { font-weight: 700; font-stretch: 125%; letter-spacing: -0.02em; line-height: 1.08; color: var(--c-ink-hi); font-variant-numeric: tabular-nums;
@@ -24328,19 +29804,21 @@ export default function PnlCalendar() {
         .wd-cal { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); gap: 3px; }
         .wdg[data-c="l"] .wd-cal { gap: 5px; }
         .wd-day { container-type: size; min-width: 0; min-height: 0; padding: 0; border: 0; background: none; cursor: pointer; display: grid; place-items: center; }
-        .wd-day i { position: relative; width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); border-radius: 50%; display: grid; place-items: center;
+        .wd-day i { position: relative; width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); border-radius: 28%; display: grid; place-items: center;
                     background: rgba(255,255,255,0.06); font-style: normal; font-size: 11px; font-weight: 600; color: var(--c-mute-hi); transition: transform .2s var(--ease); }
-        .wd-day i::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--dc, transparent); opacity: var(--k, 0); }
+        .wd-day i::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--dc, transparent); opacity: calc(var(--k, 0) * 0.22); }
+        .wd-day.on i::after { content: ""; position: absolute; left: 32%; right: 32%; bottom: 12%; height: 3px; border-radius: 2px; background: var(--dc); opacity: var(--k, 1); }
         .wd-day.up i { --dc: #3ddc97; }
         .wd-day.dn i { --dc: #ff5d6c; }
         .wd-day.be i { --dc: #e3cd77; }
-        .wd-day.on i { color: #11161a; }
+        .wd-day.on i { color: var(--c-ink-hi); }
         .wd-day i span { position: relative; display: none; font-size: clamp(9px, 38cqmin, 13px); }
         /* a day's number once its dot can hold it */
         @container (min-width: 22px) and (min-height: 22px) { .wd-day i span { display: inline; } }
         .wd-day.later i { background: rgba(255,255,255,0.025); }
         .wd-day.now i { box-shadow: 0 0 0 2px #7fb6e0; }
-        .wd-day:hover i { transform: scale(1.12); }
+        .wd-day:hover i { transform: scale(1.08); }
+        @container (max-width: 21px) { .wd-day.on i::before { opacity: calc(var(--k, 0) * 0.7); } .wd-day.on i::after { display: none; } }
 
         /* lists of names and trades */
         /* a list is cut off at its top and bottom only: cut at its sides as well, a row's highlight (which stands out
@@ -24427,6 +29905,7 @@ export default function PnlCalendar() {
         .dg-gal { display: grid; grid-template-columns: 260px minmax(0, 1fr); width: min(940px, calc(100vw - 80px)); height: min(620px, calc(100vh - 80px)); padding: 0; border-radius: 28px; overflow: hidden; }
         .dg-gal-list { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 18px 12px; overflow-y: auto; border-right: 1px solid rgba(255,255,255,0.07); background: rgba(0,0,0,0.14); }
         .dg-gal-h { padding: 4px 10px 12px; font-size: 15px; font-weight: 700; color: var(--c-ink-hi); }
+        .dg-gal-search { position: relative; z-index: 1; margin: 0 2px 10px; }
         .dg-gal-it { position: relative; z-index: 1; display: flex; align-items: center; gap: 11px; padding: 8px 10px; border: 0; border-radius: 14px; background: none; cursor: pointer;
                      font: inherit; color: inherit; text-align: left; flex: none; transition: background-color .18s ease;
                      animation: galItem .42s var(--ease) backwards; animation-delay: calc(60ms + var(--i, 0) * 18ms); }
@@ -24457,6 +29936,10 @@ export default function PnlCalendar() {
         .dg-gal-t { display: inline-block; animation: galText .34s var(--ease) backwards; }
         @keyframes galText { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
         .dg-gal-prev { position: relative; flex: none; grid-area: 1 / 1; transform: scale(var(--k, 1)); }
+        /* the size under the preview: the preview is drawn full size and scaled down to fit, so the label is scaled back up
+           to read at one size whatever the widget's (the room for it is kept by the preview's scale: 292px, not 320) */
+        .dg-gal-dim { position: absolute; left: 50%; top: 100%; margin-top: calc(9px / var(--k, 1)); transform: translateX(-50%) scale(calc(1 / var(--k, 1))); transform-origin: 50% 0;
+                      font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--c-mute); opacity: 0.6; }
         /* the old one leaves completely before the new one comes (he rejected the two on top of each other: Quick add's
            words, 14 October 2026) */
         .dg-gal-prev.in { animation: galPrevIn .42s var(--ease) backwards; animation-delay: .13s; }
@@ -24541,9 +30024,154 @@ export default function PnlCalendar() {
         .fx-rows { flex: 1 1 auto; }
         .fx-foot { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 4px 0; border-top: 1px solid rgba(255,255,255,0.06); font-size: 11.5px; line-height: 1.4; color: var(--c-mute); }
         .fx-foot kbd { flex: none; font: inherit; font-size: 11px; padding: 2px 7px; border-radius: 7px; color: var(--c-ink-3); background: rgba(255,255,255,0.06); }
+        /* the exchanger's door beside the currency pill (FxDoor): its symbol and its shortcut, as Log carries ⌘N; the note
+           under it the first time, pointing up at it */
+        .fx-door { position: relative; display: inline-flex; }
+        /* the symbol alone, round (28 October 2026: "delete the shortcut cmd e text, just have the symbol"; ⌘E is in its tooltip) */
+        .fx-door-b { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0 !important; }
+        .fx-door-b .msym { font-size: 16px; }
+        .fx-tip { position: absolute; top: calc(100% + 12px); right: -6px; z-index: 40; width: 250px; padding: 12px 14px 12px; border-radius: 16px;
+                  font-size: 12.5px; line-height: 1.5; color: var(--c-ink-2); text-align: left; white-space: normal; animation: fxTipIn .45s var(--ease) backwards; }
+        .fx-tip::after { content: ""; position: absolute; top: -6px; right: 24px; width: 12px; height: 12px; transform: rotate(45deg); border-radius: 3px 0 0 0;
+                         background: rgba(60,63,69,0.97); box-shadow: -1px -1px 0 rgba(255,255,255,0.09); }
+        .fx-tip b { color: var(--c-ink-hi); font-weight: 650; }
+        .fx-tip kbd { font: inherit; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 6px; color: var(--c-ink-1); background: rgba(255,255,255,0.08); }
+        .fx-tip-ok { display: block; margin: 10px 0 0 auto; height: 28px; padding: 0 12px; border-radius: 99px; border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600;
+                     color: #1d1830; background: linear-gradient(180deg, #c4b2ff, #a690f6); }
+        @keyframes fxTipIn { from { opacity: 0; transform: translateY(-6px) scale(0.97); } to { opacity: 1; transform: none; } }
+        /* ---------- Worth it? (WorthIt, 24 October 2026): the exchanger's sheet; a verdict card washed in the verdict's
+           colour (--c) with the score in a ring, the price on a strip against the usual range, the month's budget as a
+           bar, three tiles. Each piece comes in once; what changes after that eases (transform, the ring's dash) ---------- */
+        .wi-sheet { display: flex; flex-direction: column; width: min(560px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow-x: hidden; overflow-y: auto;
+                    padding: 22px 20px 14px; border-radius: 28px; }
+        .wi-form { display: flex; flex-direction: column; gap: 10px; }
+        .wi-in { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 14px; border-radius: 18px; flex: none; cursor: text;
+                 background: rgba(0,0,0,0.22); box-shadow: inset 0 1px 2px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.07); transition: box-shadow .28s var(--ease); }
+        .wi-in:focus-within { box-shadow: inset 0 1px 2px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.55), 0 0 0 3px rgba(255,255,255,0.10); }
+        .wi-in input { flex: 1; min-width: 0; height: 100%; padding: 0; margin: 0; border: 0; outline: none; background: none; font: inherit; font-size: 15.5px; font-weight: 500; color: var(--c-ink-hi); }
+        .wi-in input:focus { box-shadow: none; }
+        .wi-in input::placeholder { color: var(--c-mute); font-weight: 400; }
+        .wi-ico { font-size: 21px; color: #c3b2ff; flex: none; animation: fxSay .3s var(--ease) backwards; }
+        .wi-chip { flex: none; font-size: 11.5px; font-weight: 600; padding: 4px 10px; border-radius: 99px; color: #d6cbff; background: rgba(195,178,255,0.12); animation: fxSay .3s var(--ease) backwards; }
+        .wi-price input { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+        .wi-cur { font-size: 13px; font-weight: 700; color: var(--c-mute-hi); flex: none; }
+        .wi-other { flex: none; font-size: 13px; font-weight: 500; color: var(--c-mute-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .wi-typ small em, .wi-you small em { font-style: normal; font-weight: 500; color: var(--c-mute-2); }
+        .wi-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 4px; }
+        .wi-k { font-size: 12.5px; color: var(--c-mute-hi); }
+        .wi-seg button { min-width: 64px; }
+        .wi-res { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; animation: fxRowIn .46s var(--ease) backwards; }
+        .wi-top { display: flex; align-items: center; gap: 18px; padding: 16px; border-radius: 22px;
+                  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--c) 17%, transparent), transparent 62%), rgba(255,255,255,0.03);
+                  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); }
+        .wi-dial { position: relative; width: 116px; height: 116px; flex: none; }
+        .wi-dial svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+        .wi-ring-bg { fill: none; stroke: rgba(255,255,255,0.08); stroke-width: 10; }
+        .wi-ring { fill: none; stroke: var(--c); stroke-width: 10; stroke-linecap: round; stroke-dasharray: 100;
+                   transition: stroke-dashoffset .8s var(--ease), stroke .4s ease; animation: wiRing 1s var(--ease) .1s backwards; }
+        @keyframes wiRing { from { stroke-dashoffset: 100; } }
+        .wi-score { position: absolute; inset: 0; display: grid; place-items: center; font-family: 'Press Start 2P', 'Inter', sans-serif; -webkit-font-smoothing: none;
+                    font-size: 28px; font-weight: 400; color: var(--c-ink-hi); padding-left: 3px; }
+        .wi-verdict { flex: 1; min-width: 0; }
+        .wi-word { margin: 4px 0 6px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--c); transition: color .4s ease; animation: fxSay .35s var(--ease) backwards; }
+        .wi-say { margin: 0; font-size: 13px; line-height: 1.5; color: var(--c-ink-2); }
+        .wi-block { padding: 12px 14px 14px; border-radius: 18px; background: rgba(255,255,255,0.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); }
+        .wi-bh { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--c-mute-hi); margin-bottom: 10px; }
+        .wi-bh b { color: var(--c-ink-1); font-weight: 600; }
+        .wi-strip { position: relative; height: 48px; margin: 0 12px; }
+        .wi-strip::before { content: ""; position: absolute; left: 0; right: 0; top: 22px; height: 6px; border-radius: 99px; background: rgba(255,255,255,0.07); }
+        .wi-range { position: absolute; left: 0; right: 0; top: 22px; height: 6px; border-radius: 99px; background: linear-gradient(90deg, #3ddc97, #f5d34b); opacity: 0.8; transition: clip-path .5s var(--ease); }
+        .wi-typ, .wi-you { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; font-style: normal; transition: transform .6s var(--ease); }
+        .wi-typ b { position: absolute; left: -1px; top: 17px; width: 2px; height: 16px; border-radius: 2px; background: var(--c-ink-2); }
+        .wi-typ small { position: absolute; left: 0; top: 36px; transform: translateX(-50%); font-size: 10.5px; color: var(--c-mute-hi); white-space: nowrap; }
+        .wi-you { animation: wiSlide .8s var(--ease) .15s backwards; }
+        @keyframes wiSlide { from { transform: translateX(0); opacity: 0; } }
+        .wi-you b { position: absolute; left: -8px; top: 17px; width: 16px; height: 16px; border-radius: 50%; background: var(--c);
+                    box-shadow: 0 0 0 3px rgba(22,24,28,0.92), 0 0 12px color-mix(in srgb, var(--c) 60%, transparent); transition: background .4s ease; }
+        .wi-you small { position: absolute; left: 0; top: 0; transform: translateX(-50%); font-size: 11px; font-weight: 700; color: var(--c); white-space: nowrap; }
+        .wi-bar { position: relative; height: 10px; border-radius: 99px; background: rgba(255,255,255,0.07); overflow: hidden; }
+        .wi-bar i { position: absolute; inset: 0; border-radius: inherit; background: var(--c); transform-origin: left; transition: transform .7s var(--ease), background .3s ease;
+                    animation: wiGrow .8s var(--ease) .1s backwards; }
+        @keyframes wiGrow { from { transform: scaleX(0); } }
+        .wi-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+        .wi-tiles > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 12px; border-radius: 16px; background: rgba(255,255,255,0.03);
+                          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); animation: fxRowIn .46s var(--ease) backwards; }
+        .wi-tiles > div:nth-child(2) { animation-delay: 50ms; }
+        .wi-tiles > div:nth-child(3) { animation-delay: 100ms; }
+        .wi-tiles small { font-size: 11px; color: var(--c-mute-hi); }
+        .wi-tiles b { font-size: 18px; font-weight: 700; color: var(--c-ink-hi); font-variant-numeric: tabular-nums; }
+        .wi-tiles span { font-size: 11px; color: var(--c-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .wi-acts { display: flex; justify-content: flex-end; gap: 8px; }
+        .wi-hint { display: flex; align-items: flex-start; gap: 12px; margin: 16px 0 4px; padding: 16px; border-radius: 18px; font-size: 13px; line-height: 1.5;
+                   color: var(--c-mute-hi); background: rgba(255,255,255,0.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); }
+        .wi-hint .msym { font-size: 28px; color: #c3b2ff; flex: none; }
+        .wi-sheet .fx-foot { margin-top: 14px; }
+        /* the weekend fund (WeekendFund): Worth it?'s sheet, the week as seven bars, a slider, the treats */
+        .wk-sheet { width: min(600px, calc(100vw - 48px)); }
+        .wk-head-r { display: flex; align-items: center; gap: 10px; flex: none; }
+        .wk-top { align-items: flex-start; margin-top: 4px; }
+        .wk-fund { flex: none; display: flex; flex-direction: column; gap: 4px; min-width: 170px; }
+        .wk-num { font-family: 'Press Start 2P', 'Inter', sans-serif; font-size: 22px; line-height: 1.25; -webkit-font-smoothing: none; font-variant-numeric: tabular-nums; }
+        .wk-word { font-size: 13px; font-weight: 700; animation: fadeIn .3s ease backwards; }
+        .wk-word-say { font-size: 11.5px; color: var(--c-mute-hi); }
+        .wk-day-say { margin: -4px 0 4px; font-size: 12px; color: var(--c-mute-hi); }
+        .wk-say { margin: 0; }
+        .wk-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; height: 168px; margin: 14px 0 12px; padding: 0 2px; }
+        .wk-col { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+        .wk-amt { font-size: 10.5px; font-weight: 600; color: var(--c-mute-hi); white-space: nowrap; font-variant-numeric: tabular-nums; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+        .wk-bar { position: relative; flex: 1; width: 100%; border-radius: 10px; background: rgba(255,255,255,0.03); overflow: hidden; }
+        .wk-bar i { position: absolute; left: 0; right: 0; bottom: 0; height: 100%; border-radius: 10px; transform-origin: 50% 100%; transition: transform .42s var(--ease); }
+        .wk-cap { border: 1.5px dashed rgba(143,215,164,0.55); background: rgba(61,220,151,0.06); box-sizing: border-box; }
+        /* The dashed outline moves instead of shrinking, so its corners stay round: the top and sides slide up inside a clip that stops 10px short of the floor, and the bottom corners stay put below it */
+        .wk-capd { position: absolute; inset: 0 0 10px; overflow: hidden; }
+        .wk-capd .wk-cap { top: 0; bottom: auto; height: calc(100% + 10px); border-bottom: none; border-radius: 10px 10px 0 0; }
+        .wk-capb { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; box-sizing: border-box; border: 1.5px dashed rgba(143,215,164,0.55); border-top: none;
+                   border-radius: 0 0 10px 10px; background: rgba(61,220,151,0.06); transition: opacity .2s; }
+        .wk-spent { background: linear-gradient(180deg, rgba(143,215,164,0.85), rgba(61,220,151,0.45)); }
+        .wk-spent.over { background: linear-gradient(180deg, rgba(255,141,151,0.9), rgba(255,93,108,0.45)); }
+        .wk-col.end .wk-cap { border: none; background: linear-gradient(180deg, #ffd47a, #f5a25b); box-shadow: 0 0 18px rgba(255,190,100,0.35); }
+        .wk-col.end .wk-spent { background: linear-gradient(180deg, rgba(255,212,122,0.9), rgba(245,162,91,0.5)); }
+        .wk-col.end .wk-amt { color: #ffd47a; }
+        .wk-col.past { opacity: 0.7; }
+        .wk-d { font-size: 11px; font-weight: 700; color: var(--c-mute-hi); }
+        .wk-col.now .wk-d { color: #7fb6e0; }
+        .wk-col.end .wk-d { color: #ffd47a; }
+        .wk-slide { margin-bottom: 12px; }
+        .wk-range { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 8px; margin: 6px 0 4px; border-radius: 99px; outline: none; cursor: pointer;
+                    background: linear-gradient(90deg, var(--c) var(--p), rgba(255,255,255,0.09) var(--p)); }
+        .wk-range::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #ffffff; cursor: grab;
+                                          box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 4px color-mix(in srgb, var(--c) 35%, transparent); transition: transform .15s ease; }
+        .wk-range:active::-webkit-slider-thumb { cursor: grabbing; transform: scale(1.1); }
+        .wk-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 4px rgba(255,255,255,0.5); }
+        .wk-marks { position: relative; display: flex; justify-content: space-between; height: 16px; font-size: 10.5px; color: var(--c-mute); font-variant-numeric: tabular-nums; }
+        .wk-need { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; color: var(--c-mute-hi); }
+        .wk-need::before { content: ""; position: absolute; left: 50%; top: -9px; width: 2px; height: 6px; margin-left: -1px; border-radius: 1px; background: var(--c-mute-hi); }
+        .wk-treats { display: flex; flex-wrap: wrap; gap: 6px; }
+        .wk-treat { display: inline-flex; align-items: center; border-radius: 12px; background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.07);
+                    transition: background-color .16s ease, border-color .16s ease; }
+        .wk-treat:hover { background: rgba(255,255,255,0.08); }
+        .wk-treat.on { background: rgba(255,190,100,0.12); border-color: rgba(255,190,100,0.4); }
+        .wk-t-add { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: none; background: none; cursor: pointer; font: inherit; color: var(--c-ink-hi); }
+        .wk-t-add .msym { font-size: 17px; color: #ffd47a; }
+        .wk-t-add b { font-size: 12.5px; font-weight: 600; }
+        .wk-t-add small { font-size: 11px; color: var(--c-mute-hi); font-variant-numeric: tabular-nums; }
+        .wk-t-add i { font-style: normal; font-size: 11px; font-weight: 800; color: #1a1408; background: #ffd47a; border-radius: 99px; padding: 1px 6px; animation: fadeIn .2s ease backwards; }
+        .wk-t-less { width: 26px; height: 26px; margin-right: 4px; padding: 0; border: none; border-radius: 50%; display: grid; place-items: center; cursor: pointer; background: rgba(255,255,255,0.06); color: var(--c-ink-2); }
+        .wk-t-less:hover { background: rgba(255,255,255,0.12); color: #ffffff; }
+        .wk-t-less .msym { font-size: 15px; }
+        .wk-fits { margin-top: 10px; font-size: 12.5px; color: var(--c-mute-hi); }
+        .wk-fits b { color: var(--c-ink-1); font-weight: 600; }
+        .wk-clear { border: none; background: none; padding: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; color: #ffd47a; }
+        .wk-clear:hover { text-decoration: underline; }
+        /* the round button beside Log (yearly and monthly panels) */
+        .log-duo { display: inline-flex; align-items: center; gap: 8px; }
+        .log-pill.wi-pill { width: 36px; padding: 0; justify-content: center; }
+        .log-pill.wi-pill .msym { font-size: 19px; }
         /* ---------- the calculator beside the exchanger (CalcPad; 23 October 2026): the exchanger's glass and type, a
            display that reads from the right, a keypad of soft squares; the signs in the exchanger's lavender ---------- */
         .calc-sheet { display: flex; flex-direction: column; width: min(320px, calc(100vw - 48px)); padding: 22px 18px 18px; border-radius: 28px; outline: none; }
+        /* (24 October 2026, the lag check: a second blurred pane beside the exchanger's, both over a page the backdrop has
+           blurred already, held the graphics process 34ms the first time) it sits on that blurred page with no blur of its own */
         .calc-sheet .fx-head { padding-bottom: 6px; }
         .calc-on { display: none; }
         .calc-sheet:focus-within .calc-on { display: inline; }
@@ -24683,26 +30311,33 @@ export default function PnlCalendar() {
         @keyframes dgToastOut { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 10px); } }
         /* editing ends: its handles shrink away, the grid and the hint fade (HomeDash's endEdit, 0.2s); the toolbar's
            buttons come in afresh whenever they change over (edit ⇄ not) */
-        .dg-board.leaving .dg-rm, .dg-board.leaving .dg-rz { animation: dgOut .2s cubic-bezier(0.4, 0, 1, 1) both; pointer-events: none; }
+        .dg-board.leaving .dg-rm { animation: dgOut .2s cubic-bezier(0.4, 0, 1, 1) both; pointer-events: none; }
         .dg-board.leaving .dg-grid { animation: fadeOut .2s ease both; }
         .dg-hint.leaving { animation: dgHintOut .2s ease both; }
         @keyframes dgOut { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.4); } }
         @keyframes dgHintOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-4px); } }
-        /* the toolbar's change-over (see toolsOut): in from the right, the rightmost first; out towards the right, the
-           leftmost first. Until 23 October 2026 the new set rose 4px all at once and the old one vanished in one frame */
+        /* the toolbar's first showing: its buttons in from the right, the rightmost first (a change-over is dgTuck / dgSpill) */
         .dash-tools > * { animation: dgToolIn .34s var(--ease) backwards; }
         .dash-tools > :nth-last-child(2) { animation-delay: 40ms; }
         .dash-tools > :nth-last-child(3) { animation-delay: 80ms; }
         .dash-tools > :nth-last-child(4) { animation-delay: 120ms; }
         .dash-tools > :nth-last-child(5) { animation-delay: 160ms; }
         @keyframes dgToolIn { from { opacity: 0; transform: translateX(14px) scale(0.86); } to { opacity: 1; transform: none; } }
-        .dash-tools.out { pointer-events: none; }
-        .dash-tools.out > * { animation: dgToolOut .15s cubic-bezier(0.4, 0, 1, 1) both; }
-        .dash-tools.out > :nth-child(2) { animation-delay: 20ms; }
-        .dash-tools.out > :nth-child(3) { animation-delay: 40ms; }
-        .dash-tools.out > :nth-child(4) { animation-delay: 60ms; }
-        .dash-tools.out > :nth-child(5) { animation-delay: 80ms; }
-        @keyframes dgToolOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(14px) scale(0.86); } }
+        /* the change-over itself is played from script (dgTuck, dgSpill): the main button stands over the others, and the
+           buttons' own way in is only for the toolbar's first showing */
+        .dash-tools > * { position: relative; z-index: 1; }
+        .dash-tools > .dg-mainw { z-index: 2; display: flex; }
+        /* the main button's glow, its own layer (dgMainClip): what .dg-btn.pri's outer shadow was, 0 8px 22px -10px, as the
+           shape it is drawn from (the button 10px in all round, 8px down) blurred by half the 22px, as the engine blurs a
+           shadow. The blur stays for good, so nothing under it is drawn again as a turn starts */
+        .dg-mainw > .dg-main { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.45); }
+        .dg-glow { position: absolute; inset: 0; pointer-events: none; filter: blur(11px); opacity: 0; transition: opacity .38s var(--ease); }
+        .dg-mainw.editing .dg-glow { opacity: 1; }
+        .dg-glow b { position: absolute; left: 10px; right: 10px; top: 18px; bottom: 2px; border-radius: 99px; background: rgba(160,135,255,0.7); }
+        .dg-mainw:active > .dg-glow { transform: scale(0.97); }
+        .dash-tools.swap > * { animation: none; }
+        .dash-tools.busy { pointer-events: none; }
+        .dg-lbl { display: inline-flex; align-items: center; gap: inherit; }
         .wd-end.r { justify-content: flex-end; }
         .wd-split2.cal { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr); }
         /* a period switched (useSwap): what is below the figure comes in afresh; only transform and opacity move */
@@ -24734,6 +30369,79 @@ export default function PnlCalendar() {
         .wd-cat { display: grid; place-items: center; flex: none; border-radius: 10px; color: var(--ac); background: color-mix(in srgb, var(--ac) 18%, transparent);
                   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 22%, transparent); }
         .wd-cat .msym { font-size: 17px; }
+        /* Health's widgets (25 October 2026) */
+        .wd-leg .wd-legw { font-size: 13px; font-weight: 700; }
+        .wd-leg b em { font-style: normal; font-weight: 500; color: var(--c-mute-hi); }
+        .wd-hrings { position: relative; flex: none; display: grid; place-items: center; }
+        .wd-hrings .hl-rings { width: 100%; height: 100%; }
+        .wd-hweek { flex: none; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; height: 58px; }
+        .wd-hwd { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; padding: 2px 0; border: 0; border-radius: 10px;
+                  background: none; cursor: pointer; font: inherit; color: var(--c-mute); transition: background-color .2s ease; }
+        .wd-hwd:hover { background: rgba(255,255,255,0.05); }
+        .wd-hwd svg { width: 36px; height: 36px; flex: none; }
+        .wd-hwd span { font-size: 10.5px; line-height: 1; }
+        .wd-hwd.now span { color: var(--c-ink-1); font-weight: 600; }
+        .wd-heat { flex: 1; min-height: 0; display: grid; grid-auto-flow: column; justify-content: end; align-content: center; cursor: pointer; }
+        .wd-heat i, .wd-heatk i { border-radius: 3px; background: rgba(255,255,255,0.055); }
+        .wd-heat i { transition: transform .15s var(--ease); }
+        .wd-heat i.l-1 { background: none; cursor: default; }
+        .wd-heat i.l1, .wd-heatk i.l1 { background: rgba(47,208,138,0.24); }
+        .wd-heat i.l2, .wd-heatk i.l2 { background: rgba(47,208,138,0.5); }
+        .wd-heat i.l3, .wd-heatk i.l3 { background: #2fd08a; }
+        .wd-heat i.l4, .wd-heatk i.l4 { background: #9cf0c8; }
+        .wd-heat i.now { box-shadow: 0 0 0 1.5px #ffffff; }
+        .wd-heat i[data-k]:hover { transform: scale(1.3); }
+        .wd-heatf { justify-content: space-between; flex-wrap: nowrap; }
+        .wd-heatk { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--c-mute); white-space: nowrap; }
+        .wd-heatk i { width: 9px; height: 9px; border-radius: 2px; }
+        .wd-next { display: flex; align-items: center; gap: 10px; min-width: 0; flex: none; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+        .wd-next i { width: 4px; align-self: stretch; min-height: 22px; border-radius: 4px; flex: none; background: var(--nc); box-shadow: 0 0 10px color-mix(in srgb, var(--nc) 55%, transparent); }
+        .wd-next b { font-size: 19px; font-weight: 700; line-height: 1.25; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .wdg[data-c="s"] .wd-next b { font-size: 16px; }
+        .wd-subi { font-size: 15px; color: var(--c-mute); }
+        .wd-cdot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+        .wd-row.past { opacity: 0.45; }
+        .wd-trow { padding-top: 4px; padding-bottom: 4px; }
+        .wd-tick { width: 24px; height: 24px; flex: none; padding: 0; border-radius: 8px; border: 1.5px solid color-mix(in srgb, var(--wc) 55%, rgba(255,255,255,0.2)); background: transparent;
+                   cursor: pointer; display: grid; place-items: center; transition: background-color .2s ease, border-color .2s ease; }
+        .wd-tick:hover { border-color: var(--wc); }
+        .wd-tick svg { width: 16px; height: 16px; fill: none; stroke: #0d1a26; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 20; stroke-dashoffset: 20; transition: stroke-dashoffset .3s var(--ease); }
+        .wd-trow.on .wd-tick { background: var(--wc); border-color: var(--wc); }
+        .wd-trow.on .wd-tick svg { stroke-dashoffset: 0; }
+        .wd-trow .wd-rt b { transition: color .2s ease; }
+        .wd-trow.on .wd-rt b { color: var(--c-mute); text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.35); }
+        .wd-run { display: inline-flex; align-items: center; gap: 2px; color: #ffc07e; font-size: 12px; }
+        .wd-run .msym { font-size: 15px; }
+        .wd-unit { margin-left: 6px; font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--c-mute-hi); }
+        .wd-gauge { position: relative; flex: none; display: flex; gap: 2px; height: 10px; margin: 1px 0; }
+        .wd-gauge i { border-radius: 3px; opacity: 0.85; }
+        .wd-gauge b { position: absolute; top: -3px; width: 4px; height: 16px; margin-left: -2px; border-radius: 3px; background: #ffffff; box-shadow: 0 0 0 2px rgba(20,22,26,0.9); }
+        .wd-gymw { font-size: 12.5px; font-weight: 500; color: var(--c-mute-hi); }
+        .wd-gdots { flex: none; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+        .wd-gdots i { height: 30px; border-radius: 10px; display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: var(--c-mute); background: rgba(255,255,255,0.05); }
+        .wd-gdots i.on { color: #2a1714; background: var(--wc); box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--wc) 70%, transparent); }
+        .wd-gdots i.now { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.7); }
+        .wd-gdots i.later { opacity: 0.45; }
+        .wd-cnt { height: 24px; padding: 0 9px; border-radius: 99px; display: inline-flex; align-items: center; flex: none; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+                  color: var(--wc); background: color-mix(in srgb, var(--wc) 14%, transparent); }
+        .wd-medal { position: relative; flex: none; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,0.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+                    color: color-mix(in srgb, var(--ac) 45%, rgba(255,255,255,0.25)); }
+        .wd-medal svg { position: absolute; inset: -3px; width: calc(100% + 6px); height: calc(100% + 6px); }
+        .wd-medal.on { color: rgba(20,18,12,0.82); background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--ac) 55%, #ffffff), var(--ac) 62%, color-mix(in srgb, var(--ac) 72%, #000000));
+                       box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--ac) 80%, transparent), inset 0 1px 0 rgba(255,255,255,0.45); }
+        .wd-medals { flex: none; display: flex; gap: 6px; overflow: hidden; padding: 6px 10px 14px; margin: -6px -10px -14px; } /* room for an earned medal's glow, which a 4px edge cut off */
+        .wd-medals.grid { flex: 1; min-height: 0; display: grid; gap: 10px 8px; align-content: start; overflow: visible; }
+        .wd-aw { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+        .wd-aw small { max-width: 100%; font-size: 11px; color: var(--c-mute); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .wd-aw.on small { color: var(--c-ink-1); }
+        .wd-awn { gap: 12px; }
+        .wd-awn .wd-rt b { font-size: 15px; }
+        .wd-vis { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; padding: 12px 14px; border: 0; border-radius: 16px; cursor: pointer;
+                  font: inherit; text-align: center; overflow: hidden; color: var(--c-ink-hi); box-shadow: inset 3px 0 0 var(--nc); animation: wdSwap .46s var(--ease) backwards;
+                  background: linear-gradient(160deg, color-mix(in srgb, var(--nc) 26%, #1f2328), color-mix(in srgb, var(--nc) 12%, #1a1d21)); }
+        .wd-vis p { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
+        .wd-vis.pic { padding: 0; box-shadow: none; background: rgba(255,255,255,0.04); }
+        .wd-vis.pic img, .wd-vis.pic canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
         .wd-one .wd-cat .msym { font-size: 20px; }
         .wd-stack { display: flex; gap: 2px; height: 8px; flex: none; border-radius: 99px; overflow: hidden; }
         .wd-stack i { min-width: 3px; }
@@ -24772,7 +30480,35 @@ export default function PnlCalendar() {
                      animation: sideIn .6s var(--ease) backwards; transition: background .2s ease, opacity .25s ease, transform .22s var(--ease); }
         .snav-home:hover { background: var(--lg-lens), rgba(46,50,56,0.66); }
         .snav-home .msym { font-size: 20px; }
-        .snav-root.open .snav-home { opacity: 0; pointer-events: none; }
+        .snav-root.open .snav-home, .snav-root.open .snav-arrange { opacity: 0; pointer-events: none; }
+        /* the button under Home (Health's day page): the cards' order; where Home is not shown it takes Home's place */
+        .snav-arrange { position: fixed; left: 18px; top: 118px; width: 40px; height: 40px; padding: 0; border: none; border-radius: 50%; cursor: pointer; display: grid; place-items: center;
+                        color: var(--c-ink); background: var(--lg-lens), rgba(32,35,40,0.6); box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
+                        animation: sideIn .6s var(--ease) backwards; transition: background .2s ease, opacity .25s ease, color .2s ease; }
+        .snav-arrange.solo { top: 68px; }
+        .snav-arrange:hover { background: var(--lg-lens), rgba(46,50,56,0.66); }
+        .snav-arrange.on { color: #a9c6ea; }
+        .snav-arrange .msym { font-size: 20px; }
+        .hlarr { position: fixed; left: 70px; top: 118px; z-index: 70; width: 252px; box-sizing: border-box; padding: 12px; border-radius: 20px; display: flex; flex-direction: column; gap: 8px;
+                 box-shadow: var(--lg-edge), 0 24px 48px -12px rgba(0,0,0,0.6); animation: hlarrIn .28s var(--ease) backwards; }
+        .hlarr.solo { top: 68px; }
+        @keyframes hlarrIn { from { opacity: 0; transform: translateX(-8px) scale(0.97); } }
+        .hlarr-head { display: flex; align-items: center; justify-content: space-between; }
+        .hlarr-head b { font-size: 13.5px; color: #eef1f4; }
+        .hlarr > small { font-size: 11.5px; line-height: 1.4; color: #8e969e; }
+        .hlarr-reset { height: 24px; padding: 0 10px; border: none; border-radius: 8px; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 600; color: var(--c-ink-2); background: rgba(255,255,255,0.07); }
+        .hlarr-reset:hover:not(:disabled) { color: #ffffff; background: rgba(255,255,255,0.12); }
+        .hlarr-reset:disabled { opacity: 0.4; cursor: default; }
+        .hlarr-list { position: relative; display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+        .hlarr-row { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 6px 0 10px; border-radius: 11px; background: rgba(255,255,255,0.045); cursor: grab; user-select: none; touch-action: none;
+                     transition: background .15s ease, box-shadow .15s ease; }
+        .hlarr-row:hover { background: rgba(255,255,255,0.08); }
+        .hlarr-row.held { cursor: grabbing; z-index: 2; background: rgba(120,165,225,0.16); box-shadow: inset 0 0 0 1px rgba(120,165,225,0.4), 0 8px 18px rgba(0,0,0,0.35); }
+        .hlarr-row > .msym { font-size: 18px; color: var(--c-mute-2); }
+        .hlarr-t { flex: 1; font-size: 13px; font-weight: 600; color: var(--c-ink); }
+        .hlarr-grip { width: 28px; height: 28px; padding: 0; border: none; border-radius: 8px; display: grid; place-items: center; cursor: inherit; color: var(--c-mute-2); background: none; }
+        .hlarr-grip .msym { font-size: 18px; margin: 0; }
+        .hlarr-row:hover .hlarr-grip { color: var(--c-ink-2); }
         /* Reduce motion (13 October 2026): for somebody whose Mac is set to "Reduce motion". Nothing here is read
            otherwise. The same rules and timings run, only the keyframes are swapped for calm ones, so every
            wait in the script still fits: what travelled or spun fades on the spot, the idle floats hold still,
@@ -24799,7 +30535,7 @@ export default function PnlCalendar() {
           @keyframes galItem { from { opacity: 0; } } @keyframes galRise { from { opacity: 0; } } @keyframes galText { from { opacity: 0; } }
           @keyframes galPrevIn { from { opacity: 0; } } @keyframes galPrevOut { to { opacity: 0; } }
           @keyframes tpRowIn { from { opacity: 0; } }
-          @keyframes fxSay { from { opacity: 0; } } @keyframes rpIn { from { opacity: 0; } } @keyframes dgToastOut { to { opacity: 0; } } @keyframes dgOut { to { opacity: 0; } } @keyframes dgHintOut { to { opacity: 0; } } @keyframes dgToolIn { from { opacity: 0; } } @keyframes dgToolOut { to { opacity: 0; } } @keyframes spRow { from { opacity: 0; } }
+          @keyframes fxSay { from { opacity: 0; } } @keyframes rpIn { from { opacity: 0; } } @keyframes dgToastOut { to { opacity: 0; } } @keyframes dgOut { to { opacity: 0; } } @keyframes dgHintOut { to { opacity: 0; } } @keyframes dgToolIn { from { opacity: 0; } } @keyframes dgToolOut { to { opacity: 0; } } @keyframes qlCalIn { from { opacity: 0; } } @keyframes fxTipIn { from { opacity: 0; } } @keyframes wiRing { from { opacity: 0; } } @keyframes wiSlide { from { opacity: 0; } } @keyframes wiGrow { from { opacity: 0; } } @keyframes ynavIn { from { opacity: 0; } } @keyframes spRow { from { opacity: 0; } }
           .dg-gal-pill.go { transition-duration: .01s; }
           .fx-main, .fx-pick { transition-property: opacity, visibility; }
           .dg-board.edit .dg-cell, .wdg, .dg-stack { transition-duration: .01s; }
@@ -24811,15 +30547,22 @@ export default function PnlCalendar() {
         .hl-title > span { font-family: inherit; }
         .hl-title > .tt { margin-left: -3px; }
         @keyframes hlTitleIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        .hl-today { margin-left: 4px; height: 28px; padding: 0 12px; border-radius: 99px; border: 1px solid rgba(47,208,138,0.32); background: rgba(47,208,138,0.10);
-                    color: #9cf0c8; font-size: 12px; font-weight: 700; cursor: pointer; animation: fadeRight .3s ease backwards; transition: background .18s ease; }
-        .hl-today:hover { background: rgba(47,208,138,0.18); }
+        .hl-nav { position: relative; }
+        .hl-today-hint { position: absolute; left: 50%; top: calc(100% + 10px); z-index: 20; padding: 7px 12px; border-radius: 10px; white-space: nowrap; pointer-events: none;
+                   font-size: 12px; font-weight: 600; color: var(--c-ink-2); background: #1c1f23; transform: translateX(-50%);
+                   box-shadow: 0 10px 26px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09);
+                   animation: hlTodayHintIn .3s var(--ease) backwards; transition: opacity .24s ease, transform .26s var(--ease); }
+        .hl-today-hint::before { content: ""; position: absolute; left: 50%; top: -4px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: #1c1f23; box-shadow: -1px -1px 0 rgba(255,255,255,0.09); }
+        .hl-today-hint.out { opacity: 0; transform: translate(-50%, -4px); }
+        @keyframes hlTodayHintIn { from { opacity: 0; transform: translate(-50%, -6px); } }
         .hl-hero-in { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: center; }
         .hl-hero-rings { line-height: 0; filter: drop-shadow(0 10px 24px rgba(0,0,0,0.35)); }
         .hl-rings { transform: rotate(-90deg); }           /* the arcs start at the top (the svg is turned, not each arc: see .score-arc) */
         .hl-arc { transition: stroke-dasharray .7s cubic-bezier(0.22,1,0.36,1), opacity .3s ease; }
         .hl-hero .hero-num { font-size: 48px; margin: 18px 0 16px; display: flex; align-items: baseline; gap: 14px; }
         .hl-hero .hero-num small { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #8a9299; }
+        /* (the pixel figures stand an eighth of their size above the line the word sits on: "STEPS" put on their foot, his picture, 28 October 2026) */
+        .hl-hero .hero-num small { position: relative; top: -6px; }
         .hl-rr-list { display: flex; flex-wrap: wrap; gap: 8px 22px; }
         .hl-rr { display: inline-flex; align-items: baseline; gap: 8px; font-size: 13px; color: #c7cdd2; font-variant-numeric: tabular-nums; animation: fadeRight .4s ease backwards; }
         .hl-rr:nth-child(2) { animation-delay: .06s; } .hl-rr:nth-child(3) { animation-delay: .12s; }
@@ -24861,6 +30604,17 @@ export default function PnlCalendar() {
                            transition: transform .6s cubic-bezier(0.22,1,0.36,1); }
         /* the to-do rows: the tick draws itself, and a done row dims with its words struck through */
         .hl-list { display: flex; flex-direction: column; gap: 4px; }
+        /* the shopping list: a box per place, its name typed in place */
+        .hl-shps { display: flex; flex-direction: column; gap: 12px; }
+        .hl-shp { padding: 10px 12px 12px; border-radius: 16px; background: rgba(255,255,255,0.025); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05); }
+        .hl-shp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .hl-shp-head > .msym { flex: none; font-size: 20px; color: #f7b267; }
+        .hl-shp-name { flex: 1; min-width: 0; height: 32px; padding: 0 8px; margin-left: -2px; border: 1px solid transparent; border-radius: 10px; background: none; outline: none;
+                       font: inherit; font-size: 15px; font-weight: 700; color: #eef1f4; text-overflow: ellipsis; }
+        .hl-shp-name:hover { background: rgba(255,255,255,0.04); }
+        .hl-shp-name:focus { background: rgba(0,0,0,0.22); border-color: rgba(255,255,255,0.1); }
+        .hl-shp .hl-shp-add { margin-top: 8px; padding-top: 0; box-shadow: none; }
+        .wd-place { max-width: 42%; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--c-mute-hi); }
         .hl-todo { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 8px 6px 6px; border-radius: 12px; background: rgba(255,255,255,0.03);
                    animation: fadeRight .36s ease backwards; transition: background .2s ease; }
         .hl-todo:hover { background: rgba(255,255,255,0.055); }
@@ -24890,7 +30644,9 @@ export default function PnlCalendar() {
         .hl-plus:hover:not(:disabled) { background: rgba(79,179,255,0.24); }
         .hl-plus:disabled { opacity: 0.35; cursor: default; }
         /* the week: a timetable, the hours down the side */
-        .hl-tt { --hh: 46px; }
+        /* a surface of its own for good (as the cards have), so the form sliding above it only moves it, and never draws its
+           blocks again on every frame */
+        .hl-tt { --hh: 46px; will-change: transform; }
         .hl-tt-head { display: grid; grid-template-columns: 52px repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
         .hl-tt-head b { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; text-align: center; padding: 4px 0; border-radius: 7px; }
         .hl-tt-head b.now { color: #a8e1ff; background: rgba(79,179,255,0.10); }
@@ -24905,22 +30661,390 @@ export default function PnlCalendar() {
         .hl-cls { position: absolute; left: 3px; right: 3px; padding: 5px 7px; border-radius: 8px; border: none; text-align: left; cursor: pointer; overflow: hidden;
                   display: flex; flex-direction: column; gap: 1px; color: #eef1f4; font-size: 11px;
                   background: linear-gradient(160deg, color-mix(in srgb, var(--c) 34%, #1d2125), color-mix(in srgb, var(--c) 20%, #1a1d21));
-                  box-shadow: inset 3px 0 0 var(--c), 0 6px 14px rgba(0,0,0,0.25); animation: hlClsIn .42s var(--ease) backwards; transition: filter .18s ease; }
-        .hl-cls:hover { filter: brightness(1.15); }
-        .hl-cls b { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .hl-cls span { color: color-mix(in srgb, var(--c) 55%, #c7cdd2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+                  box-shadow: inset 3px 0 0 var(--c), 0 6px 14px rgba(0,0,0,0.25); }
+        /* (only as the week is first shown, or another week is: a block moved to another day is a new one to the page, and came
+           in again from nothing, a blink where it was dropped) */
+        .hl-tt-body.in .hl-cls { animation: hlClsIn .42s var(--ease) backwards; }
+        .hl-tt-body { -webkit-user-select: none; user-select: none; }
+        .hl-cls b, .hl-cls span:not(.msym) { flex: none; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--nl, 1); white-space: normal; overflow-wrap: anywhere; overflow: hidden; }
+        .hl-cls b { font-size: 12px; font-weight: 700; line-height: 15px; }
+        .hl-cls span:not(.msym) { color: color-mix(in srgb, var(--c) 55%, #c7cdd2); font-variant-numeric: tabular-nums; line-height: 14px; }
         @keyframes hlClsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         .hl-now { position: absolute; left: -2px; right: -2px; height: 2px; background: #ff7a6b; border-radius: 2px; pointer-events: none; z-index: 2; box-shadow: 0 0 8px rgba(255,122,107,0.6); }
         .hl-now::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 99px; background: #ff7a6b; }
-        .hl-week .hl-hint { margin-top: 10px; }
-        .hl-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 14px; padding: 12px; border-radius: 14px; background: rgba(255,255,255,0.04);
-                   animation: hlFormIn .32s var(--ease) backwards; }
+        .hl-week .hl-hint { margin-top: 10px; transition: opacity .3s ease; }
+        .hl-week .hl-hint.off { opacity: 0; }
+        /* the form's own box slides (HlSlide): it holds the form's old margins as padding, so they are part of its height and
+           nothing jumps when it ends; it is above the week so the list of his classes and the colour pane hang over it */
+        .hl-fw { position: relative; z-index: 3; display: flow-root; }
+        .hl-fw-in { padding: 2px 0 14px; }
+        .hl-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border-radius: 14px; background: rgba(255,255,255,0.04); }
         @keyframes hlFormIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
         /* a timetable read off a picture: the button over the week, what it says, and the sheet to check what was found */
-        .hl-scan-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
-        .hl-scan-btn { display: inline-flex; align-items: center; gap: 6px; }
-        .hl-scan-btn .msym { font-size: 17px; }
-        .hl-scan-btn:disabled .msym { animation: hlSpin 1s linear infinite; }
+        .hl-scan-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 12px; }
+        /* the week card, 28 October 2026: weeks stepped through, icon buttons, his quick list of classes, a class dragged */
+        .hl-wk-nav { display: inline-flex; align-items: center; gap: 2px; }
+        .hl-wk-lbl { min-width: 104px; height: 32px; padding: 0 10px; border: none; border-radius: 99px; background: none; cursor: pointer; font: inherit; color: var(--c-ink-hi); }
+        .hl-wk-lbl b { display: inline-block; font-size: 14px; font-weight: 700; animation: fadeIn .3s ease backwards; }
+        .hl-wk-lbl:hover { background: rgba(255,255,255,0.06); }
+        .hl-wk-sub { font-size: 12.5px; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .hl-bar-sp { flex: 1; }
+        .hl-ibtn { position: relative; width: 34px; height: 34px; flex: none; padding: 0; border-radius: 50%; display: grid; place-items: center; cursor: pointer; color: var(--c-ink-2);
+                   border: 1px solid rgba(255,255,255,0.08); background: var(--lg-lens); box-shadow: 0 4px 12px -6px rgba(0,0,0,0.5); transition: color .18s ease, border-color .18s ease; }
+        .hl-ibtn:hover, .hl-ibtn.on { color: #ffffff; border-color: rgba(255,255,255,0.2); }
+        .hl-ibtn .msym { font-size: 18px; }
+        .hl-ibtn:disabled { cursor: default; }
+        .hl-ibtn:disabled .msym { animation: hlSpin 1s linear infinite; }
+        .hl-clear-btn:hover { color: #ff9aa3; border-color: rgba(255,93,108,0.4); }
+        .hl-name-row { position: relative; flex: 1 1 240px; display: flex; gap: 6px; min-width: 0; }
+        .hl-name-row > .jr-in { flex: 1; min-width: 0; height: 34px; }
+        .hl-lib-btn .msym { transition: transform .25s var(--ease); }
+        .hl-lib-btn.on .msym { transform: rotate(180deg); }
+        .hl-lib { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; padding: 6px;
+                  border-radius: 14px; background: #1c1f23; box-shadow: 0 14px 34px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09); animation: hlFormIn .22s var(--ease) backwards; }
+        .hl-lib-it { display: flex; align-items: center; border-radius: 10px; }
+        .hl-lib-it:hover { background: rgba(255,255,255,0.05); }
+        .hl-lib-go { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: none; background: none; cursor: pointer; font: inherit; color: var(--c-ink-hi); text-align: left; }
+        .hl-lib-go i { width: 9px; height: 9px; border-radius: 3px; flex: none; background: var(--c); }
+        .hl-lib-go b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-lib-go small { margin-left: auto; font-size: 11.5px; color: #8e969e; white-space: nowrap; }
+        .hl-lib-x { width: 26px; height: 26px; margin-right: 4px; border: none; border-radius: 50%; background: none; cursor: pointer; color: #8e969e; font-size: 16px; line-height: 1; }
+        .hl-lib-x:hover { color: #ff9aa3; background: rgba(255,93,108,0.12); }
+        /* the pencil that changes one of them: small, and only there while the pointer is on its row (or it is tabbed to) */
+        .hl-lib-ed { width: 24px; height: 24px; flex: none; padding: 0; border: none; border-radius: 50%; background: none; cursor: pointer; color: #8e969e; display: grid; place-items: center;
+                     opacity: 0; transition: opacity .16s ease, color .16s ease, background-color .16s ease; }
+        .hl-lib-ed .msym { font-size: 15px; }
+        .hl-lib-it:hover .hl-lib-ed, .hl-lib-ed:focus-visible { opacity: 1; }
+        .hl-lib-ed:hover { color: #ffffff; background: rgba(255,255,255,0.1); }
+        .hl-lib-edit { display: flex; flex-direction: column; gap: 9px; margin: 2px 0; padding: 10px 10px 10px 13px; border-radius: 12px; background: rgba(255,255,255,0.05);
+                       box-shadow: inset 3px 0 0 var(--c); animation: hlFormIn .22s var(--ease) backwards; }
+        .hl-lib-ed-in { display: flex; gap: 6px; }
+        .hl-lib-ed-in .jr-in { flex: 1 1 0; min-width: 0; height: 32px; }
+        .hl-lib-also { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8e969e; cursor: pointer; }
+        .hl-lib-also input { margin: 0; accent-color: #4fb3ff; color-scheme: dark; }
+        .hl-lib-taken { font-size: 11.5px; color: #ff9aa3; }
+        .hl-lib-ed-go { display: flex; justify-content: flex-end; gap: 8px; }
+        .hl-lib-ed-go .bk-btn, .hl-lib-ed-go .hl-save { height: 30px; }
+        .hl-lib-add { display: flex; align-items: center; gap: 6px; padding: 8px 10px; margin-top: 2px; border: none; border-radius: 10px; background: rgba(255,255,255,0.04); cursor: pointer;
+                      font: inherit; font-size: 12.5px; color: var(--c-ink-2); text-align: left; }
+        .hl-lib-add:hover { color: #ffffff; background: rgba(255,255,255,0.08); }
+        .hl-lib-add .msym { font-size: 16px; }
+        .hl-lib-none { padding: 8px 10px; font-size: 12px; color: #8e969e; }
+        .hl-ask { display: inline-flex; flex-wrap: wrap; gap: 6px; animation: hlFormIn .22s var(--ease) backwards; }
+        .hl-tt-head b i { display: block; margin-top: 1px; font-style: normal; font-size: 13px; font-weight: 700; letter-spacing: 0; color: var(--c-ink-2); }
+        .hl-tt-head b.now i { color: #a8e1ff; }
+        .hl-cls { touch-action: none; }
+        /* while dragged, where it will land is a pill above the block, never over its words (overflow shows for that) */
+        .hl-cls.drag { z-index: 6; cursor: grabbing; overflow: visible; box-shadow: inset 3px 0 0 var(--c), 0 14px 30px rgba(0,0,0,0.45); opacity: 0.95; }
+        .hl-cls.drag::before { content: attr(data-at); position: absolute; right: 0; top: -27px; padding: 3px 9px; border-radius: 99px; white-space: nowrap; font-size: 11px; font-weight: 700; color: #ffffff;
+                               background: #1c1f23; box-shadow: 0 6px 16px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.12); }
+        /* a class with notes kept (a star when one is marked important), the question when a weekly class is moved */
+        .hl-cls-kept { position: absolute; right: 5px; bottom: 5px; font-size: 13px; opacity: 0.75; color: color-mix(in srgb, var(--c) 35%, #ffffff); pointer-events: none; }
+        .hl-cls-kept.star { color: #f0d88a; opacity: 0.95; font-variation-settings: 'FILL' 1; }
+        .hl-cls.drag .hl-cls-kept { opacity: 0; }
+        .hl-mv-ask { position: absolute; z-index: 12; display: flex; gap: 6px; padding: 6px; border-radius: 14px; white-space: nowrap; transform: translateX(-50%);
+                     background: #1c1f23; box-shadow: 0 14px 34px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09); animation: fadeIn .2s ease backwards; }
+        .hl-mv-ask.up { transform: translate(-50%, -100%); }
+        .hl-mv-x { padding: 0 9px; }
+        .hl-mv-x .msym, .hl-form-notes .msym { font-size: 16px; }
+        .hl-form-notes { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; }
+        .hl-form-notes .msym { margin: 0; }
+        /* the buttons that close a form (29 October 2026, his picture of Notes · Delete · Cancel · Save: "not proportionate, barely
+           aligned, and looks bad"): the footer's small .bk-btn (11.5px, spaced letters, 4px padding) stood beside the 34px Save
+           and the 34px Notes square, so four buttons had three heights, two type sizes and two radii. One height (--hb), a radius
+           and padding that follow it, one type size, the icon centred with no margin; Save a little wider as the main one, Notes
+           square. The list of his classes edits in a smaller row (30px). A new form's buttons go in one of these rows */
+        .hl-form-go, .hl-ask, .hl-mv-ask { --hb: 36px; }
+        .hl-lib-ed-go { --hb: 30px; }
+        :is(.hl-form-go, .hl-ask, .hl-mv-ask, .hl-lib-ed-go) :is(.bk-btn, .hl-save) {
+          display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; height: var(--hb); min-width: 0;
+          padding: 0 calc(var(--hb) * 0.44); border-radius: calc(var(--hb) * 0.3); font-size: 13px; font-weight: 650; letter-spacing: 0; line-height: 1; white-space: nowrap;
+        }
+        :is(.hl-form-go, .hl-ask, .hl-mv-ask, .hl-lib-ed-go) .bk-btn:not(.danger) { color: var(--c-ink-2); }
+        :is(.hl-form-go, .hl-lib-ed-go) .hl-save { padding: 0 calc(var(--hb) * 0.6); }
+        :is(.hl-form-go, .hl-ask, .hl-mv-ask, .hl-lib-ed-go) .msym { margin: 0; vertical-align: baseline; font-size: 17px; }
+        .hl-form-go .hl-form-notes, .hl-mv-ask .hl-mv-x { width: var(--hb); padding: 0; }
+        .hl-nt { position: relative; display: flex; flex-direction: column; gap: 12px; width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - 64px));
+                 padding: 22px 18px 14px; border-radius: 28px; overflow: hidden; }
+        .hl-nt .fx-head { padding-bottom: 2px; }
+        .hl-nt-hd { position: relative; min-width: 0; padding-left: 14px; }
+        .hl-nt-hd::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 4px; border-radius: 4px; background: var(--c); }
+        .hl-nt-name { font-size: 19px; font-weight: 700; line-height: 1.2; color: var(--c-ink-hi); overflow-wrap: anywhere; }
+        .hl-nt-when { margin-top: 4px; font-size: 12.5px; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .hl-nt-tools { display: flex; gap: 8px; flex: none; }
+        .hl-nt-edit { display: grid; place-items: center; padding: 0; }
+        .hl-nt-edit .msym { font-size: 15px; }
+        /* the description boxes (30 October 2026, his words: "make all the description boxes bigger, if needed make the whole ui
+           bigger"): a good height to start with, then growing with what is written, up to under half the window; they give way
+           before the list under them does (flex-shrink), so the list never closes up */
+        .hl-nt-about.jr-in { flex: 0 1 auto; height: auto; min-height: 150px; max-height: 44vh; field-sizing: content; resize: vertical; padding: 12px 14px; font: inherit;
+                             font-size: 14px; line-height: 1.5; border-radius: 14px; }
+        .hl-nt-add.tp-line { height: 46px; padding: 0 8px 0 14px; }
+        .hl-nt-add .msym { font-size: 19px; color: #8e969e; }
+        .hl-nt-plus { flex: none; width: 32px; height: 32px; padding: 0; border: none; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+                      color: #ffffff; background: color-mix(in srgb, var(--c) 70%, #1d2125); animation: fadeIn .18s ease backwards; }
+        .hl-nt-plus .msym { font-size: 18px; color: inherit; }
+        .hl-nt-plus.file { color: var(--c-ink-2); background: rgba(255,255,255,0.06); }
+        .hl-nt-plus.file:hover { color: #ffffff; background: rgba(255,255,255,0.11); }
+        .hl-nt-list { flex: 1 1 auto; min-height: 96px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; padding: 0 6px 4px; }
+        .hl-nt-grp { display: flex; align-items: center; gap: 6px; padding: 8px 4px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; }
+        .hl-nt-grp .msym { font-size: 14px; color: #f0d88a; font-variation-settings: 'FILL' 1; }
+        .hl-nt-it { display: flex; align-items: center; gap: 2px; padding-right: 4px; border-radius: 12px; animation: hlFormIn .26s var(--ease) backwards; }
+        .hl-nt-it:hover { background: rgba(255,255,255,0.045); }
+        .hl-nt-it.star { background: rgba(240,216,138,0.055); }
+        .hl-nt-it.star:hover { background: rgba(240,216,138,0.09); }
+        .hl-nt-go { flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px; padding: 8px 8px; border: none; border-radius: 12px; background: none; cursor: pointer;
+                    font: inherit; color: var(--c-ink-hi); text-align: left; }
+        .hl-nt-go:disabled { cursor: default; color: var(--c-ink-hi); opacity: 1; }
+        .hl-nt-go > .msym:first-child { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 19px; color: var(--c);
+                                        background: color-mix(in srgb, var(--c) 15%, transparent); }
+        .hl-nt-tx { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .hl-nt-tx b { font-size: 13.5px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+        .hl-nt-tx small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-nt-out { margin-left: auto; flex: none; font-size: 16px; color: #8e969e; opacity: 0; transition: opacity .16s ease; }
+        .hl-nt-go:hover .hl-nt-out, .hl-nt-go:focus-visible .hl-nt-out { opacity: 1; }
+        .hl-nt-star, .hl-nt-x { flex: none; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer; color: #6f777f;
+                                transition: color .16s ease, background-color .16s ease, opacity .16s ease; }
+        .hl-nt-star .msym, .hl-nt-x .msym { font-size: 18px; }
+        .hl-nt-star:hover { color: #f0d88a; background: rgba(240,216,138,0.10); }
+        .hl-nt-star.on { color: #f0d88a; }
+        .hl-nt-star.on .msym { font-variation-settings: 'FILL' 1; }
+        .hl-nt-x { opacity: 0; }
+        .hl-nt-it:hover .hl-nt-x, .hl-nt-x:focus-visible { opacity: 1; }
+        .hl-nt-x:hover { color: #ff9aa3; background: rgba(255,93,108,0.12); }
+        .hl-nt-none { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 20px 22px; text-align: center; }
+        .hl-nt-none .msym { font-size: 30px; color: #6f777f; }
+        .hl-nt-none b { font-size: 14px; font-weight: 700; color: var(--c-ink-hi); }
+        .hl-nt-none small { max-width: 340px; font-size: 12px; line-height: 1.45; color: #8e969e; }
+        .hl-ls-grp { padding-top: 4px; }
+        .hl-ls-grp ~ .hl-ls-grp { padding-top: 12px; }
+        .hl-ls-grp .msym { color: var(--c); font-variation-settings: 'FILL' 1; }
+        .hl-ls-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 2px 0 4px; }
+        .hl-ls-tile { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 10px 11px; border: 1px solid rgba(255,255,255,0.06); border-radius: 14px;
+                      cursor: pointer; text-align: left; font: inherit; color: var(--c-ink-hi); background: rgba(255,255,255,0.045); animation: hlFormIn .26s var(--ease) backwards;
+                      transition: background-color .16s ease, border-color .16s ease; }
+        .hl-ls-tile:hover { background: rgba(255,255,255,0.085); border-color: rgba(255,255,255,0.12); }
+        .hl-ls-tile > .msym { font-size: 22px; color: var(--c); font-variation-settings: 'FILL' 1; margin-bottom: 2px; }
+        .hl-ls-tile b { max-width: 100%; font-size: 13px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+        .hl-ls-tile small { max-width: 100%; font-size: 11px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-ls-tile.now { border-color: color-mix(in srgb, var(--c) 60%, transparent); background: color-mix(in srgb, var(--c) 10%, rgba(255,255,255,0.04)); }
+        .hl-ls-tile.new { background: none; border-style: dashed; border-color: rgba(255,255,255,0.16); }
+        .hl-ls-tile.new:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.28); }
+        .hl-ls-tile.new > .msym { color: var(--c-ink-2); font-variation-settings: 'FILL' 0; }
+        .hl-nt-list > .hl-nt-add { flex: none; margin: 2px 0 6px; }
+        .hl-ls-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; flex: 1; }
+        .hl-ls-back { flex: none; display: grid; place-items: center; padding: 0; }
+        .hl-ls-back .msym { font-size: 17px; }
+        .hl-ls-head .hl-nt-hd { flex: 1; }
+        .hl-ls-cls { font-size: 12px; color: #8e969e; overflow-wrap: anywhere; }
+        .hl-ls-title { display: block; width: 100%; box-sizing: border-box; margin-top: 2px; padding: 0; border: none; border-bottom: 1px solid transparent; outline: none; background: none;
+                       font: inherit; font-size: 19px; font-weight: 700; line-height: 1.25; color: var(--c-ink-hi); transition: border-color .16s ease; }
+        .hl-ls-title:hover { border-bottom-color: rgba(255,255,255,0.14); }
+        .hl-ls-title:focus { border-bottom-color: rgba(255,255,255,0.4); }
+        .hl-ls-title::placeholder { color: var(--c-ink-hi); }
+        .hl-ls-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 2px 0 6px; }
+        .hl-lf { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 16px; background: rgba(255,255,255,0.04);
+                 border: 1px solid rgba(255,255,255,0.06); animation: hlFormIn .26s var(--ease) backwards; }
+        .hl-lf-box { min-width: 0; display: flex; align-items: center; gap: 11px; padding: 4px 30px 4px 4px; border: none; border-radius: 12px; background: none; cursor: pointer;
+                     text-align: left; font: inherit; color: var(--c-ink-hi); transition: background-color .16s ease; }
+        .hl-lf-box:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+        .hl-lf-box:disabled { cursor: default; color: var(--c-ink-hi); opacity: 1; }
+        .hl-lf-ico { flex: none; width: 44px; height: 52px; border-radius: 9px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+                     background: color-mix(in srgb, var(--c) 15%, rgba(255,255,255,0.03)); border: 1px solid color-mix(in srgb, var(--c) 32%, transparent); }
+        .hl-lf-ico .msym { font-size: 21px; color: var(--c); }
+        .hl-lf-ico i { font-style: normal; font-size: 8.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--c-ink-2); }
+        .hl-lf-tx { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .hl-lf-tx b { font-size: 13px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .hl-lf-tx small { font-size: 11px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-lf-about { display: block; width: 100%; box-sizing: border-box; min-height: 72px; max-height: 280px; field-sizing: content; resize: none; padding: 8px 10px; border: 1px solid transparent;
+                       border-radius: 10px; outline: none; background: rgba(255,255,255,0.03); color: var(--c-ink); font: inherit; font-size: 13px; line-height: 1.45;
+                       transition: background-color .16s ease, border-color .16s ease; }
+        .hl-lf-about:hover { background: rgba(255,255,255,0.055); }
+        .hl-lf-about:focus { background: rgba(24,27,31,0.62); border-color: rgba(255,255,255,0.4); }
+        .hl-lf-x { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; }
+        .hl-lf:hover .hl-lf-x, .hl-lf-x:focus-visible { opacity: 1; }
+        .hl-nt .fx-foot { flex: none; }
+        .hl-nt-say { color: #f0d88a; animation: fadeIn .3s ease backwards; }
+        .hl-nt-drop { position: absolute; inset: 10px; z-index: 5; border-radius: 22px; border: 2px dashed color-mix(in srgb, var(--c) 70%, #ffffff); background: rgba(10,12,14,0.6);
+                      display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; font-weight: 700; color: #ffffff; pointer-events: none; animation: fadeIn .18s ease backwards; }
+        .hl-nt-drop .msym { font-size: 22px; }
+        /* assignments (29 October 2026): the card's rows, the pop-up's extras, the week's deadline lines (orchid and dashed,
+           with a flag: apart from the red line of the time of day and from the filled class blocks), the heads-up */
+        .hl-as-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+        .hl-as-count { font-size: 12.5px; color: var(--c-mute-2); font-variant-numeric: tabular-nums; }
+        .hl-as-add { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px 0 10px; border-radius: 99px; border: 1px solid rgba(242,165,230,0.28);
+                     background: rgba(242,165,230,0.1); color: #f6c7ee; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .18s ease, border-color .18s ease; }
+        .hl-as-add:hover { background: rgba(242,165,230,0.17); border-color: rgba(242,165,230,0.45); }
+        .hl-as-add .msym { font-size: 18px; }
+        .hl-as-row { position: relative; display: flex; align-items: center; gap: 4px; border-radius: 14px; animation: hlFormIn .3s var(--ease) backwards; transition: background .15s ease; }
+        .hl-as-row:hover { background: rgba(255,255,255,0.04); }
+        .hl-as-row::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--c); }
+        .hl-as-tick { flex: none; width: 26px; height: 26px; margin-left: 12px; padding: 0; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.22); background: none;
+                      display: grid; place-items: center; cursor: pointer; color: transparent; transition: background .2s ease, border-color .2s ease, color .2s ease; }
+        .hl-as-tick .msym { font-size: 16px; }
+        .hl-as-tick:hover { border-color: rgba(143,215,164,0.7); color: rgba(143,215,164,0.7); }
+        .hl-as-tick.on { background: #8fd7a4; border-color: #8fd7a4; color: #10261a; }
+        .hl-as-go { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 8px; border: none; background: none; color: inherit; font: inherit;
+                    text-align: left; cursor: pointer; border-radius: 12px; }
+        .hl-as-ico { flex: none; font-size: 20px; color: var(--c); }
+        .hl-as-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .hl-as-tx b { font-size: 14px; font-weight: 650; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-as-tx small { font-size: 12px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-as-n { flex: none; display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: #8e969e; font-variant-numeric: tabular-nums; }
+        .hl-as-n .msym { font-size: 15px; }
+        .hl-as-when { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+        .hl-as-when b { font-size: 12.5px; font-weight: 600; color: var(--c-ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-as-when em { font-style: normal; font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 99px; white-space: nowrap; color: #b9c1c8; background: rgba(255,255,255,0.06); }
+        .hl-as-row.near .hl-as-when em { color: #f6c7ee; background: rgba(242,165,230,0.13); }
+        .hl-as-row.hot .hl-as-when em { color: #ffd6a0; background: rgba(255,176,90,0.16); }
+        .hl-as-row.over .hl-as-when em { color: #ffb3ba; background: rgba(255,93,108,0.16); }
+        .hl-as-row.done { opacity: 0.75; }
+        .hl-as-row.done .hl-as-tx b { color: var(--c-ink-3); text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.3); }
+        .hl-as-grp.over { color: #e2808c; }
+        .hl-as-fold { border: none; background: none; font-family: inherit; cursor: pointer; width: 100%; text-align: left; }
+        .hl-as-fold .msym { font-size: 16px; color: inherit; font-variation-settings: normal; transition: transform .25s var(--ease); }
+        .hl-as-wt { flex: none; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #f6c7ee; background: rgba(242,165,230,0.13); }
+        .hl-as-pop { width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - max(40px, 8vh) - 24px)); }
+        /* the middle scrolls (the head and the foot stay), so a long brief in the notes never squeezes the rest */
+        .hl-as-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; margin: 0 -8px; padding: 4px 8px 6px; }
+        .hl-as-body .hl-nt-list { flex: none; overflow: visible; }
+        .hl-as-smart { display: flex; flex-direction: column; gap: 6px; flex: none; }
+        .hl-as-read.tp-line { height: 44px; padding: 0 8px 0 14px; }
+        .hl-as-read .msym { color: #f2a5e6; }
+        .hl-as-read input { font-size: 13.5px; }
+        .hl-as-found { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 6px; font-size: 12.5px; font-weight: 600; color: #f6c7ee; animation: fadeIn .18s ease backwards; }
+        .hl-as-found .msym { font-size: 16px; font-variation-settings: 'FILL' 1; }
+        .hl-as-found.none { color: #8e969e; font-weight: 500; }
+        .hl-as-found small { flex-basis: 100%; font-size: 12px; font-weight: 500; color: #ffd6a0; }
+        .hl-as-meta { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; }
+        .hl-as-fld { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 12px; cursor: text; min-width: 0;
+                     background: rgba(255,255,255,0.035); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06); transition: background .2s ease, box-shadow .2s ease; }
+        .hl-as-fld:hover { background: rgba(255,255,255,0.06); }
+        .hl-as-fld:focus-within { background: rgba(24,27,31,0.62); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55), 0 0 0 3px rgba(255,255,255,0.10); }
+        .hl-as-fld > span { flex: none; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #8a9299; }
+        .hl-as-fld > .msym { font-size: 18px; letter-spacing: 0; text-transform: none; }
+        .hl-as-fld input { flex: 1; min-width: 0; width: 100%; padding: 0; border: 0; outline: none; background: none; font: inherit; font-size: 14px; font-weight: 600;
+                           color: var(--c-ink-hi); font-variant-numeric: tabular-nums; }
+        .hl-as-fld input:focus { box-shadow: none; }
+        .hl-as-fld:not(.wide) input { width: 3.2ch; flex: none; }
+        .hl-as-fld.wide input { font-weight: 500; }
+        .hl-as-fld input::placeholder { color: #6f777f; font-weight: 500; }
+        .hl-as-fld em { flex: none; font-style: normal; font-size: 13px; font-weight: 600; color: #8e969e; margin-left: -4px; }
+        .hl-as-pop .hl-nt-about.hl-as-about { flex: none; min-height: 240px; max-height: 56vh; overflow-y: auto; }
+        .hl-as-found.ai { color: #f6c7ee; font-weight: 500; }
+        .hl-as-found.ai .msym { animation: hlAiPulse 1.1s ease-in-out infinite; }
+        @keyframes hlAiPulse { 50% { opacity: 0.3; } }
+        .hl-as-hd { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+        .hl-as-title, .hl-as-sub { width: 100%; border: none; background: none; padding: 2px 6px; margin: 0 -6px; border-radius: 8px; font: inherit; color: var(--c-ink-hi);
+                                   transition: background .15s ease; }
+        .hl-as-title:hover, .hl-as-sub:hover { background: rgba(255,255,255,0.04); }
+        .hl-as-title:focus, .hl-as-sub:focus { background: rgba(255,255,255,0.07); }
+        .hl-as-title { font-size: 19px; font-weight: 700; line-height: 1.25; }
+        .hl-as-sub { font-size: 13px; color: #a7afb6; }
+        .hl-as-title::placeholder, .hl-as-sub::placeholder { color: #6f777f; }
+        .hl-as-due-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .hl-as-due-row .jr-in { width: auto; flex: none; }
+        .hl-as-left { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px 0 9px; margin-right: auto; border-radius: 99px; font-size: 12.5px; font-weight: 700;
+                      color: #f6c7ee; background: rgba(242,165,230,0.12); white-space: nowrap; }
+        .hl-as-left .msym { font-size: 16px; }
+        .hl-as-left.far { color: #c7cdd2; background: rgba(255,255,255,0.06); }
+        .hl-as-left.hot { color: #ffd6a0; background: rgba(255,176,90,0.16); }
+        .hl-as-left.over { color: #ffb3ba; background: rgba(255,93,108,0.16); }
+        .hl-as-left.done { color: #8fd7a4; background: rgba(143,215,164,0.13); }
+        .hl-as-done { display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 12px 0 9px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
+                      background: rgba(255,255,255,0.05); color: var(--c-ink-2); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+                      transition: background .2s ease, color .2s ease, border-color .2s ease; }
+        .hl-as-done .msym { font-size: 17px; }
+        .hl-as-done:hover { background: rgba(255,255,255,0.09); }
+        .hl-as-done.on { color: #10261a; background: #8fd7a4; border-color: #8fd7a4; }
+        .hl-as-kinds .jr-chip, .hl-as-cls .jr-chip { display: inline-flex; align-items: center; gap: 5px; }
+        .hl-as-kinds .jr-chip .msym { font-size: 15px; }
+        .hl-as-cls .jr-chip i { width: 8px; height: 8px; border-radius: 99px; background: var(--c); }
+        .hl-as-clsrow { display: flex; align-items: center; gap: 8px; }
+        /* four classes in one bar: equal columns, each shown by its course code (the full name is in the title and in the picker) */
+        .hl-as-clsrow .hl-as-cls { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+        .hl-as-clsrow .hl-as-cls .jr-chip { min-width: 0; justify-content: center; }
+        .hl-as-clsrow .hl-as-cls .jr-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .hl-as-clsrow .hl-as-cls .jr-chip i { flex: none; }
+        .hl-as-clsrow .hl-as-nocls { grid-column: 1 / -1; }
+        .hl-as-cls-ed { flex: none; width: 34px; height: 28px; display: grid; place-items: center; padding: 0; border-radius: 8px; cursor: pointer; color: var(--c-mute-2);
+                        border: 1px solid rgba(255,255,255,0.09); background: none; transition: color .2s ease, background .2s ease, border-color .2s ease; }
+        .hl-as-cls-ed .msym { font-size: 17px; }
+        .hl-as-cls-ed:hover, .hl-as-cls-ed.on { color: var(--c-ink); border-color: rgba(255,255,255,0.22); background: rgba(255,255,255,0.06); }
+        .hl-as-mine { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 14px; background: rgba(0,0,0,0.18); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+                      animation: fadeIn .2s ease backwards; }
+        .hl-as-mine .hl-nt-grp { padding: 4px 0 0; }
+        .hl-as-mine-set { display: flex; flex-wrap: wrap; gap: 6px; }
+        .hl-as-mine-set .jr-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; }
+        .hl-as-mine-set .jr-chip i { width: 8px; height: 8px; border-radius: 99px; background: var(--c); flex: none; }
+        .hl-as-nocls { padding: 5px 8px; font-size: 12px; color: #8e969e; }
+        .hl-as-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 4px 0 8px; }
+        .hl-as-pic { position: relative; }
+        .hl-as-pic-go { display: block; width: 100%; aspect-ratio: 4 / 3; padding: 0; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; overflow: hidden;
+                        background: rgba(255,255,255,0.04); cursor: zoom-in; }
+        .hl-as-pic-go img, .hl-as-pic-go canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+        .hl-as-pic .hl-nt-x { position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; background: rgba(10,12,14,0.62); color: #e8eaec; }
+        .hl-as-pic:hover .hl-nt-x { opacity: 1; }
+        .hl-as-none { padding: 14px 20px 10px; }
+        .hl-due { position: absolute; left: -2px; right: -2px; height: 16px; margin-top: -8px; padding: 0; border: none; background: none; z-index: 3; cursor: pointer;
+                  animation: hlDueIn .45s var(--ease) backwards; }
+        .hl-due::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; border-top: 2px dashed #f2a5e6; box-shadow: 0 0 8px rgba(242,165,230,0.5); }
+        .hl-due-tab { position: absolute; left: 3px; bottom: 9px; max-width: calc(100% - 6px); display: inline-flex; align-items: center; gap: 3px; height: 17px; padding: 0 6px 0 3px;
+                      border-radius: 6px 6px 6px 1px; background: #f2a5e6; color: #3a1735; font-size: 10.5px; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden;
+                      box-shadow: 0 2px 10px rgba(242,165,230,0.35); transition: transform .2s var(--ease); }
+        .hl-due-tab .msym { flex: none; font-size: 12px; font-variation-settings: 'FILL' 1; }
+        .hl-due-tab b { min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+        .hl-due-tab i { flex: none; font-style: normal; font-weight: 600; opacity: 0.75; }
+        .hl-due:hover .hl-due-tab { transform: translateY(-1px); }
+        @keyframes hlDueIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .hl-heads { position: fixed; z-index: 75; top: 16px; left: 0; right: 0; margin: 0 auto; width: fit-content; max-width: min(620px, calc(100vw - 32px));
+                    display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 14px; border-radius: 18px;
+                    border: 1px solid color-mix(in srgb, #f2a5e6 32%, transparent); animation: hlHeadsIn .5s var(--ease) backwards; }
+        .hl-heads.out { animation: hlHeadsOut .22s var(--ease-soft) both; }
+        .hl-heads.hot { border-color: rgba(255,176,90,0.4); }
+        .hl-heads.over { border-color: rgba(255,93,108,0.42); }
+        .hl-heads-ico { flex: none; font-size: 22px; color: #f2a5e6; font-variation-settings: 'FILL' 1; }
+        .hl-heads.hot .hl-heads-ico { color: #ffc27a; }
+        .hl-heads.over .hl-heads-ico { color: #ff8d97; }
+        .hl-heads-tx { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .hl-heads-tx b { font-size: 13.5px; font-weight: 700; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-heads-tx small { font-size: 12px; color: #a7afb6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-heads-x { flex: none; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer;
+                      color: #8e969e; transition: background .15s ease, color .15s ease; }
+        .hl-heads-x:hover { background: rgba(255,255,255,0.08); color: #e8eaec; }
+        .hl-heads-x .msym { font-size: 18px; }
+        @keyframes hlHeadsIn { from { opacity: 0; transform: translateY(-14px) scale(0.97); } to { opacity: 1; transform: none; } }
+        @keyframes hlHeadsOut { to { opacity: 0; transform: translateY(-10px) scale(0.98); } }
+        .hl-goal-in { margin-left: auto; }
+        .hl-diet-say { font-size: 11.5px; color: #8e969e; }
+        .hl-diet-say b { color: #ffcf7a; }
+        .hl-goal-line.diet { border-top-color: rgba(255,170,90,0.6); }
+        .hl-goal-line.diet i { left: auto; right: 2px; color: #ffcf7a; }
+        .hl-month-grid { position: relative; }
+        .hl-mtip { position: absolute; z-index: 20; transform: translate(-50%, calc(-100% - 8px)); display: flex; flex-direction: column; gap: 5px; min-width: 196px; padding: 10px 12px;
+                   border-radius: 12px; background: #1c1f23; box-shadow: 0 12px 30px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09); pointer-events: none; animation: fadeIn .14s ease backwards; }
+        .hl-mtip > b { font-size: 12px; font-weight: 700; color: var(--c-ink-hi); margin-bottom: 1px; }
+        .hl-mtip > span { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #aab1b8; white-space: nowrap; }
+        .hl-mtip > span i { width: 8px; height: 8px; border-radius: 99px; background: var(--c); box-shadow: 0 0 8px color-mix(in srgb, var(--c) 60%, transparent); }
+        .hl-mtip em { margin-left: auto; font-style: normal; font-weight: 600; color: #eef1f4; font-variant-numeric: tabular-nums; }
+        .hl-mtip small { min-width: 34px; text-align: right; font-weight: 700; color: var(--c); font-variant-numeric: tabular-nums; }
+        /* the footer's crocodile and the apps that come out from behind it */
+        .foot-apps { position: relative; display: inline-flex; align-items: center; align-self: center; }
+        .foot-apps::before { content: ""; position: absolute; right: 100%; top: -10px; bottom: -10px; width: 0; }
+        .foot-apps:hover::before, .foot-apps:focus-within::before { width: 96px; }
+        .foot-apps .foot-logo { position: relative; z-index: 2; }
+        /* the apps' own logos and nothing else (30 October 2026, his picture of the rings and the coin on their tiles: "remove the
+           outline for these buttons, keep the outer glow shadow … just purely have it as their respective logo"): no border, no
+           tile; the shadow is now the logo's own (drop-shadow on the drawing, still, never animated) so it follows its shape */
+        .fa-app { position: absolute; right: -4px; top: 50%; z-index: 1; width: 30px; height: 30px; margin-top: -15px; padding: 0; border-radius: 9px; display: grid; place-items: center; cursor: pointer;
+                  color: var(--c-ink); border: none; background: none; box-shadow: none;
+                  opacity: 0; transform: translateX(0) scale(0.6); pointer-events: none;
+                  transition: transform .34s var(--ease), opacity .22s ease, color .18s ease; transition-delay: calc((2 - var(--i)) * 35ms); }
+        .foot-apps:hover .fa-app, .foot-apps:focus-within .fa-app { opacity: 1; transform: translateX(calc(var(--i) * -40px)) scale(1); pointer-events: auto; transition-delay: calc((var(--i) - 1) * 45ms); }
+        .fa-app:hover { color: #ffffff; }
+        .fa-app .msym { font-size: 17px; }
+        .fa-app svg { width: 28px; height: 28px; filter: drop-shadow(0 5px 8px rgba(0,0,0,0.55)); transition: transform .2s var(--ease); }
+        .fa-app:hover svg { transform: scale(1.1); }
         @keyframes hlSpin { to { transform: rotate(360deg); } }
         .hl-scan-say { font-size: 12.5px; color: #c7cdd2; animation: fadeRight .3s ease backwards; }
         .hl-scan-head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; }
@@ -24928,6 +31052,10 @@ export default function PnlCalendar() {
         .hl-scan-head b { font-size: 14px; color: #eef1f4; }
         .hl-scan-head small { font-size: 12px; color: #8e969e; }
         .hl-scan-rows { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+        .hl-scan-nw { position: relative; display: flex; align-items: center; min-width: 0; }
+        .hl-scan-nw .jr-in { flex: 1; min-width: 0; }
+        .hl-scan-lib { position: absolute; left: 9px; width: 8px; height: 8px; border-radius: 3px; background: var(--c); box-shadow: 0 0 8px color-mix(in srgb, var(--c) 60%, transparent); pointer-events: none; }
+        .hl-scan-lib + .jr-in { padding-left: 24px; }
         .hl-scan-row { display: grid; grid-template-columns: 28px 74px 110px 110px minmax(0, 1.6fr) minmax(0, 1fr); gap: 6px; align-items: center;
                        animation: fadeDown .25s ease backwards; animation-delay: calc(var(--i) * 35ms); transition: opacity .2s ease; }
         .hl-scan-row.off { opacity: 0.45; }
@@ -24939,11 +31067,90 @@ export default function PnlCalendar() {
         .hl-scan-tick.on { background: #2fd08a; border-color: #2fd08a; }
         .hl-scan-tick.on path { stroke-dashoffset: 0; }
         .hl-form > .jr-in { flex: 1 1 200px; width: auto; height: 34px; }
+        .hl-tf { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; cursor: pointer; font-variant-numeric: tabular-nums; }
+        .hl-tf .msym { font-size: 18px; color: var(--c-mute-2); flex: none; }
+        .hl-tf.open { background: rgba(24,27,31,0.62); border-color: rgba(255,255,255,0.55); box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
+        .tpk { position: fixed; z-index: 400; width: 244px; box-sizing: border-box; padding: 12px; border-radius: 20px; display: flex; flex-direction: column; gap: 8px;
+               box-shadow: var(--lg-edge), 0 24px 48px -12px rgba(0,0,0,0.6); animation: tpkIn .26s var(--ease) backwards; }
+        @keyframes tpkIn { from { opacity: 0; transform: translateY(-6px) scale(0.97); } }
+        .tpk-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+        .tpk-in { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border-radius: 10px; border: none; outline: none; text-align: center; font: inherit; font-size: 15px; font-weight: 700; letter-spacing: 0.04em;
+                  color: #eef1f4; background: rgba(8,10,13,0.32); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); font-variant-numeric: tabular-nums; }
+        .tpk-in:focus { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4); }
+        .tpk-cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: #8a9299; }
+        .tpk-g { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+        .tpk-g button { height: 30px; padding: 0; border: none; border-radius: 9px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--c-ink-2); background: rgba(255,255,255,0.045);
+                        font-variant-numeric: tabular-nums; transition: background .15s ease, color .15s ease; }
+        .tpk-g button:hover { color: #ffffff; background: rgba(255,255,255,0.1); }
+        .tpk-g button.on { color: #a9c6ea; background: rgba(120,165,225,0.16); box-shadow: inset 0 0 0 1px rgba(120,165,225,0.4); }
+        .tpk-done { height: 32px; margin-top: 4px; border: none; border-radius: 10px; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 700; color: #0d1a26; background: #8ec8f8; box-shadow: inset 0 1px 0 rgba(255,255,255,0.4); }
         .hl-times { display: inline-flex; align-items: center; gap: 6px; }
         .hl-times .jr-in { width: 138px; height: 34px; color-scheme: dark; }
         .hl-times i { font-style: normal; font-size: 12px; color: #8e969e; }
-        .hl-dots { display: inline-flex; gap: 6px; }
-        .hl-dots button, .hl-bi-tools button[style] { width: 18px; height: 18px; padding: 0; border-radius: 99px; border: 2px solid transparent; background: var(--c); cursor: pointer;
+        .hl-dots { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        /* his own colours, the pencil for any colour, keeping one (28 October 2026) */
+        .hl-cdot { position: relative; display: inline-flex; }
+        .hl-cdot i { position: absolute; right: -6px; top: -6px; width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 11px; line-height: 1;
+                     color: #ffffff; background: #3a3f45; cursor: pointer; opacity: 0; transform: scale(0.6); transition: opacity .16s ease, transform .2s var(--ease); }
+        .hl-cdot:hover i { opacity: 1; transform: none; }
+        .hl-dot-pick { position: relative; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; color: #eef1f4;
+                       background: var(--c); box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.35); }
+        .hl-dot-pick:not(.on) { background: conic-gradient(#ff8d97, #ffc07e, #f0d88a, #8fe2b6, #7fb6e0, #b7a4e6, #ff8d97); }
+        .hl-dot-pick.on { box-shadow: 0 0 0 2px #ffffff; }
+        .hl-dot-pick .msym { font-size: 13px; text-shadow: 0 0 3px rgba(0,0,0,0.6); }
+        .hl-dot-pick { border: none; padding: 0; }
+        .hl-pick-wrap { position: relative; display: inline-flex; }
+        /* the colour picker: a small glass pane under the pencil (its fill is every pop-up's: .glass[role="dialog"]) */
+        .cpk { position: absolute; left: 50%; top: calc(100% + 10px); z-index: 60; width: 252px; padding: 12px; border-radius: 20px; display: flex; flex-direction: column; gap: 10px;
+               transform: translateX(-50%); box-shadow: var(--lg-edge), 0 24px 48px -12px rgba(0,0,0,0.6); animation: cpkIn .28s var(--ease) backwards; }
+        @keyframes cpkIn { from { opacity: 0; transform: translate(-50%, -6px) scale(0.96); } }
+        .cpk-sv { position: relative; height: 150px; border-radius: 14px; cursor: crosshair; touch-action: none;
+                  background: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(var(--h) 100% 50%));
+                  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+        .cpk-knob { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; pointer-events: none;
+                    background: var(--cur); box-shadow: 0 0 0 2.5px #ffffff, 0 2px 8px rgba(0,0,0,0.5); }
+        .cpk-row { display: flex; align-items: center; gap: 10px; }
+        .cpk-prev { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--cur); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18), 0 0 14px color-mix(in srgb, var(--cur) 45%, transparent); }
+        .cpk-hue { position: relative; flex: 1; height: 12px; border-radius: 99px; cursor: pointer; touch-action: none;
+                   background: linear-gradient(to right, #ff0000, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000); }
+        .cpk-hue .cpk-knob { top: 50%; background: hsl(var(--h) 100% 50%); }
+        .cpk-hex { flex: 1; display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 10px; border-radius: 10px; background: rgba(8,10,13,0.32); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+        .cpk-hex:focus-within { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4); }
+        .cpk-hex b { color: #8e969e; font-weight: 600; }
+        .cpk-hex input { flex: 1; min-width: 0; border: none; outline: none; background: none; padding: 0; font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0.06em; color: #eef1f4; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+        .cpk-ico { width: 32px; height: 32px; flex: none; padding: 0; border-radius: 10px; display: grid; place-items: center; cursor: pointer; color: var(--c-ink-2);
+                   border: 1px solid rgba(255,255,255,0.08); background: var(--lg-lens); }
+        .cpk-ico:hover { color: #ffffff; border-color: rgba(255,255,255,0.2); }
+        .cpk-ico .msym { font-size: 17px; }
+        .cpk-sw { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 6px; }
+        .cpk-sw button { aspect-ratio: 1; padding: 0; border: none; border-radius: 50%; cursor: pointer; background: var(--c); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+                         transition: transform .18s var(--ease), box-shadow .18s ease; }
+        .cpk-sw button:hover { transform: scale(1.12); }
+        .cpk-sw button.on { box-shadow: 0 0 0 2px #ffffff; }
+        .cpk-go { display: flex; gap: 8px; padding-top: 2px; }
+        .cpk-go button { flex: 1; height: 32px; border-radius: 10px; border: none; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+        .cpk-go button { white-space: nowrap; }
+        .cpk-go .cpk-keep { flex: none; padding: 0 12px; }
+        .cpk-keep { color: var(--c-ink-2); background: rgba(255,255,255,0.07); }
+        .cpk-keep:hover:not(:disabled) { color: #ffffff; background: rgba(255,255,255,0.12); }
+        .cpk-keep:disabled { opacity: 0.6; cursor: default; }
+        .cpk-keep .msym { font-size: 16px; }
+        .cpk-done { color: var(--ink); background: var(--cur); box-shadow: inset 0 1px 0 rgba(255,255,255,0.4); }
+        .hl-dot-keep { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 9px 0 6px; border: none; border-radius: 99px; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 600;
+                       color: var(--c-ink-2); background: rgba(255,255,255,0.07); animation: fadeIn .2s ease backwards; }
+        .hl-dot-keep .msym { font-size: 15px; }
+        .hl-dot-keep:hover { color: #ffffff; background: rgba(255,255,255,0.12); }
+        .hl-next-day { font-style: normal; font-size: 11.5px; font-weight: 600; color: #a8e1ff; white-space: nowrap; }
+        /* a class cut at midnight: square where it is cut; the grip at its foot to change its end */
+        .hl-cls.night { border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
+        .hl-cls.cont { border-top-left-radius: 2px; border-top-right-radius: 2px; }
+        .hl-cls-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; }
+        .hl-cls-grip::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 18px; height: 3px; margin-left: -9px; border-radius: 3px; background: rgba(255,255,255,0.45); opacity: 0; transition: opacity .16s ease; }
+        .hl-cls:hover .hl-cls-grip::after { opacity: 1; }
+        /* today's date in a filled circle, as both calendars mark it */
+        .hl-tt-head b.now i { width: 24px; height: 24px; margin: 2px auto 0; border-radius: 50%; display: grid; place-items: center; color: #0d1a26 !important; background: #4fb3ff; }
+        /* :where(:not(.cpk *)) keeps the colour picker's own buttons (it opens inside .hl-dots) out of this rule without adding specificity */
+        .hl-dots button:where(:not(.cpk *)), .hl-bi-tools button[style] { width: 18px; height: 18px; padding: 0; border-radius: 99px; border: 2px solid transparent; background: var(--c); cursor: pointer;
                           box-shadow: 0 0 0 1px rgba(0,0,0,0.3); transition: border-color .15s ease; }
         .hl-dots button.on, .hl-bi-tools button.on { border-color: #ffffff; }
         .hl-form-go { display: inline-flex; gap: 8px; margin-left: auto; align-items: center; }
@@ -24957,7 +31164,7 @@ export default function PnlCalendar() {
         .hl-good { color: #ffaf7a; display: inline-flex; align-items: center; gap: 3px; }
         .hl-good .msym { font-size: 16px; }
         .hl-bars { position: relative; display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; height: 170px; margin: 18px 0 6px; padding-bottom: 20px; }
-        .hl-goal-line { position: absolute; left: 0; right: 0; margin-bottom: 20px; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
+        .hl-goal-line { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
         .hl-goal-line i { position: absolute; left: 2px; top: -17px; font-style: normal; font-size: 10.5px; color: #9cf0c8; font-variant-numeric: tabular-nums; }
         .hl-bar { position: relative; display: flex; flex-direction: column; justify-content: flex-end; padding: 0; border: none; background: none; cursor: pointer; }
         .hl-bar-col { position: relative; flex: 1; display: flex; align-items: flex-end; border-radius: 7px; background: rgba(255,255,255,0.025); }
@@ -24966,8 +31173,11 @@ export default function PnlCalendar() {
         .hl-bar.met .hl-bar-col > i { background: linear-gradient(180deg, #9cf0c8, #2fd08a); box-shadow: 0 0 14px rgba(47,208,138,0.35); }
         .hl-bar.sel .hl-bar-col { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.55); }
         .hl-bar.later { opacity: 0.35; }
-        .hl-bar-col em { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%); font-style: normal; font-size: 10px; color: #c7cdd2;
-                         white-space: nowrap; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+        /* the figure stands on its own bar (--h: the bar's height), not at the top of the track, where it landed on the goal lines'
+           words ("Diet goal 18,200" and "5.4k" in one place); a small dark pill, above the lines' words, so where a bar does
+           reach a line it reads as a figure on top of it */
+        .hl-bar-col em { position: absolute; left: 50%; bottom: calc(var(--h, 100%) + 4px); transform: translateX(-50%); z-index: 3; padding: 1px 5px; border-radius: 6px; background: rgba(24,27,31,0.88);
+                         font-style: normal; font-size: 10px; color: #c7cdd2; white-space: nowrap; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
         .hl-bar:hover .hl-bar-col em, .hl-bar.sel .hl-bar-col em { opacity: 1; }
         .hl-bar-d { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; font-size: 10.5px; color: #6f777f; }
         .hl-bar.sel .hl-bar-d { color: #eef1f4; font-weight: 700; }
@@ -24975,6 +31185,110 @@ export default function PnlCalendar() {
         .hl-month-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
         .hl-month-head b { font-size: 13px; font-weight: 700; color: #eef1f4; }
         .hl-month-head span { font-size: 12px; color: #8e969e; }
+        .hl-month-row { display: grid; grid-template-columns: minmax(0, 560px) minmax(220px, 1fr); gap: 28px; align-items: start; }
+        @media (max-width: 900px) { .hl-month-row { grid-template-columns: minmax(0, 1fr); } }
+        /* beside the month's rings: its figures in small boxes, then the night's sleep rated, the month's sleep in its corner */
+        .hl-mside { display: flex; flex-direction: column; gap: 12px; padding-top: 22px; min-width: 0; }
+        /* the month's step figures as one slim line (31 October 2026, "the steps info on top a lot smaller"), the room going to sleep */
+        .hl-msum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; padding: 8px 12px; border-radius: 12px; background: rgba(255,255,255,0.03);
+                   animation: hlFormIn .4s var(--ease) backwards; }
+        .hl-msum-t { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; }
+        .hl-msum-t i { flex: none; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+        .hl-msum-t b { font-size: 12.5px; font-weight: 700; color: #eef1f4; font-variant-numeric: tabular-nums; }
+        .hl-msum-t small { font-size: 11px; color: #8e969e; }
+        .hl-slp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 34%); border-radius: 16px; background: rgba(255,255,255,0.035);
+                  box-shadow: inset 0 0 0 1px rgba(183,164,230,0.10); animation: hlFormIn .45s var(--ease) backwards; overflow: hidden; }
+        .hl-slp-day { display: flex; flex-direction: column; gap: 16px; padding: 18px 20px; min-width: 0; }
+        .hl-slp-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; }
+        .hl-slp-hist { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px 0 8px; border: none; border-radius: 99px; cursor: pointer; flex: none;
+                       font: inherit; font-size: 12px; font-weight: 650; color: #d6c9ff; background: rgba(183,164,230,0.12); transition: background-color .16s ease; }
+        .hl-slp-hist:hover { background: rgba(183,164,230,0.22); }
+        .hl-slp-hist .msym { font-size: 16px; }
+        .hl-slp-top { position: relative; display: flex; align-items: center; gap: 20px; }
+        .hl-slp-ring { width: 120px; height: 120px; flex: none; transform: rotate(-90deg); }
+        .hl-slp-ring circle { fill: none; stroke: rgba(183,164,230,0.12); stroke-width: 7; }
+        .hl-slp-ring circle.on { stroke: #b7a4e6; stroke-linecap: round; animation: hlSlpIn .9s var(--ease) backwards; }
+        @keyframes hlSlpIn { from { stroke-dashoffset: var(--c0); } }
+        .hl-slp-n { position: absolute; left: 0; top: 50%; width: 120px; transform: translateY(-50%); text-align: center; font-size: 32px; font-weight: 800; color: #eef1f4; font-variant-numeric: tabular-nums; }
+        .hl-slp-say { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .hl-slp-say b { font-size: 22px; font-weight: 700; color: #d6c9ff; }
+        .hl-slp-say em { font-style: normal; font-size: 14.5px; font-weight: 600; color: #eef1f4; font-variant-numeric: tabular-nums; }
+        .hl-slp-say small { font-size: 13px; line-height: 1.45; color: #8e969e; }
+        .hl-slp-times { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+        .hl-slp-times > .msym { font-size: 18px; color: #b7a4e6; }
+        .hl-slp-times > i { font-style: normal; color: #6f777f; }
+        .hl-slp-times .jr-in { width: 108px; height: 34px; }
+        .hl-slp-times small { margin-left: 4px; font-size: 12px; color: #8e969e; white-space: nowrap; }
+        .hl-slp-times small b { color: #d9cdf6; }
+        .hl-slp-feel { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+        .hl-slp-feel small { font-size: 12.5px; color: #8e969e; margin-right: 6px; }
+        .hl-slp-feel button { width: 36px; height: 36px; padding: 0; border: none; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer; color: #6f777f;
+                              transition: color .18s ease, background-color .18s ease; }
+        .hl-slp-feel button .msym { font-size: 23px; }
+        .hl-slp-feel button:hover:not(:disabled) { color: #d6c9ff; background: rgba(183,164,230,0.10); }
+        .hl-slp-feel button.on { color: #d6c9ff; background: rgba(183,164,230,0.18); }
+        .hl-slp-feel button.on .msym { font-variation-settings: 'FILL' 1; }
+        .hl-slp-feel button:disabled { cursor: default; opacity: 0.4; }
+        .hl-slp-mo { display: flex; flex-direction: column; gap: 9px; padding: 18px 16px 14px; min-width: 0; background: rgba(183,164,230,0.05); border-left: 1px solid rgba(255,255,255,0.05); }
+        .hl-slp-fig { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+        .hl-slp-fig b { font-size: 19px; font-weight: 700; color: #eef1f4; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-slp-fig b.msym { font-size: 22px; font-weight: normal; color: #d6c9ff; align-self: center; }
+        .hl-slp-fig small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-slp-bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; margin-top: auto; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; width: 100%;
+                       transition: background-color .16s ease; }
+        .hl-slp-bars:hover { background: rgba(183,164,230,0.07); }
+        .hl-slp-bars i { flex: 1; min-width: 2px; border-radius: 2px; background: rgba(183,164,230,0.5); }
+        .hl-slp-bars i.low { background: rgba(255,154,163,0.55); }
+        .hl-slp-bars i.sel { background: #d6c9ff; }
+        .hl-slp-n2 { font-size: 10.5px; color: #6f777f; }
+        /* the sleep history (HlSleepLog) */
+        .hl-sh { width: min(740px, calc(100vw - 48px)); }
+        .hl-sh-mo { display: inline-flex; align-items: center; gap: 2px; height: 32px; padding: 0 2px; border-radius: 99px; background: rgba(255,255,255,0.05); }
+        .hl-sh-mo b { min-width: 112px; text-align: center; font-size: 12.5px; font-weight: 650; color: var(--c-ink-1); white-space: nowrap; }
+        .hl-sh-mo button { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; color: #c5ccd3; cursor: pointer; display: grid; place-items: center; transition: background-color .16s ease; }
+        .hl-sh-mo button:hover:not(:disabled) { background: rgba(255,255,255,0.08); }
+        .hl-sh-mo button:disabled { opacity: 0.3; cursor: default; }
+        .hl-sh-mo .msym { font-size: 18px; }
+        .hl-sh-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; flex: none; }
+        .hl-sh-fig { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.035); }
+        .hl-sh-fig small { font-size: 11px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-sh-fig b { font-size: 17px; font-weight: 700; color: #eef1f4; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-sh-chart { display: grid; grid-template-columns: 46px minmax(0, 1fr); height: 196px; padding: 6px 0 22px; flex: none; }
+        .hl-sh-ax { position: relative; }
+        .hl-sh-ax span { position: absolute; right: 8px; transform: translateY(-50%); font-size: 10.5px; color: #6f777f; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-sh-cols { position: relative; display: flex; gap: 2px; border-top: 1px solid rgba(255,255,255,0.06); border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .hl-sh-ln { position: absolute; left: 0; right: 0; height: 1px; background: rgba(255,255,255,0.04); pointer-events: none; }
+        .hl-sh-col { position: relative; flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; transition: background-color .16s ease; }
+        .hl-sh-col:hover:not(:disabled), .hl-sh-col.sel { background: rgba(183,164,230,0.10); }
+        .hl-sh-col:disabled { cursor: default; }
+        .hl-sh-col i { position: absolute; left: 50%; width: min(10px, 70%); transform: translateX(-50%); border-radius: 99px; animation: hlShIn .45s var(--ease) backwards; animation-delay: calc(var(--i, 0) * 12ms); }
+        .hl-sh-col em { position: absolute; left: 0; right: 0; bottom: -19px; font-style: normal; font-size: 10px; color: #6f777f; text-align: center; font-variant-numeric: tabular-nums; }
+        .hl-sh-col.today em { color: #d6c9ff; font-weight: 700; }
+        @keyframes hlShIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+        .hl-sh-list { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px 4px; }
+        .hl-sh-row { display: grid; grid-template-columns: 112px auto minmax(0, 1fr) 44px 28px 30px; align-items: center; gap: 8px; min-height: 46px; padding: 4px 6px 4px 12px;
+                     border-radius: 14px; background: rgba(255,255,255,0.025); transition: background-color .2s ease; }
+        .hl-sh-row.sel { background: rgba(183,164,230,0.13); }
+        .hl-sh-row.head { min-height: 0; padding-top: 2px; padding-bottom: 6px; background: none; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #6f777f; }
+        .hl-sh-row.head span:nth-child(3) { justify-self: end; }
+        .hl-sh-row.head span:nth-child(4), .hl-sh-row.head span:nth-child(5) { justify-self: center; }
+        .hl-sh-d { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+        .hl-sh-d b { font-size: 13px; font-weight: 600; color: #eef1f4; white-space: nowrap; }
+        .hl-sh-d small { font-size: 10.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-sh-row .hl-slp-times .jr-in { width: 100px; height: 32px; }
+        .hl-sh-dur { justify-self: end; font-size: 13px; font-weight: 650; color: #eef1f4; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-sh-sc { justify-self: center; min-width: 34px; height: 24px; padding: 0 6px; border-radius: 99px; display: grid; place-items: center; font-size: 12px; font-weight: 800;
+                    color: #15171b; background: var(--t); font-variant-numeric: tabular-nums; }
+        .hl-sh-sc.none { background: none; color: #6f777f; font-weight: 600; }
+        .hl-sh-feel { justify-self: center; display: grid; place-items: center; }
+        .hl-sh-feel .msym { font-size: 20px; color: #d6c9ff; font-variation-settings: 'FILL' 1; }
+        .hl-sh-x { width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer; color: #6f777f;
+                   transition: background-color .16s ease, color .16s ease, opacity .16s ease; }
+        .hl-sh-x .msym { font-size: 18px; }
+        .hl-sh-x:hover:not(:disabled) { color: #ff9aa3; background: rgba(255,93,108,0.12); }
+        .hl-sh-x:disabled { opacity: 0; pointer-events: none; }
+        @media (max-width: 720px) { .hl-sh-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hl-sh-row { grid-template-columns: minmax(0, 1fr) auto; } .hl-sh-row.head { display: none; } }
+        @media (max-width: 1100px) { .hl-slp { grid-template-columns: minmax(0, 1fr); } .hl-slp-mo { border-left: none; border-top: 1px solid rgba(255,255,255,0.05); } }
         .hl-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px 6px; max-width: 560px; }
         .hl-mdow { text-align: center; font-size: 10.5px; color: #6f777f; padding-bottom: 2px; }
         .hl-mday { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 0 3px; border: none; border-radius: 10px; background: none; cursor: pointer;
@@ -24986,15 +31300,25 @@ export default function PnlCalendar() {
         .hl-mday.today i { color: #a8e1ff; font-weight: 700; }
         .hl-mday.later { opacity: 0.3; cursor: default; }
         .hl-apple { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
-        .hl-apple .info-tip { left: auto; right: -140px; }
+        .hl-apple .info-tip { left: auto; right: -140px; top: auto; bottom: calc(100% + 9px); }      /* upward: under it the card's fold cut it off, and nothing showed */
         .hl-phone { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
         .hl-phone-dot { width: 8px; height: 8px; border-radius: 99px; background: #5b636b; flex: none; transition: background .3s ease, box-shadow .3s ease; }
         .hl-phone-dot.on { background: #2fd08a; box-shadow: 0 0 9px rgba(47,208,138,0.6); }
         .hl-phone-t { font-size: 12.5px; color: #aab1b8; }
         .hl-phone-t b { color: #eef1f4; font-weight: 700; }
         .hl-phone .bk-btn, .hl-apple > .bk-btn { height: 32px; padding: 0 13px; font-size: 12px; }
-        .hl-how { flex: 1 1 100%; margin: 0; padding: 12px 16px 12px 34px; border-radius: 12px; background: rgba(255,255,255,0.035); display: flex; flex-direction: column; gap: 7px;
+        .hl-how { flex: 1 1 100%; margin: 0; padding: 12px 16px; border-radius: 12px; background: rgba(255,255,255,0.035); display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
                   font-size: 12.5px; line-height: 1.55; color: #aab1b8; animation: hlFormIn .3s var(--ease) backwards; }
+        .hl-how p { margin: 0; }
+        /* words that can be pressed: small, a soft box behind them under the pointer (the setup's "How to set it up", "Copy") */
+        .hl-link { padding: 3px 7px; margin: 0 -3px; border: none; border-radius: 7px; background: transparent; color: #8fd7a4; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+                   transition: background-color .18s ease, color .18s ease; }
+        .hl-link:hover, .hl-link.on { background: rgba(143,215,164,0.13); color: #b9f0cb; }
+        .hl-link:focus-visible { outline: 2px solid rgba(143,215,164,0.6); outline-offset: 1px; }
+        .hl-ai-head { align-self: stretch; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .hl-ai-text { align-self: stretch; margin: 0; padding: 10px 12px; border-radius: 9px; background: rgba(0,0,0,0.22); color: #dfe4e8; font: 11.5px/1.55 ui-monospace, Menlo, monospace;
+                      white-space: pre-wrap; max-height: 180px; overflow-y: auto; user-select: text; }
+        .hl-steps { margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 7px; animation: hlFormIn .3s var(--ease) backwards; }
         .hl-how li::marker { color: #6f777f; font-weight: 700; }
         .hl-how b { color: #eef1f4; font-weight: 600; }
         .hl-how li > b:first-child { color: #9cf0c8; }
@@ -25178,7 +31502,9 @@ export default function PnlCalendar() {
         .ring-unit.go .rg-ring.r2 { animation: rgSpin2 1.2s cubic-bezier(0.45,0,0.25,1) .08s backwards; }
         @keyframes rgSpin0 { from { transform: rotateZ(0deg); } to { transform: rotateZ(360deg); } }
         @keyframes rgSpin1 { from { transform: rotateZ(0deg); } to { transform: rotateZ(-360deg); } }
-        @keyframes rgSpin2 { from { transform: rotateZ(0deg); } to { transform: rotateZ(720deg); } }
+        /* (the inner, blue one turned twice, at twice the others' speed: its gap whipped round and flickered; he called it
+           "animated weirdly", 23 October 2026. Once round, as the outer) */
+        @keyframes rgSpin2 { from { transform: rotateZ(0deg); } to { transform: rotateZ(360deg); } }
       `)}</style>
 
       {/* one hidden icon, always present: it gets the icon font set up during the opening screen, so the first
@@ -25462,13 +31788,13 @@ export default function PnlCalendar() {
       )}
 
       {!launched ? null : view === "trade" ? (
-        <div className="term"><TradeTracker key={tradeKind} market={tradeKind} onHome={goHome} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
+        <div className="term"><TradeTracker key={tradeKind} market={tradeKind} onHome={goHome} onApp={jumpApp} apps={footApps} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
                                                onOther={(side, data) => (side === "finance" ? takeFinance(data) : takeSide(side, data))} /></div>
       ) : view === "home" ? (
         <HomeDash market="finance" M={FIN_M} who={user} loaded={loaded} layout={fdashLive.current || finDashNow} ctx={finCtx} api={finDashApi}
                   busy={!!(quickOpen || billOpen || settingsOpen || recap || cfgDraft || catView || scoreView || rulePop || partPop)} />
       ) : view === "health" ? (
-        <div className="hlt"><HealthApp onHome={goHome} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
+        <div className="hlt"><HealthApp onHome={goHome} onApp={jumpApp} apps={footApps} onUsers={switchUser} onReset={resetUser} onRestore={restoreUser} who={user}
                                         onOther={(side, data) => (side === "finance" ? takeFinance(data) : takeSide(side, data))} /></div>
       ) : view === "year" ? (
         <div ref={yearWrapRef}>
@@ -25498,9 +31824,12 @@ export default function PnlCalendar() {
                   </span>
                 </div>
               </div>
-              <button className="log-pill" style={S.yearLog} title="Add an expense or an income to today (⌘N)" onClick={() => setQuickOpen(true)}>
-                <span className="msym">add</span>Log<kbd>⌘N</kbd>
+              <span className="log-duo" style={S.yearLog}>
+              <button className="log-pill" title={kbTx("Add an expense or an income to today (⌘N)")} onClick={() => setQuickOpen(true)}>
+                <span className="msym">add</span>Log<kbd><Kb id="quick" /></kbd>
               </button>
+              <button className="log-pill wi-pill" title={kbTx("Worth it? Check a purchase before you make it (⌘B)")} aria-label="Worth it?" onClick={() => setWorthOpen(true)}><span className="msym" aria-hidden="true">balance</span></button>
+              </span>
               <div style={S.yearBarRow}>
                 <div style={{ flex: 1 }}>
                   <SplitBar remainingVal={yearRemaining} totalVal={yearStats.income} frac={yearRemainFrac} animKey={`y-${currency}-${yearIntro ? "i" : "l"}`} />
@@ -25625,7 +31954,7 @@ export default function PnlCalendar() {
               {/* a fast double click opens the money exchanger (the second click within CUR_TRIPLE_MS: the Mac's own
                   double-click time let two clicks a second apart open it); its two clicks have switched there and back by then */}
               <button className="cur-btn" style={S.currency}
-                      title={"Switch currency · double-click: the money exchanger (⌘E)"}
+                      title={kbTx("Switch currency (⌘K) · double-click: the money exchanger (⌘E)")}
                       onClick={(e) => {
                         e.stopPropagation();
                         const to = isMYR ? "IDR" : "MYR", fast = e.timeStamp - curTap.current <= CUR_TRIPLE_MS;
@@ -25635,6 +31964,7 @@ export default function PnlCalendar() {
                       }}>
                 <CurrencyRoll idx={isMYR ? 1 : 0} />
               </button>
+              <FxDoor onOpen={() => setFxOpen(currency)} />
             </div>
           </div>
 
@@ -25668,13 +31998,16 @@ export default function PnlCalendar() {
                 daily limit, so the income box and the limit are where they were; the two stay together at the right
                 end when the row wraps */}
             <span className="log-side">
-            <button className="log-pill" title="Add an expense or an income to today (⌘N)" onClick={() => sideApi.current.go("quick")}>
-              <span className="msym">add</span>Log<kbd>⌘N</kbd>
+            <button className="log-pill" title={kbTx("Add an expense or an income to today (⌘N)")} onClick={() => sideApi.current.go("quick")}>
+              <span className="msym">add</span>Log<kbd><Kb id="quick" /></kbd>
             </button>
-            <span style={S.limitWrap}>
+            <button className="log-pill wi-pill" title={kbTx("Worth it? Check a purchase before you make it (⌘B)")} aria-label="Worth it?" onClick={() => setWorthOpen(true)}><span className="msym" aria-hidden="true">balance</span></button>
+            {/* the daily limit as one capsule beside Log and Worth it? (26 October 2026, his picture: "this looks ugly"): it
+                was loose words, a bare number and a chip with an outline of its own, three looks in one row */}
+            <span className={`limit-pill${ruleNow?.limit ? " ruled" : ""}`} style={S.limitWrap}>
               <button className="limit-label" style={S.incomeLabel}
                       title={`Triple-click to use this limit for every month of ${year}`}
-                      onClick={(e) => { if (e.detail === 3) applyLimitToYear(); }}>Daily limit:</button>
+                      onClick={(e) => { if (e.detail === 3) applyLimitToYear(); }}>Daily limit</button>
               {limitFlash > 0 && (
                 <span key={limitFlash} className="limit-flash" onAnimationEnd={() => setLimitFlash(0)}>Applied to all of {year}</span>
               )}
@@ -25682,7 +32015,7 @@ export default function PnlCalendar() {
                      title={ruleNow?.limit ? `Set by the ${ruleNow.r.name} rule: change it in the rule` : undefined}
                      value={isMYR ? (dailyLimit / MYR_RATE).toFixed(2) : toDisp(dailyLimit).toLocaleString("id-ID")}
                      onChange={(e) => { if (!ruleNow?.limit) saveLimit(sanitizeAmount(e.target.value, isMYR)); }} />
-              {ruleNow?.limit && <button className="limit-rule" onClick={() => setRulePop(true)}>from {ruleNow.r.name}</button>}
+              {ruleNow?.limit && <button className="limit-rule" title={`Set by the ${ruleNow.r.name} rule: press to change it`} onClick={() => setRulePop(true)}><span className="msym" aria-hidden="true">tune</span>{ruleNow.r.name}</button>}
             </span>
             </span>
           </div>
@@ -25782,6 +32115,11 @@ export default function PnlCalendar() {
                 <span className="ht-val"><CountNum value={stats.redDays} duration={560} render={(n) => Math.round(n)} /> <small>{stats.redDays === 1 ? "day" : "days"}</small></span>
                 <span className="ht-sub" style={{ color: "#ff5d6c" }}><CountNum value={stats.redSum} duration={560} render={fmtLive} /></span>
               </div>
+            </div>
+            <div className="hero-range-row">
+              <button className="hero-range" onClick={() => setRangeOpen(true)} title="Spending over any days you pick: from one day to another">
+                <span className="msym" aria-hidden="true">date_range</span>Days…
+              </button>
             </div>
           </div>
 
@@ -25895,8 +32233,10 @@ export default function PnlCalendar() {
                           animation: removing[it.id] === true ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards`,
                           transformOrigin: "center center" }}>
                           <div className="entry-row glass-soft inc" style={S.entryRow}>
-                            <input aria-label="Income amount" style={{ ...S.entryAmt, color: "#3ddc97" }} inputMode="numeric" value={dispStr(it.amount)}
-                                   onChange={(e) => editIncome(it.id, "amount", e.target.value)} onBlur={commitEdits}
+                            <span className="row-grab" title="Drag up or down to reorder, or onto another day to move it" onMouseDown={stopDown}
+                                  onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "inc", day: selected, drop: (to) => moveApi.current.drop("inc", it.id, to), order: (k) => moveApi.current.order("inc", it.id, k) })}><span className="msym" aria-hidden="true">drag_indicator</span></span>
+                            <RowAmt aria-label="Income amount" style={{ ...S.entryAmt, color: "#3ddc97" }} inputMode="numeric" isMYR={isMYR} shown={dispStr(it.amount)}
+                                   onType={(v) => editIncome(it.id, "amount", v)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
                             <span className="row-grip" title="Drag onto another day to move it" onMouseDown={stopDown}
                                   onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "inc", day: selected, drop: (to) => moveApi.current.drop("inc", it.id, to) })} />
@@ -25980,9 +32320,11 @@ export default function PnlCalendar() {
                           </div>
                           ) : (
                           <div className="entry-row glass-soft exp" style={S.entryRow}>
-                            <input aria-label="Expense amount" style={{ ...S.entryAmt, color: "#ff5d6c" }} inputMode="numeric" value={dispStr(it.amount)}
+                            <span className="row-grab" title="Drag up or down to reorder, or onto another day to move it" onMouseDown={stopDown}
+                                  onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "exp", day: selected, drop: (to) => moveApi.current.drop("exp", it.id, to), order: (k) => moveApi.current.order("exp", it.id, k) })}><span className="msym" aria-hidden="true">drag_indicator</span></span>
+                            <RowAmt aria-label="Expense amount" style={{ ...S.entryAmt, color: "#ff5d6c" }} inputMode="numeric" isMYR={isMYR} shown={dispStr(it.amount)}
                                    readOnly={!!(it.parts && it.parts.length)} title={it.parts && it.parts.length ? "What its items come to" : undefined}
-                                   onChange={(e) => editExpense(it.id, "amount", e.target.value)} onBlur={commitEdits}
+                                   onType={(v) => editExpense(it.id, "amount", v)} onBlur={commitEdits}
                                    onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
                             <span className="row-grip" title="Drag onto another day to move it" onMouseDown={stopDown}
                                   onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "exp", day: selected, drop: (to) => moveApi.current.drop("exp", it.id, to) })} />
@@ -26066,30 +32408,48 @@ export default function PnlCalendar() {
            </div>
           </div>
 
-          <FoldCard title="Weekly expenses" name="weekly expenses" runKey={weekData.home} flask={partFlask("weekly")}
+          {(() => {
+            const cards = { "weekly expenses": (
+          <FoldCard key="weekly expenses" title="Weekly expenses" name="weekly expenses" runKey={weekData.home}
+                    flask={<>{partFlask("weekly")}{/* the weekend fund from the week's card too (31 October 2026, his words: "add a button somewhere for the weekend planner ui, anywhere other than on top with the log and worth it") */}
+                      <button className="wk-open" onClick={() => setWkOpen(true)} title="Weekend fund (⌘J)"><span className="msym" aria-hidden="true">celebration</span>Weekend</button></>}
                     sub={<>{weekData.total > 0 ? <CountNum value={weekData.total} duration={560} render={fmtLive} /> : weekData.over ? "Nothing spent" : "Nothing spent yet"} · {weekData.range}{weekData.planned > 0 && <span style={{ color: "#ff8d97" }}> · +{fmt(weekData.planned)} planned</span>}</>}>
             {renderWeek()}
             <WeekPlans plans={plans} api={planApi} cur={cur} isMYR={isMYR} tick={dayTick} week={weekData.days[0].date.getTime()} />
           </FoldCard>
-
-          {/* each part opens when it is scrolled to, not all of them when the top of the card first shows */}
-          <FoldCard parts title="Money flow" name="money flow" runKey={`${year}-${month}`} sub={monthLabel} flask={partFlask("flow")}>
+            ), "money flow": (
+          // (each part opens when it is scrolled to, not all of them when the top of the card first shows)
+          <FoldCard key="money flow" parts title="Money flow" name="money flow" runKey={`${year}-${month}`} sub={monthLabel} flask={partFlask("flow")}>
             <Reveal>{renderFlow()}</Reveal>
             <Reveal>{renderScore()}</Reveal>
             <Reveal>{renderRule()}</Reveal>
             <Reveal>{renderProjection()}</Reveal>
             <Reveal>{renderInsights()}</Reveal>
           </FoldCard>
-
-          <FoldCard title="Goals" name="goals" runKey="goals" flask={partFlask("goals")} loose={!!goalIconMenu} style={{ position: "relative", zIndex: goalIconMenu ? 6 : "auto" }}
+            ), goals: (
+          <FoldCard key="goals" title="Goals" name="goals" runKey="goals" flask={partFlask("goals")} loose={!!goalIconMenu} style={{ position: "relative", zIndex: goalIconMenu ? 6 : "auto" }}
                     sub={goals.length > 0 && <><CountNum value={goals.reduce((a, g) => a + goalSaved(g), 0)} duration={600} render={fmtLive} />{" of "}{fmt(goals.reduce((a, g) => a + g.target, 0))}</>}>
             {renderGoals()}
             <Debts debts={debts} api={debtApi} cur={cur} isMYR={isMYR} />
           </FoldCard>
+            ), subscriptions: (
+          <FoldCard key="subscriptions" title="Subscriptions" name="subscriptions" runKey="subs"
+                    sub={subs.length > 0 && <>{fmt(subs.reduce((a, x) => a + x.amount, 0))} a month · {subs.length} {subs.length === 1 ? "subscription" : "subscriptions"}</>}>
+            <Subs subs={subs} api={subApi} cur={cur} isMYR={isMYR} tick={dayTick} />
+          </FoldCard>
+            ) };
+            return cardOrd.map((n) => cards[n]);
+          })()}
         </div>
       )}
 
       {launched && recap && renderRecap()}
+      {launched && rangeOpen && (() => {
+        const p = keyOf(year, month, 1), last = keyOf(year, month, new Date(year, month + 1, 0).getDate()), t = dayKeyOf(new Date());
+        return <RangePop spending={spending} incomes={incomes} api={rangeApi} from={p} to={t >= p && t < last ? t : last} onClose={() => setRangeOpen(false)} />;
+      })()}
+      {launched && arrOpen && view === "month" && <CardArrange cards={FIN_CARDS} order={cardOrd} solo={!(homeOn && view !== "home")}
+                                                         onOrder={(next) => { setCardOrd(next); saveFinPrefs({ order: next }); }} onClose={() => setArrOpen(false)} />}
       {launched && rulePop && <RulePop rule={ruleFor(year, month)} own={ruleOwn(year, month)} monthName={`${MONTHS_SHORT[month]} ${year}`}
                                       base={incomeBase(year, month)} money={{ cur, isMYR, toIDR: amtToIDR, show: dispStr }}
                                       days={daysInMonth} fmt={fmt} onSave={ruleSave} onOff={ruleOff} onBack={ruleBack} onClose={() => setRulePop(false)} />}
@@ -26231,6 +32591,8 @@ export default function PnlCalendar() {
 
       {fxOpen && <Exchanger from={fxOpen} pair={["IDR", "MYR", "USD"]} onClose={() => setFxOpen(null)} />}
       {tpOpen && <TimePlan onClose={() => setTpOpen(false)} />}
+      {wkOpen && (wkApi.current = { spending, limitOf, fmt, fmtLive, catOf: rangeApi.current.catOf, wkd: finPrefs.current.wkd || 0, setWkd: (v) => saveFinPrefs({ wkd: v }) }) && <WeekendFund api={wkApi} onClose={() => setWkOpen(false)} />}
+      {worthOpen && (worthApi.current = { spending, limitOf, fmt, toIDR: (v) => (isMYR ? Math.round(v * MYR_RATE) : v), isMYR, put: (amount, desc) => quickApi.current.put("exp", amount, desc) }) && <WorthIt api={worthApi} onClose={() => setWorthOpen(false)} />}
       {settingsOpen && (
         <SettingsPop onClose={() => setSettingsOpen(false)} title="Money" start={{ home: homeOn, pick: pickHome }}>
           <div className="set-row">
@@ -26265,21 +32627,18 @@ export default function PnlCalendar() {
           : { text: `${fmt(-room)} over today`, sub: `${fmt(td.spent)} of ${fmt(td.limit)} spent`, ink: "#ff8d97", mood: "bad" };
         return (
           <SideNav api={sideApi} foot={foot} hidden={yearIntro || greetOn} spy={SIDE_SPY.finance} spyKey={view === "month" ? `${year}-${month}` : ""} home={homeOn && view !== "home"}
-                   act={SIDE_ACT.finance}
+                   act={SIDE_ACT.finance} arrange={view === "month" ? (arrOpen ? "on" : "off") : undefined}
                    rows={[
                      { head: "Overview" },
                      ...(homeOn ? [{ id: "dash", icon: "home", text: "Home", on: view === "home" }] : []),
                      { id: "year", icon: "grid_view", text: "Year", tail: year, on: view === "year" },
                      { id: "month", icon: "calendar_month", text: "Month", tail: MONTHS_SHORT[sideMonth], on: view === "month" },
+                     { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
                      { head: MONTHS_FULL[sideMonth] },
                      { id: "cal", icon: "calendar_today", text: "Calendar", sub: true },
-                     { id: "weekly", icon: "show_chart", text: "Weekly expenses", sub: true },
-                     { id: "flow", icon: "account_tree", text: "Money flow", sub: true },
-                     { id: "goals", icon: "flag", text: "Goals", sub: true },
-                     { id: "debts", icon: "handshake", text: "Debts", sub: true },
-                     { head: "Recap" },
-                     { id: "wrap", icon: "auto_awesome", text: `${view === "month" ? MONTHS_SHORT[month] : year} wrapped` },
+                     ...cardOrd.flatMap((n) => { const c = FIN_CARDS.find((q) => q[0] === n); return [{ id: c[1], icon: c[3], text: c[2], sub: true }, ...(n === "goals" ? [{ id: "debts", icon: "handshake", text: "Debts", sub: true }] : [])]; }),
                      { head: "Account" },
+                 { id: "settings", icon: "settings", text: "Settings", tip: "Appearance, liquid glass, keyboard shortcuts and preferences" },
                      { id: "users", pic: user ? user.pic : "", img: user ? user.img : undefined, bg: user ? user.bg : undefined, bgImg: user ? user.bgImg : undefined, text: user ? user.first : "", tail: "Switch", tip: "Change account", dev: !!user && user.id === DEV_ID },
                      ...(dev ? [{ id: "reset", icon: "restart_alt", text: "Reset account", tip: "Test tool: start over as somebody new (the first-time setup, the login, the introduction, nothing entered). What you entered is put aside, not erased." }] : []),
                      ...(USER.aside ? [{ id: "restore", icon: "settings_backup_restore", text: "Restore my entries", tip: "Test tool: brings back what Reset account put aside. What was entered since is dropped." }] : []),
@@ -26287,6 +32646,7 @@ export default function PnlCalendar() {
         );
       })()}
       <UndoNote />
+      {xNote && <XcleanNote key={xNote.at} n={xNote.soon} onDone={() => setXNote(null)} />}
       {!(launched && (view === "trade" || view === "health")) && quickOpen && <QuickLog api={quickApi} cur={cur} isMYR={isMYR} seed={quickSeed} onClose={closeQuick} plain={!launched} />}
       {launched && view !== "trade" && view !== "health" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
       {launched && view !== "trade" && view !== "health" && <div style={S.footerRow}>
@@ -26309,7 +32669,7 @@ export default function PnlCalendar() {
           <Linger on={undoImport ? 1 : null} show={(out) => <button className={`bk-btn bk-pop${out ? " out" : ""}`} onClick={out ? undefined : revertImport} title="Put back the data you had before this import">Undo</button>} />
           {SHOW_TEST_TOOLS && <Linger on={testMsg} show={(out, m) => <span key={m} className={`bk-msg${out ? " out" : ""}`} style={{ color: "#e3cd77" }}>{m}</span>} />}
         </span>
-        <button className="foot-logo" onClick={goHome} title="Back to home" aria-label="Back to home"><CrocLogo /></button>
+        <FootLogo side="finance" onHome={goHome} onApp={jumpApp} apps={footApps} />
 
       </div>}
     </div>
@@ -26349,10 +32709,10 @@ const S = {
 
   incomeRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 },
   incomeLabel: { fontSize: 13, color: "#9aa3ab" },
-  incomeInput: { background: "rgba(8,10,13,0.30)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, color: "#e8eaec", padding: "9px 13px", fontSize: 15 },
+  incomeInput: { background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, color: "#e8eaec", padding: "9px 14px", fontSize: 15 },
   ghostOverlay: { position: "absolute", left: 0, top: 0, height: "100%", display: "flex", alignItems: "center", padding: "0 12px", fontSize: 14, pointerEvents: "none", fontVariantNumeric: "tabular-nums", whiteSpace: "pre" },
-  ghostPlusBtn: { borderRadius: 11, width: 36, height: 38, fontSize: 20, fontWeight: 600, cursor: "pointer", lineHeight: 1 },
-  arrowBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 12, width: 36, height: 38, fontSize: 14, cursor: "pointer", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10)" },
+  ghostPlusBtn: { borderRadius: 99, width: 38, height: 38, fontSize: 20, fontWeight: 600, cursor: "pointer", lineHeight: 1 },
+  arrowBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 99, width: 38, height: 38, fontSize: 14, cursor: "pointer", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10)" },
   limitWrap: { display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", position: "relative" },
   limitInput: { color: "#e8eaec", padding: "8px 10px", fontSize: 14, width: 100, borderRadius: 10 },
   incomeList: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderRadius: 12, padding: "11px 13px", marginBottom: 14 },
@@ -26398,9 +32758,9 @@ const S = {
   sectionLabel: { fontSize: 11.5, fontWeight: 700, color: "#9aa3ab", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 9 },
   closeBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03))", border: "1px solid rgba(255,255,255,0.09)", color: "#aab1b8", borderRadius: 99, width: 30, height: 30, cursor: "pointer", fontSize: 12 },
   addRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center" },
-  darkInput: { background: "rgba(8,10,13,0.32)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, color: "#e8eaec", padding: "10px 13px", fontSize: 14 },
-  addIconBtn: { background: "linear-gradient(160deg,#54e6a8,#2bbd80)", color: "#07291c", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(61,220,151,0.28), inset 0 1px 0 rgba(255,255,255,0.35)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
-  addIconBtnRed: { background: "linear-gradient(160deg,#ff7a86,#e0434f)", color: "#2b0d11", border: "none", borderRadius: 11, width: 40, height: 38, boxShadow: "0 6px 18px rgba(255,93,108,0.26), inset 0 1px 0 rgba(255,255,255,0.32)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
+  darkInput: { background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, color: "#e8eaec", padding: "10px 14px", fontSize: 14 },
+  addIconBtn: { background: "linear-gradient(160deg,#54e6a8,#2bbd80)", color: "#07291c", border: "none", borderRadius: 99, width: 38, height: 38, boxShadow: "0 6px 18px rgba(61,220,151,0.28), inset 0 1px 0 rgba(255,255,255,0.35)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
+  addIconBtnRed: { background: "linear-gradient(160deg,#ff7a86,#e0434f)", color: "#2b0d11", border: "none", borderRadius: 99, width: 38, height: 38, boxShadow: "0 6px 18px rgba(255,93,108,0.26), inset 0 1px 0 rgba(255,255,255,0.32)", fontSize: 20, fontWeight: 700, cursor: "pointer", lineHeight: 1 },
   emptyList: { color: "#8e969e", fontSize: 13, margin: "6px 2px" },
   expList: { display: "flex", flexDirection: "column", gap: 8 },
   entryRow: { width: "100%", display: "flex", alignItems: "center", borderRadius: 11, padding: "5px 7px", minWidth: 0, overflow: "visible" },
@@ -26411,8 +32771,8 @@ const S = {
   catPop: { position: "absolute", bottom: "calc(100% + 8px)", right: -4, borderRadius: 12, padding: 4, display: "flex", gap: 2, zIndex: 40, boxShadow: "0 10px 24px rgba(0,0,0,0.45)" },
   catOpt: { background: "none", border: "none", borderRadius: 9, width: 62, height: 50, color: "#9aa3ab", cursor: "pointer", display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 },
   otherPop: { position: "absolute", bottom: "calc(100% + 8px)", right: -4, borderRadius: 12, padding: 5, display: "flex", gap: 5, alignItems: "center", zIndex: 41, boxShadow: "0 10px 24px rgba(0,0,0,0.45)" },
-  otherInput: { background: "#1e2124", border: "1px solid #3a3f44", borderRadius: 7, color: "#e8eaec", padding: "7px 10px", fontSize: 13, width: 168, outline: "none" },
-  globeBtn: { background: "none", border: "1px solid #3f454b", borderRadius: 7, width: 32, height: 32, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  otherInput: { background: "rgba(0,0,0,0.22)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, color: "#e8eaec", padding: "7px 12px", fontSize: 13, width: 168, outline: "none" },
+  globeBtn: { background: "linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03))", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 99, width: 32, height: 32, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   iconPop: { position: "absolute", bottom: "calc(100% + 8px)", right: -4, borderRadius: 12, padding: 6, display: "grid", gridTemplateColumns: "repeat(6, 32px)", gap: 2, zIndex: 42, boxShadow: "0 12px 28px rgba(0,0,0,0.5)" },
   iconOpt: { background: "none", border: "none", borderRadius: 7, width: 32, height: 30, color: "#9aa3ab", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   delBtn: { background: "rgba(255,93,108,0.06)", border: "1px solid rgba(255,93,108,0.28)", color: "#ff8d97", borderRadius: 10, width: 34, height: 32, padding: 0, cursor: "pointer", flexShrink: 0, marginLeft: 6 },

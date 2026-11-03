@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "app": "vite build && env -u ELECTRON_RUN_AS_NODE electron .",
+    "app": "vite build && (env -u ELECTRON_RUN_AS_NODE electron . 2>&1 | grep -v -e sandbox_extension_issue_file -e \"Window move completed without beginning\"; true)",
     "dmg": "vite build && electron-builder --mac dmg --arm64",
-    "train-ai": "node tools/ai/train.mjs"
+    "train-ai": "node tools/ai/train.mjs",
+    "build-due-ai": "node tools/due-ai/make.cjs"
   },
   "dependencies": {
     "node-llama-cpp": "^3.22.1"
@@ -67,7 +68,15 @@
     },
     "dmg": {
       "title": "Flow",
-      "format": "UDBZ"
+      "format": "UDBZ",
+      "background": "build/background.png",
+      "iconSize": 96,
+      "iconTextSize": 13,
+      "window": { "width": 660, "height": 405 },
+      "contents": [
+        { "x": 165, "y": 240, "type": "file" },
+        { "x": 495, "y": 240, "type": "link", "path": "/Applications" }
+      ]
     }
   }
 }

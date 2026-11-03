@@ -1,6 +1,6 @@
 # Calculators (crypto and stocks)
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. These are parts of the trading tracker (`TradeTracker`): read `notes/trading.md` with it. The forex calculator is in `notes/forex.md`.
+One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. These are parts of the trading tracker (`TradeTracker`): read [[notes/trading]] with it. The forex calculator is in [[notes/forex]].
 
 - **Position calculator** (`PositionCalc`, `calcPosition`): Rassam calls it the main part of the crypto side. Its button (`.calc-fab`) is fixed on the screen: right above the year arrows on the yearly panel, in the bottom-right corner on the monthly one. It opens a pop-up like the chart's.
   - Inputs: coin (always capitals, a grey `/USDT.P` written after it), Long / Short, entry, stop loss, risk $, max leverage, IM $, partial TPs (price and close %, two to start, more with "+ Add partial TP"), full TP. Tab walks the number boxes only; Enter calculates from anywhere in the pop-up (the helper buttons never take the focus). After the first Enter the results follow the levels as they are typed (he trades volatile coins and wants it quick).

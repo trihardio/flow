@@ -71,6 +71,17 @@ Named snapshots of `src/App.jsx`. How one is loaded and how a new one is made is
 - `before_shortcut_cleanup.jsx`: the Dev account is in it, before the 13 October 2026 clean-up of that day's own code (see "Developer-mode test and clean-up").
 - `before_calm_tiles.jsx`: the clean-up is in it, before the calmer day tiles on the finance calendar (13 October 2026): every tile washed and edged in its colour, the amount spent as the bold figure with "/50Rb" beside it and the difference small in brackets, a dot per expense.
 - `before_light_mode.jsx`: the calmer day tiles are in it, before light mode (13 October 2026): React's own `jsx` for every element, no `flowEl`, no Appearance row in the settings, and the four switches whose grey box did not slide.
+- `before_review_fixes_2.jsx`: before the fixes of the 24 October 2026 code review.
+- `before_done_lag.jsx`: before the Edit widgets handles were given surfaces of their own (Done's stall, 25 October 2026).
+- `before_morph_clock.jsx`: before the toolbar morph's stages were put on the animations' clock and the glow got a layer of its own (25 October 2026).
+- `before_shortcuts.jsx`: before Settings › Keyboard (every shortcut listed, five his to change; 25 October 2026).
+- `before_edge_resize.jsx`: before widgets could be resized by every edge and corner, the lines only on hover (25 October 2026).
+- `before_ql_date.jsx`: before the quick log's day picker and ⌘N kept to the finance app (24 October 2026).
+- `before_fx_door.jsx`: before the exchanger's door, the sidebar's tools, ⌘K and Worth it's other currency (24 October 2026).
+- `before_worth_it.jsx`: before Worth it? (24 October 2026).
+- `before_morph_smooth.jsx`: before the toolbar morph's round clips and overlapping stages, and the jumps hunt's fixes (23 October 2026).
+- `before_hint_slide.jsx`: before Home's board slid with the editing hint (23 October 2026).
+- `before_edit_morph.jsx`: before Home's toolbar morph (the two-beat change-over of the Edit widgets button; 23 October 2026).
 - `before_income_split.jsx`: before an income's split across months replaced the equal months (23 October 2026).
 - `before_tools_anim.jsx`: before Home's toolbar changed over in two beats (23 October 2026).
 - `before_calc_beside_fx.jsx`: before the calculator beside the exchanger (23 October 2026).
@@ -112,3 +123,10 @@ Named snapshots of `src/App.jsx`. How one is loaded and how a new one is made is
 - `before_stack_presets.jsx`: before the layouts with widget stacks in them (23 October 2026).
 - `before_declutter.jsx`: before the declutter pass (empty states on Home, clearer wording, round chart axes, no dots on trading tiles; 23 October 2026).
 - `before_timetable_scan.jsx`: before the timetable read off a picture and the Health animation pass (23 October 2026).
+- `wip_asg_fields.jsx`: assignment fields (weight, week, where to hand in), the due-line reader, bigger Notes and "my classes this semester", stopped part-way and not yet seen in the app (30 October 2026). `before_asg_fields.jsx` is from before it.
+- `wip_asg_fields.jsx` was taken before the Mac's AI was added to the due line; the AI, the class picker and the bigger description boxes came after it (30 October 2026).
+- `before_acts_four.jsx`: before the small Shortcuts widget had four buttons (it holds the resize fix of the same day; 31 October 2026).
+- `before_sleep_history.jsx`: before Health's sleep panel grew, took the bed and wake times, and got its History pop-up, and the month's step figures became one line (31 October 2026).
+
+- `before-ui-astra.jsx`: complete app before Astra’s overall UI/UX pass (31 October 2026), including all existing uncommitted work. Load with “load before-ui-astra”.
+- `before_shopping.jsx`: before Health's shopping list (the Shopping card, its Home widget; 31 October 2026).
