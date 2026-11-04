@@ -20,6 +20,7 @@
 This project folder is also the Obsidian vault. Codex, Claude Code, Claudian, and Obsidian use the same Markdown files here; direct file access is sufficient for this setup.
 
 - Follow `CLAUDE.md`'s inbox workflow. Remove an inbox item only after it has been filed or completed, and briefly report where it went.
+- Before calling a change done, run `npm run check` (build and lint, about 3 seconds) and fix whatever it reports. Before a release, also `sh tools/perf/hunt-all.sh` (see `tools/perf/CLAUDE.md`; not while the user is using the app).
 - After a change, update the relevant area note and add a line to `notes/log/YYYY-MM-DD.md`, linking the area note with Obsidian links. Use `notes/templates/daily.md` when creating a daily note.
 - Record important decisions, rejected approaches, and relevant user preferences in the existing area notes. Keep unfinished work, checks, and blockers in `notes/handoff.md` so either assistant can continue.
 - Keep this file as the Codex entry point and keep detailed shared knowledge in `CLAUDE.md` and the existing notes. Add any new area note to both the area list in `CLAUDE.md` and `HOME.md`.

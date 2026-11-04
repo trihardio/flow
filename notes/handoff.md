@@ -37,3 +37,15 @@ Read this first next session, then delete each item as it is done.
 
 ## Done on a full Home board (found 23 October 2026, not fixed)
 `homelag --trace` on the usual profile (its crypto board holds 30 widgets in 15 boxes, the most there can be): the first Done kept the page busy 110 + 141ms traced, mostly styles (43 + 73ms) when `.dg-board` loses `leaving` then `edit`; 60ms the second time. Suspects: `.dg-board.edit .wd-in { pointer-events: none }` and `.dg-board.edit .dg-cell { cursor: grab }` are inherited, so every widget's whole inside is restyled; an overlay per box (`::after` above the widget, below `.dg-rm` / `.dg-rz` / `.dg-sk`) would take both. Measure with `homelag --trace` before and after, not while he uses the app. The widgets themselves don't redraw (memo).
+
+## Fewer buttons: passes left (4 November 2026)
+He chose "whole app, in passes", keep the look ([[notes/navigation-settings]] "Fewer buttons"). Done: the command bar, the right-click menu, Home (every side), Health's week / to-dos / assignments, finance and trading day rows, the journal's trades. Left, in this order, each to be checked with a journey before the next:
+1. Finance goals and debts rows (+, pencil, bin): a menu; the bin stays in sight (never hide a bin, [[notes/navigation-settings]]). Weekly plans' rows, subscriptions.
+2. Health: gym sessions, shopping lists and items, the vision board's Note / Picture, class notes' and lessons' items.
+3. Trading: the month header and the calculator (gear, test levels), deposits rows, PnL analysis chips.
+4. The finance month header and footer (Log, ⇄, currency, chart, wrapped): what ⌘P now covers.
+5. Commands from more screens (`useCmds`): finance month (chart, wrapped, export / import), trading (calculator, deposits), Health cards (log steps on a day, sleep, gym).
+Never cut what he designed by hand without asking: Home's toolbar and its morph, the Shortcuts widget, the stage, the pixel titles.
+
+## Release 1.1.0: the GitHub upload (4 November 2026)
+- Built into `release/`, code pushed to `main`. The release `v1.1.0` with `Flow-Mac.dmg` and `Flow-Windows-Setup.exe` needs his GitHub login (auto mode won't read it): see [[notes/installer]] "Release 1.1.0". Take this off once the release page has the files.

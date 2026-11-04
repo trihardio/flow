@@ -1459,6 +1459,139 @@ const UndoNote = memo(function UndoNote() {
   );
 });
 
+/* ---------- fewer buttons (4 November 2026, his words: "improve the ui for all of the widgets and ui. less buttons, though
+   the core features still exists and work as intended … the app should feel premium, though includes a lot of information
+   and is easy to use"). Where a button's action goes when the button does (he chose all four): the command bar, a
+   right-click menu, tools shown on hover, shortcuts.
+   The right-click menu: one for the whole app (CtxMenu, at the root). What is right-clicked hands its actions to
+   openCtx(e, items): { icon, text, key?, danger?, off?, run }, or null for a line between. It stands at the pointer, inside
+   the window; ↑ ↓ and Enter walk it; Esc, a press elsewhere, the wheel or the window losing focus shut it. Over the live
+   page with nothing dimmed: .lg-float, the liquid glass slider's pane. Its keys are read before any pop-up's (the
+   listener is the first the page has), so Esc in a menu over a pop-up shuts only the menu */
+const ctxHub = { set: null, key: null };
+if (typeof window !== "undefined") window.addEventListener("keydown", (e) => { if (ctxHub.key) ctxHub.key(e); }, true);
+const openCtx = (e, items) => {
+  const list = items.filter((x) => x !== undefined && x !== false).filter((x, i, a) => x !== null || (i > 0 && i < a.length - 1 && a[i - 1] !== null));
+  if (!ctxHub.set || !list.some(Boolean)) return;
+  e.preventDefault(); e.stopPropagation();
+  ctxHub.set({ x: e.clientX, y: e.clientY, items: list });
+};
+const CtxMenu = memo(function CtxMenu() {
+  const [m, setM] = useState(null);
+  const box = useRef(null);
+  useEffect(() => { ctxHub.set = setM; return () => { ctxHub.set = null; }; }, []);
+  // inside the window: it opens to the left or upward where it would run out, and grows from the pointer's corner
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || !m) return;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const x = m.x + w + 8 > innerWidth ? Math.max(8, m.x - w) : m.x, y = m.y + h + 8 > innerHeight ? Math.max(8, m.y - h) : m.y;
+    el.style.left = `${x}px`; el.style.top = `${y}px`;
+    el.style.transformOrigin = `${x < m.x ? "right" : "left"} ${y < m.y ? "bottom" : "top"}`;
+    el.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+  }, [m]);
+  useEffect(() => {
+    if (!m) return;
+    const shut = () => setM(null);
+    const away = (e) => { if (!box.current || !box.current.contains(e.target)) shut(); };
+    ctxHub.key = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); shut(); return; }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      const bs = [...box.current.querySelectorAll("button:not(:disabled)")], i = bs.indexOf(document.activeElement);
+      bs[(i + (e.key === "ArrowDown" ? 1 : -1) + bs.length) % bs.length]?.focus();
+    };
+    window.addEventListener("pointerdown", away, true); window.addEventListener("wheel", shut, { passive: true });
+    window.addEventListener("resize", shut); window.addEventListener("blur", shut);
+    return () => {
+      ctxHub.key = null;
+      window.removeEventListener("pointerdown", away, true); window.removeEventListener("wheel", shut);
+      window.removeEventListener("resize", shut); window.removeEventListener("blur", shut);
+    };
+  }, [m]);
+  if (!m) return null;
+  return createPortal(
+    <div ref={box} className="ctx glass lg-float" role="menu" style={{ left: m.x, top: m.y }} onContextMenu={(e) => e.preventDefault()}>
+      {m.items.map((it, i) => (it === null ? <i key={`l${i}`} className="ctx-line" /> : (
+        <button key={i} role="menuitem" className={`ctx-it${it.danger ? " danger" : ""}`} disabled={!!it.off} onClick={() => { setM(null); it.run(); }}>
+          <span className="msym" aria-hidden="true">{it.icon || ""}</span><span className="ctx-t">{it.text}</span>{it.key && <kbd>{kbTx(it.key)}</kbd>}
+        </button>
+      )))}
+    </div>, document.body);
+});
+/* The command bar (⌘P; his to change in Settings, under Keyboard): every action and page the sidebar has on the side on
+   show, and what the screen adds while it is there (useCmds: a button taken away leaves its action here), found by typing
+   a few letters of it. Empty, it lists them all, so it is the map of the side and of its shortcuts too. ↑ ↓ choose (the
+   chosen row's box slides to it), Enter does it, Esc shuts it. SideNav opens it, so every side with a sidebar has it */
+const cmdHub = new Map();
+const useCmds = (fn) => {
+  const f = useRef(fn);
+  f.current = fn;
+  useEffect(() => { const k = {}; cmdHub.set(k, () => f.current()); return () => { cmdHub.delete(k); }; }, []);
+};
+const CmdBar = ({ acts, rows, onGo, onClose }) => {
+  const [q, setQ] = useState(""), [at, setAt] = useState(0);
+  const sh = useSheet(onClose), listEl = useRef(null), hi = useRef(null);
+  const list = useMemo(() => {
+    const extra = [...cmdHub.values()].flatMap((f) => { try { return f() || []; } catch (err) { return []; } }).filter(Boolean);
+    const all = [...acts.map((a) => ({ ...a, grp: "Actions" })), ...extra.map((a) => ({ ...a, grp: "On this screen" })),
+                 ...rows.filter((r) => r && !r.head && r.pic === undefined).map((r) => ({ ...r, grp: "Go to" }))];
+    return all.filter((r, i) => all.findIndex((v) => v.text === r.text) === i);
+  }, []);
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = (r) => `${r.text} ${r.tip || ""} ${r.kw || ""} ${r.key ? kbTx(r.key) : ""}`.toLowerCase();
+  // what is typed: every word somewhere in it; a name that starts with the first word comes first
+  const found = !words.length ? list : list.filter((r) => words.every((w) => hay(r).includes(w)))
+    .map((r, i) => [r, (r.text.toLowerCase().startsWith(words[0]) ? 0 : r.text.toLowerCase().includes(words[0]) ? 1 : 2) * 1000 + i]).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+  const pick = Math.min(at, Math.max(0, found.length - 1));
+  useEffect(() => { setAt(0); }, [q]);
+  // the chosen row's box: moved to it (transform only), and the row kept in view
+  useLayoutEffect(() => {
+    const el = listEl.current && listEl.current.querySelector(`[data-i="${pick}"]`), b = hi.current;
+    if (!b) return;
+    if (!el) { b.style.opacity = "0"; return; }
+    b.style.opacity = "1"; b.style.height = `${el.offsetHeight}px`; b.style.transform = `translateY(${el.offsetTop}px)`;
+    el.scrollIntoView({ block: "nearest" });
+  }, [pick, found.length, q]);
+  const run = (r) => { if (r.off) return; sh.shut(); setTimeout(() => (r.run ? r.run() : onGo(r.id)), 0); };   // `off`: shown, not done (a picture already being read)
+  const key = (e) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const n = found.length; if (n) setAt((pick + (e.key === "ArrowDown" ? 1 : -1) + n) % n); }
+    else if (e.key === "Enter") { e.preventDefault(); if (found[pick]) run(found[pick]); }
+  };
+  let grp = "";
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 95, alignItems: "flex-start", paddingTop: "max(56px, 14vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}>
+      <div role="dialog" aria-modal="true" aria-label="Commands" className="glass cmd" style={sh.pop} onClick={(e) => e.stopPropagation()}>
+        <label className="cmd-in">
+          <span className="msym" aria-hidden="true">search</span>
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={key} placeholder="Type an action or a page…" aria-label="Type an action or a page"
+                 autoComplete="off" spellCheck={false} role="combobox" aria-expanded="true" aria-controls="cmd-list" aria-activedescendant={found[pick] ? `cmd-${pick}` : undefined} />
+          <kbd>{kbL("cmd")}</kbd>
+        </label>
+        <div className="cmd-list" id="cmd-list" role="listbox" ref={listEl}>
+          <i className="cmd-hi" ref={hi} aria-hidden="true" />
+          {found.map((r, i) => {
+            const head = r.grp !== grp ? (grp = r.grp) : null;
+            return (
+              <Fragment key={`${r.grp}-${r.id || r.text}`}>
+                {head && <div className="cmd-grp">{head}</div>}
+                <button id={`cmd-${i}`} data-i={i} role="option" aria-selected={i === pick} className={`cmd-it${i === pick ? " on" : ""}`} tabIndex={-1} aria-disabled={r.off ? true : undefined}
+                        onPointerMove={() => { if (i !== pick) setAt(i); }} onClick={() => run(r)}>
+                  <span className="msym" aria-hidden="true">{r.icon || "arrow_forward"}</span>
+                  <span className="cmd-t"><b>{r.text}</b>{r.tip && <small>{kbTx(r.key ? r.tip.replace(/\s*\(⌘[A-Z]\)/g, "") : r.tip)}</small>}</span>
+                  {r.key ? <kbd>{kbTx(r.key)}</kbd> : <span className="msym cmd-go" aria-hidden="true">{r.grp === "Go to" ? "arrow_forward" : "keyboard_return"}</span>}
+                </button>
+              </Fragment>
+            );
+          })}
+          {!found.length && <p className="cmd-none">Nothing called “{q.trim()}” here. Try a word such as log, calendar or settings.</p>}
+        </div>
+        <div className="cmd-foot"><span>↑ ↓ to choose</span><span>↵ to do it</span><span>esc to close</span></div>
+      </div>
+    </div>, document.body);
+};
+
 const MAX_AMOUNT = 1e13;   // Rp 10.000 trillion: far above any real entry, well inside exact number range
 const parseNum = (s) => {
   const n = parseInt(String(s).replace(/[^\d]/g, "").slice(0, 14), 10);
@@ -1679,6 +1812,36 @@ const useCountUp = (value, duration, still) => {      // still: it starts on its
 const CountNum = ({ value, duration, render, still }) => {
   const [n, busy, span] = useCountUp(value, duration, still);
   return <>{render(n, busy, span)}</>;
+};
+
+/* A figure that counts to its new value when it changes (4 November 2026, his words: "animate when text is changing …
+   applies to all the text that changes values"). CountNum's count, but written straight into the element's text each
+   frame, so React works nothing out while it counts (the performance rules). It starts on its value: only a change
+   counts. f writes the value, and gets the numbers on the way, so it rounds as it needs; live, when given, writes them
+   on the way instead, at one precision for the whole count (hlKg drops ".0" at rest: 75.1 75.0 74.9 must not jump
+   to "75" and back, see "Numbers while they count"). Every figure that changes while it is on screen goes through this
+   (or CountNum); a figure that is not a number yet ("–") is plain text */
+const Num = ({ v, f = (n) => Math.round(n || 0).toLocaleString("en-US"), live = f, ms = 560 }) => {
+  const el = useRef(null), cur = useRef(v);
+  useLayoutEffect(() => {
+    const node = el.current, from = cur.current;
+    // React keeps its own text node and writes the final figure into it; the count writes into the same node
+    const put = (s) => { const t = node.firstChild; if (t && t.nodeType === 3) t.nodeValue = s; else node.textContent = s; };
+    if (from === v || !Number.isFinite(from) || !Number.isFinite(v) || matchMedia("(prefers-reduced-motion: reduce)").matches) { cur.current = v; return; }
+    let raf, t0 = null;
+    const step = (t) => {
+      if (t0 === null) t0 = t;
+      const p = Math.min(1, (t - t0) / ms), x = p < 1 ? from + (v - from) * (1 - (1 - p) ** 3) : v;
+      cur.current = x;
+      put(p < 1 ? live(x) : f(v));
+      warm.moved = t;        // (a number is counting: nothing is drawn behind his back meanwhile, see warmRest)
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    put(live(from));
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [v]);
+  return <span ref={el}>{f(v)}</span>;
 };
 
 /* Rolling digit for the year label */
@@ -2581,13 +2744,19 @@ if (typeof document !== "undefined") {
       try { el.setSelectionRange(at, at); } catch (err) { /* a box that has no caret */ }
     });
   }, true);
+  document.addEventListener("beforeinput", (e) => { const el = e.target; if (box(el)) el._was = [el.value, el.selectionStart, el.selectionEnd]; }, true);
   document.addEventListener("keydown", (e) => {
     const el = e.target;
-    if ((e.key !== "Backspace" && e.key !== "Delete") || !box(el) || el.inputMode !== "numeric" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ((e.key !== "Backspace" && e.key !== "Delete") || !box(el) || e.metaKey || e.ctrlKey || e.altKey) return;
     const p = el.selectionStart;
-    if (p == null || p !== el.selectionEnd || !/^[-−]?\d{1,3}(\.\d{3})+$/.test(el.value)) return;
-    if (e.key === "Backspace" && el.value[p - 1] === ".") el.setSelectionRange(p - 1, p - 1);
-    else if (e.key === "Delete" && el.value[p] === ".") el.setSelectionRange(p + 1, p + 1);
+    if (p == null || p !== el.selectionEnd) return;
+    // a rupiah box's dots (a whole number), or the commas of a box grp writes (10,000 · 65,432.5)
+    // (only in a number box: a note that says 1,000 is text, and Backspace there takes the comma)
+    const num = el.inputMode === "numeric" || el.inputMode === "decimal";
+    const mark = el.inputMode === "numeric" && /^[-−]?\d{1,3}(\.\d{3})+$/.test(el.value) ? "." : num && /^[-−]?\d{1,3}(,\d{3})+(\.\d*)?$/.test(el.value) ? "," : "";
+    if (!mark) return;
+    if (e.key === "Backspace" && el.value[p - 1] === mark) el.setSelectionRange(p - 1, p - 1);
+    else if (e.key === "Delete" && el.value[p] === mark) el.setSelectionRange(p + 1, p + 1);
   }, true);
 }
 
@@ -3175,7 +3344,7 @@ const BillRate = ({ name, v, set, cur, isMYR, ghost }) => (
     <span>{name}
       <SlideSeg cls="sb-unit" value={v.kind} onPick={(kind) => set({ ...v, kind })} options={[["pct", "%", `${name} as a % of the bill`], ["amt", cur, `${name} as an amount`]]} /></span>
     {v.kind === "pct"
-      ? <input aria-label={`${name} in %`} className="desc-field" style={{ ...S.darkInput, width: "100%" }} inputMode="decimal" placeholder="0" value={v.pct} onChange={(e) => set({ ...v, pct: numIn(e.target.value, 2) })} />
+      ? <input aria-label={`${name} in %`} className="desc-field" style={{ ...S.darkInput, width: "100%" }} inputMode="decimal" placeholder="0" value={grp(v.pct)} onChange={(e) => set({ ...v, pct: numIn(ungrp(e), 2) })} />
       : <AmountField value={v.amt} setValue={(t) => set({ ...v, amt: t })} accent="red" cur={cur} ghost={ghost(v.amt)} allowDecimal={isMYR} onSubmit={() => {}} width="100%" />}
   </div>
 );
@@ -3717,6 +3886,7 @@ const KB_LIST = [
   { id: "fx", def: "e", name: "Exchange money", say: "The exchanger and its calculator" },
   { id: "plan", def: "t", name: "Time plan", say: "When you will be done or arrive" },
   { id: "cur", def: "k", name: "Next currency", say: "Works with a pop-up open too" },
+  { id: "cmd", def: "p", name: "Commands", say: "Every action and page of a side, by typing" },
 ];
 const KB_FIXED = [
   ["Close a pop-up", "", ["Esc"]], ["Log it, work it out", "Quick log, calculators", ["↵"]],
@@ -3736,7 +3906,7 @@ const kbDef = (id) => ({ k: KB_LIST.find((x) => x.id === id).def, shift: false, 
 const kbNow = (id) => kbOpt.map[id] || kbDef(id);
 const kbLabel = (c) => `${c.alt ? "⌥" : ""}${c.shift ? "⇧" : ""}⌘${c.k.toUpperCase()}`;
 const kbL = (id) => kbLabel(kbNow(id));
-const kbTx = (s) => (typeof s === "string" ? s.replace(/⌘([NBETK])/g, (m, c) => kbL(KB_BY_DEF[c])) : s);
+const kbTx = (s) => (typeof s === "string" ? s.replace(/⌘([NBETKJP])/g, (m, c) => kbL(KB_BY_DEF[c])) : s);
 const kbSame = (a, b) => a.k === b.k && a.shift === b.shift && a.alt === b.alt;
 // the letter pressed: with ⌥ held the character is another (⌥N is ˜), so then it is the key's place that counts
 const kbChar = (e) => { if (e.altKey) { const m = /^Key([A-Z])$/.exec(e.code || ""); if (m) return m[1].toLowerCase(); } return (e.key || "").toLowerCase(); };
@@ -4095,6 +4265,7 @@ const SIDE_ACT = {
 const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home, arrange }) => {
   useKbs();
   const [open, setOpen] = useState(false);          // always shut until the three lines are pressed
+  const [pal, setPal] = useState(false);            // the command bar (⌘P), over the side
   const [at, setAt] = useState(null);
   const [query, setQuery] = useState("");
   const search = useRef(null), menu = useRef(null), found = useRef(null);
@@ -4149,7 +4320,14 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home, arrange
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, query]);
-  useEffect(() => { if (hidden) setOpen(false); }, [hidden]);
+  useEffect(() => { if (hidden) { setOpen(false); setPal(false); } }, [hidden]);
+  // ⌘P: the command bar, from anywhere on the side (a box being typed in too); again, or Esc, shuts it
+  useEffect(() => {
+    if (hidden) return;
+    const key = (e) => { if (!kbIs(e, "cmd")) return; e.preventDefault(); e.stopPropagation(); if (e.repeat) return; setOpen(false); setPal((v) => !v); };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [hidden]);
   // a row pressed does its thing and the panel shuts behind it
   const go = (id) => { setOpen(false); api.current.go(id); };
   const tab = open ? 0 : -1;
@@ -4176,7 +4354,7 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home, arrange
         {line("find", "", <div className="sd-search" onKeyDown={findKey}>
           <span className="msym" aria-hidden="true">search</span>
           <input ref={search} value={query} onChange={(e) => setQuery(e.target.value)} tabIndex={tab}
-                 placeholder="Find a page or action" aria-label="Find a page or action" autoComplete="off" spellCheck={false} />
+                 placeholder={`Find a page or action  ${kbL("cmd")}`} aria-label="Find a page or action" autoComplete="off" spellCheck={false} />
           {query && <button tabIndex={tab} aria-label="Clear search" onClick={() => { setQuery(""); search.current?.focus(); }}><span className="msym" aria-hidden="true">close</span></button>}
         </div>)}
         <div className="sd-body">
@@ -4238,7 +4416,8 @@ const SideNav = memo(({ api, rows, act, spy, spyKey, hidden, foot, home, arrange
       {/* under Home: the cards' order (Health's day page: "off" / "on" is whether its pane is open; nothing: no button) */}
       {arrange && <button className={`snav-arrange${home ? "" : " solo"}${arrange === "on" ? " on" : ""}`} onClick={() => api.current.go("arrange")} title="Arrange the cards" aria-label="Arrange the cards" aria-expanded={arrange === "on"}><span className="msym" aria-hidden="true">view_agenda</span></button>}
       {/* the three lines: they turn into a cross while the panel is open, and back */}
-      <button ref={menu} className="snav-burger" onClick={() => setOpen((v) => !v)} title={open ? "Close the menu (Esc)" : "Menu"} aria-label="Menu" aria-expanded={open}><i /><i /><i /></button>
+      <button ref={menu} className="snav-burger" onClick={() => setOpen((v) => !v)} title={open ? "Close the menu (Esc)" : `Menu · every action by typing: ${kbL("cmd")}`} aria-label="Menu" aria-expanded={open}><i /><i /><i /></button>
+      {pal && <CmdBar acts={acts} rows={rows} onGo={(id) => api.current.go(id)} onClose={() => setPal(false)} />}
     </div>, document.body);
 }, sameSideProps);
 
@@ -4496,7 +4675,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       <CountNum value={Math.floor(pct)} duration={600} render={(n) => `${Math.round(n)}%`} />
                     </span>
                   </div>
-                  <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+                  <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !open; }}>
                     <div style={S.fold}>
                       <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                         <AmountField value={open ? payAmt : ""} setValue={setPayAmt} accent="green" cur={cur} width={150}
@@ -4507,7 +4686,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
                       </div>
                     </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+                  <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !ed; }}>
                     <div style={S.fold}>
                       {ed && (
                         <div style={{ ...S.goalFundRow, animation: "fadeIn .24s ease backwards" }}>
@@ -4530,7 +4709,7 @@ const Debts = memo(({ debts, api, cur, isMYR }) => {
           </div>
         );
       })}
-      <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+      <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !adding; }}>
         <div style={S.fold}>
           <div style={{ ...S.goalFundRow, paddingTop: 12, opacity: adding ? 1 : 0, transition: "opacity .24s ease" }}>
             {/* the box slides from one side to the other and goes from a red wash to a green one on the way */}
@@ -4612,7 +4791,7 @@ const SubPick = ({ day, setDay, cat, setCat }) => (
     </div>
     {day > 28 && <span className="sub-first">In a month without the {nth(day)} it bills on the last day.</span>}
     <span className="sub-cap">Category</span>
-    <span className="jr-pick">{CAT_ORDER.map((c) => <button key={c} type="button" className={`jr-chip${cat === c ? " on" : ""}`} onClick={() => setCat(c)}>{CATS[c].label}</button>)}</span>
+    <Pick>{CAT_ORDER.map((c) => <button key={c} type="button" className={`jr-chip${cat === c ? " on" : ""}`} onClick={() => setCat(c)}>{CATS[c].label}</button>)}</Pick>
   </>
 );
 const Subs = memo(({ subs, api, cur, isMYR, tick }) => {
@@ -4683,7 +4862,7 @@ const Subs = memo(({ subs, api, cur, isMYR, tick }) => {
                   <span className="msym" style={{ fontSize: 17 }}>{ed ? "close" : "edit"}</span>
                 </button>
               </div>
-              <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+              <div style={{ display: "grid", gridTemplateRows: ed ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !ed; }}>
                 <div style={S.fold}>
                   {ed && (
                     <div className="sub-form" style={{ animation: "fadeIn .24s ease backwards" }}>
@@ -4705,7 +4884,7 @@ const Subs = memo(({ subs, api, cur, isMYR, tick }) => {
           );
         })}
       </div>
-      <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+      <div style={{ display: "grid", gridTemplateRows: adding ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !adding; }}>
         <div style={S.fold}>
           <div className="sub-form" style={{ opacity: adding ? 1 : 0, transition: "opacity .24s ease" }} ref={(el) => { if (el) el.inert = !adding; }}>
             <div className="sub-form-row">
@@ -5381,12 +5560,12 @@ const PartTestPop = ({ def, saved, where, onRun, onClose }) => {
                           onClick={() => setInc((v) => ({ ...v, [sec.key]: !v[sec.key] }))}><span>{on ? "Included" : "Skipped"}</span><i aria-hidden="true"><b /></i></button>
                 )}
               </div>
-              <div className="pt-chips" role="radiogroup" aria-label={`${sec.title}: preset`}>
+              <Pick as="div" base="pt-chips" role="radiogroup" aria-label={`${sec.title}: preset`}>
                 {Object.entries(sec.presets).map(([id, ps]) => (
                   <button key={id} role="radio" aria-checked={x.p === id} className={`pt-chip${x.p === id ? " on" : ""}`} onClick={() => pick(sec, id)}>{ps.label}</button>
                 ))}
                 {x.p === "custom" && <span className="pt-chip on custom" role="radio" aria-checked="true">Custom</span>}
-              </div>
+              </Pick>
               {(sec.figs || []).length > 0 && (
                 <div className="pt-figs">
                   {sec.figs.map((g) => (
@@ -5510,8 +5689,8 @@ const TestCfg = ({ cfg, closing, year, month, span, fmt, onRun, onClose }) => {
   // presets as chips that wrap, under their label (22 October 2026, the options pass: a right-aligned row of them broke
   // across lines with a gap under the label)
   const presets = (all, on, apply) => (
-    <span className="pt-chips">{Object.entries(all).map(([k, p]) => <button key={k} className={`pt-chip${on === k ? " on" : ""}`} aria-pressed={on === k} onClick={() => apply(p)}>{p.label}</button>)}
-      {!on && <span className="pt-chip on custom">Custom</span>}</span>
+    <Pick base="pt-chips">{Object.entries(all).map(([k, p]) => <button key={k} className={`pt-chip${on === k ? " on" : ""}`} aria-pressed={on === k} onClick={() => apply(p)}>{p.label}</button>)}
+      {!on && <span className="pt-chip on custom">Custom</span>}</Pick>
   );
   const incOn = testIncomeOf(d), whenOn = testWhenOf(d), patOn = spendPatternOf(d);
   // switches read the draft as it is at that moment, so two presses in a row both count
@@ -5581,9 +5760,9 @@ const TestCfg = ({ cfg, closing, year, month, span, fmt, onRun, onClose }) => {
         {sec("much", "shopping_cart", "How much is spent", `${SPEND_STYLES[d.style] ? SPEND_STYLES[d.style].label : "Custom"}${patOn !== "steady" ? ` · ${patOn ? SPEND_PATTERNS[patOn].label.toLowerCase() : "custom spread"}` : ""}${c ? ` · ≈ ${fmt(estimateTest(c))} a month` : ""}`, <>
           <div className="tcfg-subh">Style</div>
           <div className="tcfg-stack"><span className="tcfg-lbl">Amount<span className="tcfg-note">from the least to the most · fills in the buys below</span></span>
-            <span className="pt-chips">{Object.entries(SPEND_STYLES).map(([k, st]) => (
+            <Pick base="pt-chips">{Object.entries(SPEND_STYLES).map(([k, st]) => (
               <button key={k} className={`pt-chip${d.style === k ? " on" : ""}`} aria-pressed={d.style === k} onClick={() => set({ style: k, small: st.small.map(String), mid: st.mid.map(String), big: st.big.map(String) })}>{st.label}</button>
-            ))}{d.style === "custom" && <span className="pt-chip on custom">Custom</span>}</span></div>
+            ))}{d.style === "custom" && <span className="pt-chip on custom">Custom</span>}</Pick></div>
           <div className="tcfg-stack"><span className="tcfg-lbl">Pattern<span className="tcfg-note">how it is spread · over any amount</span></span>
             {presets(SPEND_PATTERNS, patOn, (p) => set({ weekend: String(p.weekend), spike: String(p.spike), swing: String(p.swing) }))}</div>
           <div className="tcfg-subh">Buys</div>
@@ -6857,6 +7036,74 @@ const SlideSeg = ({ options, value, onPick, style, cls = "", washes = 0, tab }) 
   );
 };
 
+/* A row of choices whose picked one's look is a box that slides to it, as SlideSeg's does (4 November 2026, his words:
+   "animate the boxes sliding when pressed. also do this for any other option boxes AND future ones"; then "yes, do
+   everything" for the rows drawn with an outline). Every row where one choice is picked is one of these or a SlideSeg.
+   Any row: the choices are its children, the picked one has "on". The box is drawn by copies of that choice (its own
+   classes and its own --vars, so the same fill, outline, corners and shadow), in pieces that only ever move:
+   - the fill: a copy as wide as the widest choice, its left end on the choice's left, seen through a window whose right
+     end is the choice's, round as its corners;
+   - the outline: a copy of that width with no fill, seen to a corner's width short of the right end, and a cap, a copy
+     one corner wide each side with no fill, whose right half is the choice's right end.
+   The window, the body and the cap slide together (transforms only), so what shows is always one whole box of the
+   moving width, round at both ends, its outline whole. In x and y: a row that wraps slides to the next line. With none
+   on, the box fades away, and the choices draw their own look. A row where several can be on (the weekdays) stays plain.
+   base: the row's own class (.jr-pick unless said); cls must never change: "sl" is put on the element by hand */
+const Pick = ({ as: Tag = "span", base = "jr-pick", cls = "", children, ...rest }) => {
+  const wrap = useRef(null), box = useRef(null), at = useRef(""), place = useRef(null);
+  place.current = (still) => {
+    const el = wrap.current, on = el && el.querySelector(":scope > .on");
+    if (!el) return;
+    if (!on || !on.offsetWidth) { el.classList.remove("sl"); at.current = ""; return; }
+    // where the choice stands to the fraction of a pixel (offsetLeft and offsetWidth round: a chip 91.34 wide got a box
+    // 91 wide), in the row's own px: a pop-up still scaling in is divided out
+    const wr = el.getBoundingClientRect(), k = wr.width / el.offsetWidth || 1, cr = on.getBoundingClientRect();
+    const x = (cr.left - wr.left) / k - el.clientLeft, y = (cr.top - wr.top) / k - el.clientTop, w = cr.width / k, h = cr.height / k;
+    const W = Math.max(...[...el.children].map((ch) => ch.getBoundingClientRect().width / k));    // the widest choice: the body is never shorter
+    const c = Math.max(2, Math.min(parseFloat(getComputedStyle(on).borderTopRightRadius) || 0, h / 2, w / 2));
+    const vars = [...on.style].filter((k) => k.startsWith("--")).map((k) => `${k}:${on.style.getPropertyValue(k)};`).join("");
+    const key = [x, y, w, h, W, c].map((v) => v.toFixed(2)).join() + on.className + vars;
+    if (key === at.current) { el.classList.add("sl"); return; }
+    // put in place without a move the first time it shows, and when the row itself changes size; every pick slides
+    const tr = at.current && !still ? "transform .34s var(--ease-soft), background-color .34s ease, border-color .34s ease, box-shadow .34s ease" : "none";
+    at.current = key;
+    const [fw, lw, rw] = box.current.children;
+    // the copies are made here, of the choice's kind (a rule may say button.on), never seen by Tab or a screen reader
+    const tag = on.tagName === "BUTTON" ? "BUTTON" : "SPAN";
+    for (const wn of [fw, lw, rw]) if (!wn.firstChild || wn.firstChild.tagName !== tag) { const f = document.createElement(tag); f.tabIndex = -1; f.inert = true; wn.replaceChildren(f); }
+    for (const wn of [fw, lw, rw]) wn.firstChild.className = on.className;
+    const face = `position:absolute;top:0;height:100%;margin:0;padding:0;box-sizing:border-box;min-width:0;max-width:none;animation:none;pointer-events:none;transition:${tr};${vars}`;
+    // the fill is one piece: the body, seen through a window as wide that is round on the right (SlideSeg's two pieces), so
+    // nothing of it meets anything (two fills side by side left a line where they met: 4 November 2026, the hour grid)
+    fw.style.cssText = `width:${W}px;height:${h}px;border-radius:0 ${c}px ${c}px 0;transform:translate(${x + w - W}px,${y}px);transition:${tr}`;
+    fw.firstChild.style.cssText = `${face}border-color:transparent!important;box-shadow:none!important;left:0;width:${W}px;transform:translateX(${W - w}px)`;
+    // the outline: the body's to a corner's width short of the right end, the cap's from there, meeting on a whole pixel of
+    // the screen at rest. The cap's window reaches 4px past the box, for an outline drawn as a shadow outside it
+    const dpr = window.devicePixelRatio || 1, sx = (Math.round((cr.right - c * k) * dpr) / dpr - wr.left) / k - el.clientLeft;
+    lw.style.cssText = `width:${W}px;height:${h}px;transform:translate(${sx - W}px,${y}px);transition:${tr}`;
+    lw.firstChild.style.cssText = `${face}background:none!important;left:0;width:${W}px;transform:translateX(${W - sx + x}px)`;
+    rw.style.cssText = `width:${x + w - sx + 4}px;height:${h}px;transform:translate(${sx}px,${y}px);transition:${tr}`;
+    rw.firstChild.style.cssText = `${face}background:none!important;left:${x + w - 2 * c - sx}px;width:${2 * c}px`;
+    el.classList.add("sl");
+  };
+  // measured only when the choice, its look or the row's choices changed: a render that changes none of them (a journal
+  // re-rendering on every key) costs no layout (4 November 2026, a code review). A change of size is the observer's
+  const seen = useRef(null);
+  useLayoutEffect(() => {
+    const el = wrap.current, on = el && el.querySelector(":scope > .on");
+    const k = on ? `${[...el.children].indexOf(on)}/${el.children.length}/${on.className}/${on.getAttribute("style") || ""}/${on.textContent}` : "";
+    if (k === seen.current) return;
+    seen.current = k; place.current(false);
+  });
+  useEffect(() => { const ro = new ResizeObserver(() => place.current(true)); ro.observe(wrap.current); return () => ro.disconnect(); }, []);
+  return (
+    <Tag className={`${base} pk ${cls}`} ref={wrap} {...rest}>
+      <span className="pk-box" ref={box} aria-hidden="true"><span className="pk-f" /><span className="pk-l" /><span className="pk-r" /></span>
+      {children}
+    </Tag>
+  );
+};
+
 /* The rules a beginner picks from, in plain words (21 October 2026: "improve the spending rule ui to make it more beginner
    user friendly"; PRODUCT.md: a screen has to make sense to somebody who has never seen it): a short name, what it does
    in one line, and the one to start with. Every preset of every family is here, so a card is all it takes to pick one */
@@ -6926,7 +7173,7 @@ const RulePop = ({ rule, own, monthName, base: income, money, days, fmt, onSave,
         <div className="tcfg-sub rp-lead">A spending rule splits each month's income into parts: what you can spend, and what you keep. Pick one to start; you can fine-tune it later.</div>
 
         <div className="rp-h">Pick a rule</div>
-        <div className="rp-plans">
+        <Pick as="div" base="rp-plans">
           {RULE_PLANS.map((pl) => {
             const on = plan === pl, ph = rulePartHues(pl.fam);
             return (
@@ -6937,7 +7184,7 @@ const RulePop = ({ rule, own, monthName, base: income, money, days, fmt, onSave,
               </button>
             );
           })}
-        </div>
+        </Pick>
 
         <div className="rp-h">How much to split each month</div>
         <div className="rp-money">
@@ -7124,6 +7371,24 @@ const numIn = (raw, dp, pasted) => {
   }
   const parts = v.replace(/,/g, ".").replace(/[^\d.]/g, "").split(".");
   return (parts.shift() + (parts.length ? "." + parts.join("").slice(0, dp) : "")).slice(0, 18);
+};
+/* A number box shows its thousands marked (4 November 2026, his words: "add . or , points on text input values"):
+   10000 shows 10,000 as it is typed, 65432.5 shows 65,432.5. grp writes the box's text; ungrp reads it back for numIn:
+   the commas grp put in go, and a comma he types himself is a decimal point, as numIn has always read it; a paste is
+   read as numIn reads one. The caret rule (by sanitizeAmount) keeps the caret where it was typed and steps over a comma
+   on Backspace. Rupiah boxes have their dots already (sanitizeAmount, idrIn). Every new number box goes through these */
+const grp = (t) => (t == null || t === "" ? t : String(t).replace(/^([-−]?)(\d+)/, (m, sg, i) => sg + i.replace(/\B(?=(\d{3})+$)/g, ",")));
+const ungrp = (e) => {
+  const el = e.target, v = el.value, p = el.selectionStart, ne = e.nativeEvent || {};
+  if (/^insert(FromPaste|FromDrop|ReplacementText)$/.test(ne.inputType || "")) {
+    // only what came in is read as a paste (1,234.56 · 1.234,56); the rest is the box's own text, its commas grp's
+    // (pasting 5 after 1,234 once gave 1.2345). `_was`: the text and selection just before, kept by the caret rule above
+    const w = el._was;
+    if (!w || w[1] == null || v.length < w[0].length - (w[2] - w[1])) return numIn(v, 18, true);
+    const [o, a, b] = w;
+    return o.slice(0, a).replace(/,/g, "") + numIn(v.slice(a, v.length - (o.length - b)), 18, true) + o.slice(b).replace(/,/g, "");
+  }
+  return ne.data === "," && v[p - 1] === "," ? v.slice(0, p - 1).replace(/,/g, "") + "." + v.slice(p).replace(/,/g, "") : v.replace(/,/g, "");
 };
 // the targets in the order the price reaches them. Close % stay with their place in the list: the first target hit
 // closes what the first filled box says, the second what the second says. The furthest one is the full TP (slot "full")
@@ -7616,8 +7881,8 @@ const SetNum = ({ value, dp, unit, onPick }) => {
   const [text, setText] = useState(null);
   return (
     <span className="set-v">
-      <input className="pc-in set-in" inputMode="decimal" value={text ?? value} onBlur={() => setText(null)}
-             onChange={(e) => { const v = numIn(e.target.value, dp); setText(v); onPick(v); }} />
+      <input className="pc-in set-in" inputMode="decimal" value={grp(text ?? value)} onBlur={() => setText(null)}
+             onChange={(e) => { const v = numIn(ungrp(e), dp); setText(v); onPick(v); }} />
       {unit && <i>{unit}</i>}
     </span>
   );
@@ -7780,8 +8045,8 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
   const keepFocus = (e) => e.preventDefault();               // on the helper buttons: a click must not take the focus from the box being typed in
   const pasted = (e) => /^insert(FromPaste|FromDrop|ReplacementText)$/.test(e.nativeEvent.inputType || "");
   const price = (field, v, onChange, ghost) => (
-    <input aria-label={calcLabel(field)} className={`pc-in${bad(field)}`} data-f={field} inputMode="decimal" value={v} placeholder={ghost || "0"}
-           onChange={(e) => onChange(numIn(e.target.value, CALC_DP, pasted(e)))} />
+    <input aria-label={calcLabel(field)} className={`pc-in${bad(field)}`} data-f={field} inputMode="decimal" value={grp(v)} placeholder={ghost || "0"}
+           onChange={(e) => onChange(numIn(ungrp(e), CALC_DP, pasted(e)))} />
   );
   const goTo = (field) => formRef.current?.querySelector(`[data-f="${field}"]`)?.focus();
 
@@ -7835,8 +8100,8 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                   <div key={c} className="pc-pop-row">
                     <span>1 {unit} =</span>
                     <input aria-label={`${c} for 1 ${unit}`} className="pc-in" inputMode="decimal"
-                           value={rateText[c] ?? String(+rateOf(c).toFixed(c === "IDR" ? 2 : 4))}
-                           onChange={(e) => { const v = numIn(e.target.value, 4, pasted(e)); setRateText((t) => ({ ...t, [c]: v })); onRate(c, numOf(v)); }} />
+                           value={grp(rateText[c] ?? String(+rateOf(c).toFixed(c === "IDR" ? 2 : 4)))}
+                           onChange={(e) => { const v = numIn(ungrp(e), 4, pasted(e)); setRateText((t) => ({ ...t, [c]: v })); onRate(c, numOf(v)); }} />
                     <span>{c}</span>
                   </div>
                 ))}
@@ -7864,7 +8129,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
             <div className="pc-line">
               <label>Side</label>
               {/* neither pressed: the side is read from the levels, and the one it reads lights up faintly */}
-              <span className="pc-side">
+              <Pick base="pc-side">
                 {["long", "short"].map((s) => (
                   <button key={s} tabIndex={-1} onMouseDown={keepFocus} className={`pc-side-b ${s}${f.side === s ? " on" : !f.side && sideWord === s ? " auto" : ""}`}
                           title={f.side === s ? `Locked to ${sideName(s)}. Click to go back to automatic` : `Lock the position to a ${sideName(s)}`}
@@ -7872,7 +8137,7 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                     {sideName(s)}{!f.side && sideWord === s && <i>auto</i>}
                   </button>
                 ))}
-              </span>
+              </Pick>
             </div>
             <div className="pc-line"><label>Entry</label>{price("entry", f.entry, (v) => set({ entry: v }), livePrice)}</div>
             <div className="pc-line"><label>Stop loss</label>{price("sl", f.sl, (v) => set({ sl: v }))}</div>
@@ -7881,14 +8146,14 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
               {/* Risk and IM go together: whichever is typed, the other is worked out and shown in grey (the box is too
                   narrow for the word "auto" beside a figure). The risk he typed is kept underneath (it sets the leverage)
                   and is back when the IM box is emptied */}
-              <input className={`pc-in${riskAuto ? " auto" : ""}${bad("risk")}`} data-f="risk" inputMode="decimal" value={riskAuto ? "" : f.risk} placeholder={riskAuto ? riskText(rc, res.risk * riskRate) : "0"}
+              <input className={`pc-in${riskAuto ? " auto" : ""}${bad("risk")}`} data-f="risk" inputMode="decimal" value={grp(riskAuto ? "" : f.risk)} placeholder={riskAuto ? riskText(rc, res.risk * riskRate) : "0"}
                      title={riskAuto ? `Worked out: what the stop loses with the IM you typed, in ${rc}. Type a risk here and the IM is worked out again` : `What is lost if the stop is hit, in ${rc}`}
-                     onChange={(e) => { riskUsd.current = null; set({ risk: rc === "IDR" ? idrIn(e.target.value, 0, pasted(e)) : numIn(e.target.value, 2, pasted(e)), ...(fxm ? {} : { im: "" }) }); }} />
+                     onChange={(e) => { riskUsd.current = null; set({ risk: rc === "IDR" ? idrIn(e.target.value, 0, pasted(e)) : numIn(ungrp(e), 2, pasted(e)), ...(fxm ? {} : { im: "" }) }); }} />
               <label>{fxm ? "Leverage" : "Max lev"}</label>
               <span className="pc-unit">
-                <input aria-label={fxm ? "Leverage" : "Max leverage"} className={`pc-in${bad("maxLev")}`} data-f="maxLev" inputMode="decimal" value={f.maxLev} placeholder={fxm ? "100" : "0"}
+                <input aria-label={fxm ? "Leverage" : "Max leverage"} className={`pc-in${bad("maxLev")}`} data-f="maxLev" inputMode="decimal" value={grp(f.maxLev)} placeholder={fxm ? "100" : "0"}
                        title={fxm ? "Your account's leverage (1:100 is 100). It only says what margin the position ties up; leave it empty to skip that" : "The highest leverage this coin allows"}
-                       onChange={(e) => set({ maxLev: numIn(e.target.value, 2, pasted(e)) })} />
+                       onChange={(e) => set({ maxLev: numIn(ungrp(e), 2, pasted(e)) })} />
                 <span>x</span>
               </span>
             </div>
@@ -7898,9 +8163,9 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
               <div className="pc-line">
                 <label>IM $</label>
                 <span className="pc-unit wide">
-                  <input aria-label="Initial margin in dollars" className={`pc-in${bad("im")}`} data-f="im" inputMode="decimal" value={f.im || ""} placeholder={ok && res.im ? String(+res.im.toFixed(3)) : String(CALC_IM)}
+                  <input aria-label="Initial margin in dollars" className={`pc-in${bad("im")}`} data-f="im" inputMode="decimal" value={grp(f.im || "")} placeholder={ok && res.im ? String(+res.im.toFixed(3)) : String(CALC_IM)}
                          title="The margin the position is opened with. Empty: worked out for you, $1 whenever the leverage allows. Typed (what the exchange really took): the leverage stays, and the Risk box shows what the stop then loses"
-                         onChange={(e) => set({ im: numIn(e.target.value, 3, pasted(e)) })} />
+                         onChange={(e) => set({ im: numIn(ungrp(e), 3, pasted(e)) })} />
                   {!f.im && <span>auto</span>}
                 </span>
               </div>
@@ -7917,8 +8182,8 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
               <div className="pc-line more" key="contract">
                 <label title="How many units 1 lot of this symbol is: see its specification in MetaTrader (it differs from broker to broker)">1 lot =</label>
                 <span className="pc-unit">
-                  <input className={`pc-in${bad("contract")}`} data-f="contract" inputMode="decimal" value={f.contract || ""} placeholder="contract size"
-                         onChange={(e) => set({ contract: numIn(e.target.value, 4, pasted(e)) })} />
+                  <input className={`pc-in${bad("contract")}`} data-f="contract" inputMode="decimal" value={grp(f.contract || "")} placeholder="contract size"
+                         onChange={(e) => set({ contract: numIn(ungrp(e), 4, pasted(e)) })} />
                   <span>units</span>
                 </span>
               </div>
@@ -7929,9 +8194,9 @@ const PositionCalc = ({ draft, onSaved, onClose, cur, cur2, onCurClick, onCur2Cl
                 <label>TP{i + 1}</label>
                 {price(`tp${i}`, t.price, (v) => setTp(i, { price: v }))}
                 <span className={`pc-unit${i === standIn ? " off" : ""}`}>
-                  <input aria-label={calcLabel(`close${i}`)} className={`pc-in${bad(`close${i}`)}`} data-f={`close${i}`} inputMode="decimal" value={t.close} placeholder="0"
+                  <input aria-label={calcLabel(`close${i}`)} className={`pc-in${bad(`close${i}`)}`} data-f={`close${i}`} inputMode="decimal" value={grp(t.close)} placeholder="0"
                          title={i === standIn ? "There is no full TP, so this target stands in for it and closes whatever is left" : `How much of the position TP${i + 1} closes`}
-                         onChange={(e) => setTp(i, { close: numIn(e.target.value, 2, pasted(e)) })} />
+                         onChange={(e) => setTp(i, { close: numIn(ungrp(e), 2, pasted(e)) })} />
                   <span>%</span>
                 </span>
                 {i >= 2 && <button className="pc-x" tabIndex={-1} onMouseDown={keepFocus} title="Remove this target" onClick={() => update({ ...f, tps: f.tps.filter((_, k) => k !== i) })}>×</button>}
@@ -8323,8 +8588,8 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
                 {[["buy", "On a buy"], ["sell", "On a sell"]].map(([k, name]) => (
                   <div key={k} className="pc-pop-row">
                     <span>{name}</span>
-                    <input aria-label={name} className="pc-in" inputMode="decimal" value={feeText[k] ?? String(fees[k])}
-                           onChange={(e) => { const v = numIn(e.target.value, 3); setFeeText((t) => ({ ...t, [k]: v })); onFees(k, v === "" ? null : numOf(v)); }} />
+                    <input aria-label={name} className="pc-in" inputMode="decimal" value={grp(feeText[k] ?? String(fees[k]))}
+                           onChange={(e) => { const v = numIn(ungrp(e), 3); setFeeText((t) => ({ ...t, [k]: v })); onFees(k, v === "" ? null : numOf(v)); }} />
                     <span>%</span>
                   </div>
                 ))}
@@ -8365,9 +8630,9 @@ const StockCalc = ({ draft, onSaved, onClose, fees, onFees, live }) => {
                     <label>TP{i + 1}</label>
                     {box(`tp${i}`, t.price, (v) => setTp(i, { price: v }))}
                     <span className={`pc-unit${i === standIn ? " off" : ""}`}>
-                      <input aria-label={calcLabel(`close${i}`)} className={`pc-in${bad(`close${i}`)}`} data-f={`close${i}`} inputMode="decimal" value={t.close} placeholder="0"
+                      <input aria-label={calcLabel(`close${i}`)} className={`pc-in${bad(`close${i}`)}`} data-f={`close${i}`} inputMode="decimal" value={grp(t.close)} placeholder="0"
                              title={i === standIn ? "There is no full TP, so this target stands in for it and sells whatever is left" : `How much of the position TP${i + 1} sells`}
-                             onChange={(e) => setTp(i, { close: numIn(e.target.value, 2, pasted(e)) })} />
+                             onChange={(e) => setTp(i, { close: numIn(ungrp(e), 2, pasted(e)) })} />
                       <span>%</span>
                     </span>
                     {i >= 2 && <button className="pc-x" tabIndex={-1} onMouseDown={keepFocus} title="Remove this target" onClick={() => update({ ...f, tps: f.tps.filter((_, k) => k !== i) })}>×</button>}
@@ -8796,12 +9061,12 @@ const PnlAnalysis = memo(({ trades, deps, an, start, end, cur, rate, base, allPn
   return (
     <div>
       <div className="an-bar">
-        <div className="an-tabs">
+        <Pick as="div" base="an-tabs">
           {AN_RANGES.map((d) => (
             <button key={d} className={`an-tab${an.kind === d ? " on" : ""}`} onClick={() => { setDates(null); if (an.kind !== d) api.current.setAn({ ...an, kind: d }); }}>Last {d} D</button>
           ))}
           <button className={`an-tab${custom ? " on" : ""}`} onClick={pickCustom}>Custom Time Frame</button>
-        </div>
+        </Pick>
         {/* the balance: a figure, pressed to be typed over (what the exchange shows now). Empty: no balance */}
         {bal !== null ? (
           <label className="an-bal edit">
@@ -8998,7 +9263,7 @@ const FoldCard = ({ title, sub, runKey, name, style, loose, parts, flask, childr
                   title={open ? `Hide ${name}` : `Show ${name}`}><Chevron /></button>
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateRows: open && !closing ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
+      <div className="fold-box" style={{ display: "grid", gridTemplateRows: open && !closing ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
         <div style={loose ? S.foldLoose : S.fold}>
           <div key={`${run}-${parts || seen}-${runKey}`} className="fold-in"
                style={{ opacity: closing ? 0 : 1, transform: closing ? "translateY(-14px)" : "translateY(0)",
@@ -9332,28 +9597,28 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
           {idx ? (
             <>
               <JrRow icon="timelapse" tint="#c9b98a" label="Trade style">
-                <span className="jr-pick">
+                <Pick>
                   {IDX_STYLES.map(([id, name]) => (
                     <button key={id} tabIndex={-1} className={`jr-chip${d.style === id ? " on" : ""}`} onClick={() => set({ style: d.style === id ? "" : id }, true)}>{name}</button>
                   ))}
-                </span>
+                </Pick>
               </JrRow>
               <JrRow icon="category" tint="#9db7c9" label="Sector" cls="top">
-                <span className="jr-pick">
+                <Pick>
                   <button tabIndex={-1} className={`jr-chip${d.sec ? "" : " on"}`} title="Read from the ticker" onClick={() => set({ sec: "" }, true)}>Auto{secAuto ? ` · ${secAuto}` : ""}</button>
                   {IDX_SECTORS.map((sec) => (
                     <button key={sec} tabIndex={-1} className={`jr-chip${d.sec === sec ? " on" : ""}`} onClick={() => set({ sec: d.sec === sec ? "" : sec }, true)}>{sec}</button>
                   ))}
-                </span>
+                </Pick>
               </JrRow>
             </>
           ) : (
           <JrRow icon="trending_up" tint={short ? "#e2808c" : "#8fd7a4"} label={fx ? "Type" : "Position"} cls={short ? "flip" : ""}>
-            <span className="jr-pick">
+            <Pick>
               {["long", "short"].map((s) => (
                 <button key={s} tabIndex={-1} className={`jr-chip ${s}${d.side === s ? " on" : ""}`} onClick={() => set({ side: s }, true)}>{fx ? (s === "long" ? "Buy" : "Sell") : s === "long" ? "Long" : "Short"}</button>
               ))}
-            </span>
+            </Pick>
           </JrRow>
           )}
           {fx && (
@@ -9362,7 +9627,7 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
             </JrRow>
           )}
           <JrRow icon="candlestick_chart" tint="#8fb4e0" label="Time frame">
-            <span className="jr-pick">
+            <Pick>
             {TF_LIST.map((tf, i) => (
               <button key={tf} tabIndex={-1} className={`jr-chip tf${d.tf === tf ? " on" : ""}`} style={{ "--tf": TF_TINT[i] }}
                       onClick={() => { setOwn(""); set({ tf: d.tf === tf ? "" : tf }, true); }}>{tf}</button>
@@ -9371,7 +9636,7 @@ const TradeSheet = memo(function TradeSheet({ trade, api, ghost, active, onView,
                    value={own} placeholder="Own" maxLength={5} aria-label="A time frame of your own" title="A time frame of your own: 45m, 2h, 3D, 1W…"
                    onChange={(e) => setOwn(e.target.value.replace(/[^\dmhHdDwWM]/g, ""))} onBlur={ownDone}
                    onKeyDown={(e) => { if (e.key === "Enter") { ownDone(); if (trade) e.target.blur(); else add(); } }} />
-            </span>
+            </Pick>
           </JrRow>
           <JrRow icon="hourglass_top" tint="#8fb4e0" label="Duration">
             <input {...text("dur", 16)} onKeyDown={onKey} placeholder="e.g. 5h 40m" aria-label="Duration" />
@@ -9703,7 +9968,10 @@ const TradeJournal = memo(function TradeJournal({ list, deps, removing, api, gho
               <div style={S.fold}>
                 <div style={{ transformOrigin: "center center", animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + at * 45}ms backwards` }}>
                   <div className={`jr-item glass-soft ${res}${open === it.id ? " open" : ""}`}>
-                    <div className={`jr-sum${acts[it.id] ? " acts" : ""}${menu === it.id ? " menu" : ""}`} {...KEY_BTN} aria-expanded={open === it.id} onClick={() => toggle(it.id)} title={open === it.id ? "Close" : "Open this trade"}>
+                    <div className={`jr-sum${acts[it.id] ? " acts" : ""}${menu === it.id ? " menu" : ""}`} {...KEY_BTN} aria-expanded={open === it.id} onClick={() => toggle(it.id)} title={open === it.id ? "Close" : "Open this trade"}
+                         onContextMenu={(e) => openCtx(e, [{ icon: open === it.id ? "unfold_less" : "unfold_more", text: open === it.id ? "Close" : "Open", run: () => toggle(it.id) },
+                           { icon: "edit", text: "Edit", run: () => toEdit(it.id) }, { icon: "content_copy", text: "Duplicate", run: () => { setMenu(null); api.current.dup(it); } }, null,
+                           { icon: "delete", text: "Delete", danger: true, run: () => { setMenu(null); api.current.del(it.id); } }])}>
                       <span className="jr-badge"><span className="msym">{JR_RES[res][1]}</span>{JR_RES[res][0]}</span>
                       {idx ? (
                         // a stock: a grey $ before the ticker, and the company under it in light grey when it is one it knows
@@ -9968,7 +10236,7 @@ const TradeTestCfg = ({ cfg, M, year, month, span, onRun, onClose }) => {
 
         <div className="tcfg-sec">
           <div className="tcfg-h"><span className="msym">candlestick_chart</span>Trading style</div>
-          <div className="tcfg-styles">
+          <Pick as="div" base="tcfg-styles">
             {Object.entries(TRADE_STYLES).map(([k, st]) => {
               const e = live ? tradeStyleEst(st, live, T) : null;
               return (
@@ -9982,7 +10250,7 @@ const TradeTestCfg = ({ cfg, M, year, month, span, onRun, onClose }) => {
                 </button>
               );
             })}
-          </div>
+          </Pick>
         </div>
 
         <div className="tcfg-foot">
@@ -10565,7 +10833,7 @@ const DgHead = ({ info, children, go: say, onGo, goIcon = "arrow_outward", px })
       : <span className={`wd-name${px ? " px" : ""}`}>{info.name}</span>}
     <span className="wd-sp" />
     {children}
-    {onGo && <button className="wd-go" title={go} aria-label={go} onClick={onGo}><span className="msym">{goIcon}</span></button>}
+    {onGo && <button className={`wd-go${goIcon === "arrow_outward" ? " open" : ""}`} title={go} aria-label={go} onClick={onGo}><span className="msym">{goIcon}</span></button>}
   </div>
 ); };
 // the period (or the span) of a widget: a press moves it on to the next one, and it is kept with the widget. In a
@@ -14179,6 +14447,10 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
     setPop({ k, kind: "bump" });
     setToast({ msg: `${dgInfo(id, M).name} is in the stack: swipe up or down on it`, id: Date.now() });
   };
+  // the board's own actions, in its right-click menu and the command bar (4 November 2026: fewer buttons)
+  const boardMenu = () => [{ icon: "edit", text: "Edit widgets", run: () => editOn() }, { icon: "add", text: "Add a widget", run: () => { editOn(); setSheet("add"); } },
+                           { icon: "dashboard_customize", text: "Layouts", run: () => { editOn(); setSheet("presets"); } }];
+  useCmds(() => boardMenu().map((c) => ({ ...c, id: `home-${c.text}`, tip: "Home" })));
   const remove = (k) => {
     // in a stack, the round − takes out the widget on show, and the others stay in the box (the last one left is a plain widget)
     const cur = items.find((o) => o.k === k);
@@ -14319,14 +14591,23 @@ const HomeDash = memo(({ market, M, who, loaded, layout, ctx, api, busy }) => {
       )}
       <div ref={board} className={`dg-board${edit ? " edit" : ""}${leaving ? " leaving" : ""}${enter ? " enter" : ""}`}
            style={{ height: loaded && pitch > 0 && items.length ? dgBoardH(items, pitch, edit) : undefined, "--u": `${pitch || 100}px`, "--gs": grid }}
-           onPointerDown={(e) => { if (edit && e.target === e.currentTarget) endEdit(); }}>
+           onPointerDown={(e) => { if (edit && e.target === e.currentTarget) endEdit(); }}
+           onContextMenu={(e) => { if (!edit && e.target === e.currentTarget) openCtx(e, boardMenu()); }}>
         {edit && snap && <div key={grid} className="dg-grid" aria-hidden="true" />}
         <div className="dg-slot" ref={slot} aria-hidden="true" />
         {loaded && pitch > 0 && items.map((it) => (
           <div key={it.k} ref={(el) => { if (el) nodes.current.set(it.k, el); else nodes.current.delete(it.k); }}
                className={`dg-cell${pop && pop.k === it.k ? ` ${pop.kind}` : ""}`} style={dgPos(it, pitch)} data-k={it.k} data-fly={flyK.current === it.k ? "" : undefined}
                tabIndex={edit ? 0 : -1} aria-label={edit ? `${dgInfo(it.id, M).name}: arrow keys move it, + and − change its size, Delete removes it` : undefined}
-               onPointerDown={(e) => press(e, it)} onKeyDown={edit ? (e) => keyCell(e, it) : undefined}>
+               onPointerDown={(e) => press(e, it)} onKeyDown={edit ? (e) => keyCell(e, it) : undefined}
+               onContextMenu={edit ? undefined : (e) => {
+                 // right-click a widget: open it (its title's own press), take it away (Undo, as the round −), and the board's own
+                 const t = e.currentTarget.querySelector(".wd-title-link"), name = dgInfo(it.st ? dgPages(it)[it.at || 0].id : it.id, M).name;
+                 openCtx(e, [t && { icon: "arrow_outward", text: `Open ${name}`, run: () => t.click() },
+                   dgPages(it).length < DG_STACK_N && { icon: "library_add", text: "Stack another widget here", run: () => { editOn(); setInto(it.k); setSheet("add"); } },
+                   null, ...boardMenu(), null,
+                   { icon: "remove_circle", text: it.st ? `Take ${name} out of the stack` : `Remove ${name}`, danger: true, run: () => remove(it.k) }]);
+               }}>
             {it.st ? <DgStack it={it} ctx={wctx} i={order.get(it.k)} pitch={pitch} empty={order.get(it.k) >= fill} onTurn={onTurn} />
               : <DashWidget it={it} cls={dgCls(it)} ctx={wctx} i={order.get(it.k)} pitch={pitch} empty={order.get(it.k) >= fill} />}
             {edit && <button className="dg-rm" title={it.st ? "Take this widget out of the stack" : "Remove this widget"} aria-label={`${it.st ? "Take out" : "Remove"} ${dgInfo(it.id, M).name}`} onClick={() => remove(it.k)}><span className="msym" aria-hidden="true">remove</span></button>}
@@ -15946,7 +16227,7 @@ function TradeTracker({ market, onHome, onApp, apps, onUsers, onReset, onRestore
 
             {/* the list that opens under the grid */}
             <div ref={recapDetailRef} style={{ display: "grid", gridTemplateRows: recapDetailOpen ? "1fr" : "0fr", transition: "grid-template-rows .38s cubic-bezier(0.4,0,0.2,1)" }}>
-              <div style={S.fold}>
+              <div style={S.fold} ref={(el) => { if (el) el.inert = !recapDetailOpen; }}>
                 <div style={{ paddingTop: 12, opacity: recapDetailOpen ? 1 : 0, transform: recapDetailOpen ? "none" : "translateY(-10px)",
                               transition: "opacity .28s ease, transform .32s cubic-bezier(0.22,1,0.36,1)" }}>
                   {recapDetail && renderRecapDetail(r)}
@@ -16235,7 +16516,8 @@ function TradeTracker({ market, onHome, onApp, apps, onUsers, onReset, onRestore
                                 <div style={S.fold}>
                                   <div style={{ display: "flex", transformOrigin: "center center",
                                                 animation: removing[it.id] ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards` }}>
-                                    <div className={`entry-row glass-soft ${win ? "inc" : "exp"}`} style={S.entryRow}>
+                                    <div className={`entry-row glass-soft ${win ? "inc" : "exp"}`} style={S.entryRow}
+                                         onContextMenu={(e) => { if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return; openCtx(e, [{ icon: "delete", text: "Delete", danger: true, run: () => deleteTrade(it.id) }]); }}>
                                       <input aria-label="Result" style={{ ...S.entryAmt, color: win ? C_GREEN : C_RED }} inputMode={M.dp ? "decimal" : "numeric"}
                                              value={amtEdit && amtEdit.id === it.id ? amtEdit.str : amtText(it.pnl)}
                                              onFocus={() => setAmtEdit({ id: it.id, str: amtText(it.pnl) })}
@@ -16457,6 +16739,8 @@ const hlKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 const hlDate = (k) => new Date(`${k}T12:00:00`);
 const hlDays = (a, b) => Math.round((hlDate(b) - hlDate(a)) / 864e5);
 const hlAddDays = (k, n) => { const d = hlDate(k); d.setDate(d.getDate() + n); return hlKey(d); };
+// the steps bars' scroller (HlActivity): how far one day is, a bar and its gap, measured exactly (offsetLeft rounds)
+const hlBarStep = (sc) => { const c = sc.firstChild.children; return c.length > 1 ? c[1].getBoundingClientRect().left - c[0].getBoundingClientRect().left : 0; };
 // n months on, on the same day of the month (the 31st falls back to the month's last day)
 const hlAddMonths = (k, n) => {
   const d = hlDate(k), day = d.getDate();
@@ -16494,7 +16778,10 @@ const hlPlan = (p, g, today, way = "eat") => {
   const extraSteps = extra > 0 ? Math.ceil(extra / hlStepKcal(p.kg) / 100) * 100 : 0;
   const safe = lose ? HL_SAFE_PCT : HL_SAFE_PCT / 2;
   const weeks = abs < 0.05 ? 0 : Math.log(g.target / p.kg) / Math.log(lose ? 1 - safe / 100 : 1 + safe / 100);
-  return { days, diff, lose, abs, bmr, tdee, perWeek, pct, daily, floor, eat, extra, extraSteps, steps: (p.steps || 0) + extraSteps,
+  // his own step goal: without what the plan added to it when he made the plan's steps his goal (`stepsIn`; 4 November 2026,
+  // "continuously adds up step goal": the extra went on top of a goal that had it already, at every press)
+  const own = Math.max(0, (p.steps || 0) - (p.stepsIn || 0));
+  return { days, diff, lose, abs, bmr, tdee, perWeek, pct, daily, floor, eat, extra, extraSteps, own, steps: own + extraSteps,
            fast: pct > safe, safe, safeBy: hlAddDays(today, Math.ceil(weeks * 7)), done: abs < 0.05 };
 };
 // where the plan says he should stand on day k: a straight line from where he started to the target on its day
@@ -16575,7 +16862,8 @@ const cleanHealth = (d) => {
   if (!d || typeof d !== "object") return b;
   const p = d.profile || {};
   b.profile = { cm: hlNum(p.cm, 100, 250) || 0, kg: hlNum(p.kg, 25, 400) || 0, age: hlNum(p.age, 10, 100) || 21, sex: p.sex === "f" ? "f" : "m",
-                act: HL_ACT.some((a) => a[0] === p.act) ? p.act : 1.375, steps: hlNum(p.steps, 1000, 60000) || HL_SEE.steps, move: hlNum(p.move, 50, 3000) || HL_SEE.move };
+                act: HL_ACT.some((a) => a[0] === p.act) ? p.act : 1.375, steps: hlNum(p.steps, 1000, 60000) || HL_SEE.steps, move: hlNum(p.move, 50, 3000) || HL_SEE.move,
+                ...(hlNum(p.stepsIn, 1, 60000) ? { stepsIn: Math.round(p.stepsIn) } : {}) };
   const g = d.goal;
   if (g && hlNum(g.target, 25, 400) && hlDayOk(g.by) && hlDayOk(g.from) && hlNum(g.start, 25, 400) && g.by > g.from)
     b.goal = { target: +g.target, by: g.by, from: g.from, start: +g.start, way: ["eat", "both", "move"].includes(g.way) ? g.way : "both", ...(g.test ? { test: true } : {}) };
@@ -16610,7 +16898,8 @@ const cleanHealth = (d) => {
     .map((c) => ({ name: hlText(c.name, 60).trim(), room: hlText(c.room, 40), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
                    ...(HL_HEX.test(c.col || "") ? { col: c.col.toLowerCase() } : {}) }));
   // the classes he takes this semester (30 October 2026): the names, as keys; null until he has chosen (hlMineList then guesses)
-  b.mine = Array.isArray(d.mine) ? [...new Set(d.mine.map((k) => hlNoteKey(k)).filter(Boolean))].slice(0, 40) : null;
+  // (since 4 November 2026 also every class chosen as one on the timetable: up to 200, the latest kept)
+  b.mine = Array.isArray(d.mine) ? [...new Set(d.mine.map((k) => hlNoteKey(k)).filter(Boolean))].slice(-200) : null;
   // the colours of his own he kept for the timetable (any colour, picked with the pencil): quick to pick again
   b.clsCols = [...new Set((Array.isArray(d.clsCols) ? d.clsCols : []).filter((x) => HL_HEX.test(x || "")).map((x) => x.toLowerCase()))].slice(0, 12);
   // what he keeps about each class (29 October 2026): a few words about it, and links, notes and files, by the class's name
@@ -16839,6 +17128,8 @@ const hlPhoneRead = (text) => {
 /* ---------- health: what the page shows, worked out from the data ---------- */
 const hlFmt = (n) => Math.round(n || 0).toLocaleString("en-US");
 const hlKg = (n) => (Math.round((n || 0) * 10) / 10).toFixed(1).replace(/\.0$/, "");
+const hlKg1 = (n) => (Math.round((n || 0) * 10) / 10).toFixed(1);      // a weight while it counts (Num's live): one decimal throughout
+const hlDurN = (n) => hlDur(Math.round(n || 0));                              // a duration while it counts
 const hlNice = (k) => { const d = hlDate(k); return `${DOW_FULL[hlDow(k)]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
 const hlLong = (k) => { const d = hlDate(k); return `${d.getDate()} ${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`; };
 const hlMin = (t) => +t.slice(0, 2) * 60 + +t.slice(3);         // "13:30" → 810
@@ -16916,8 +17207,8 @@ const HlNum = ({ value, onPick, dp = 0, ph, cls = "", unit, min = 0, max = 1e9, 
   return (
     <span className={`hl-num${unit ? " u" : ""} ${cls}`}>
       <input className="pc-in" inputMode={dp ? "decimal" : "numeric"} aria-label={label} placeholder={ph}
-             value={text ?? (value || value === 0 ? String(value) : "")}
-             onChange={(e) => setText(numIn(e.target.value, dp))} onBlur={done}
+             value={grp(text ?? (value || value === 0 ? String(value) : ""))}
+             onChange={(e) => setText(numIn(ungrp(e), dp))} onBlur={done}
              onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
       {unit && <i>{unit}</i>}
     </span>
@@ -16983,15 +17274,19 @@ const HlTodos = memo(({ todos, day, today, api }) => {
   return (
     <div className="hl-todos">
       <div className="hl-prog">
-        <span className="hl-prog-t"><b>{done}</b> of {list.length} done{day !== today ? ` · ${hlNice(day)}` : ""}</span>
+        <span className="hl-prog-t"><b><Num v={done} /></b> of <Num v={list.length} /> done{day !== today ? ` · ${hlNice(day)}` : ""}</span>
         <span className="hl-prog-bar"><i style={{ transform: `scaleX(${list.length ? done / list.length : 0})` }} /></span>
       </div>
-      <div key={day} className="hl-list">
+      <div className="hl-list">
         {!list.length && <div className="hl-empty">Nothing for this day yet. Add one below: it can repeat every day, on weekdays, or on the days you pick.</div>}
         {list.map((t, i) => {
           const on = !!t.done[day], run = hlRun(t, day);
           return (
-            <div key={t.id} className={`hl-todo${on ? " done" : ""}`} style={{ animationDelay: `${i * 35}ms` }}>
+            <div key={t.id} className={`hl-todo${on ? " done" : ""}`} style={{ animationDelay: `${i * 35}ms` }}
+                 onContextMenu={(e) => { const d = day === today ? "today" : hlNice(day); openCtx(e, [
+                   { icon: on ? "remove_done" : "check", text: on ? "Mark not done" : "Mark done", run: () => api.current.toggle(t.id) }, null,
+                   ...(t.rep === "once" ? [{ icon: "delete", text: "Delete", danger: true, run: () => api.current.del(t.id) }]
+                     : [{ icon: "event_busy", text: `Skip only ${d}`, run: () => api.current.skip(t.id) }, { icon: "delete", text: `Stop from ${d} on`, danger: true, run: () => api.current.end(t.id) }])]); }}>
               <button className="hl-check" onClick={() => api.current.toggle(t.id)} aria-label={on ? "Mark not done" : "Mark done"}>
                 <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
               </button>
@@ -17008,7 +17303,7 @@ const HlTodos = memo(({ todos, day, today, api }) => {
                     <span className="hl-tag">{hlRepWord(t)}{t.rep !== "once" && run.of ? ` · ${run.at} of ${run.of}` : ""}</span>
                     {run.streak >= 2 && <span className="hl-streak" title={`${run.streak} in a row`}><span className="msym">local_fire_department</span>{run.streak}</span>}
                   </span>
-                  <button className="x-btn hl-x" title="Remove" onClick={() => (t.rep === "once" ? api.current.del(t.id) : setAsk(t.id))}>✕</button>
+                  <button className="trash-btn bin-sm hl-x" title="Delete" aria-label={`Delete ${t.text}`} onClick={() => (t.rep === "once" ? api.current.del(t.id) : setAsk(t.id))}><TrashIcon /></button>
                 </>
               )}
             </div>
@@ -17104,7 +17399,7 @@ const HlShop = memo(({ shop, api }) => {
                   <HlShopName q={q} api={api} />
                   <span className="hl-tag">{!q.items.length ? "Empty" : left ? `${left} to buy` : "All bought"}</span>
                   {left < q.items.length && <button className="bk-btn" onClick={() => api.current.shopClear(q.id)}>Clear bought</button>}
-                  <button className="x-btn hl-x" title={`Remove ${q.place}`} aria-label={`Remove ${q.place}`} onClick={() => api.current.shopDel(q.id)}>✕</button>
+                  <button className="trash-btn bin-sm hl-x" title={`Delete ${q.place}`} aria-label={`Delete ${q.place}`} onClick={() => api.current.shopDel(q.id)}><TrashIcon /></button>
                 </div>
                 {q.items.length > 0 && (
                   <div className="hl-list">
@@ -17114,7 +17409,7 @@ const HlShop = memo(({ shop, api }) => {
                           <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
                         </button>
                         <span className="hl-todo-t"><span>{t.text}</span></span>
-                        <button className="x-btn hl-x" title="Remove" aria-label={`Remove ${t.text}`} onClick={() => api.current.shopItemDel(q.id, t.id)}>✕</button>
+                        <button className="trash-btn bin-sm hl-x" title="Delete" aria-label={`Delete ${t.text}`} onClick={() => api.current.shopItemDel(q.id, t.id)}><TrashIcon /></button>
                       </div>
                     ))}
                   </div>
@@ -17324,25 +17619,28 @@ const TimeField = ({ value, onChange, label, cls = "" }) => {
   const pickM = (n) => put(ok ? hh : new Date().getHours(), n);
   return (
     <>
-      <button type="button" ref={btn} className={`jr-in hl-tf${at ? " open" : ""}${cls ? ` ${cls}` : ""}`} aria-label={label} aria-haspopup="dialog" aria-expanded={!!at} onClick={toggle}>
+      {/* a time is taken away without a button of its own (4 November 2026, his words: "make me be able to delete my sleep
+          time (dont add any button)"): Backspace or Delete on the field, or the typed time emptied in its pane */}
+      <button type="button" ref={btn} className={`jr-in hl-tf${at ? " open" : ""}${cls ? ` ${cls}` : ""}`} aria-label={label} aria-haspopup="dialog" aria-expanded={!!at} onClick={toggle}
+              onKeyDown={(e) => { if ((e.key === "Backspace" || e.key === "Delete") && ok && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); onChange(""); } }}>
         <span>{ok ? clk(value) : "--:--"}</span><span className="msym" aria-hidden="true">schedule</span>
       </button>
       {at && createPortal(
         <div ref={pane} className="tpk glass lg-float" role="dialog" aria-label={label} style={at}>
           <div className="tpk-top">
             <input ref={inp} className="tpk-in" value={text ?? (ok ? clk(value) : "")} spellCheck={false} maxLength={9} aria-label="Type the time" placeholder={h12 ? "8:30 AM" : "08:30"}
-                   onChange={(e) => { setText(e.target.value); const t = hlParseTime(e.target.value, h12 && ok ? hh >= 12 : h12 ? false : null); if (t) onChange(t); }}
+                   onChange={(e) => { setText(e.target.value); const t = hlParseTime(e.target.value, h12 && ok ? hh >= 12 : h12 ? false : null); if (t) onChange(t); else if (!e.target.value.trim() && ok) onChange(""); }}
                    onBlur={() => setText(null)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); shut(); } }} />
             {h12 && <SlideSeg value={ok && hh >= 12 ? "pm" : "am"} onPick={(v) => put(ok ? (hh % 12) + (v === "pm" ? 12 : 0) : v === "pm" ? 12 : 0, ok ? mm : 0)} options={[["am", "AM"], ["pm", "PM"]]} />}
           </div>
           <span className="tpk-cap">Hour</span>
-          <div className="tpk-g">
+          <Pick as="div" base="tpk-g">
             {hours.map((n) => <button key={n} type="button" className={ok && (h12 ? (hh % 12 || 12) === n : hh === n) ? "on" : ""} onClick={() => pickH(n)}>{h12 ? n : two(n)}</button>)}
-          </div>
+          </Pick>
           <span className="tpk-cap">Minute</span>
-          <div className="tpk-g">
+          <Pick as="div" base="tpk-g">
             {TPK_MINS.map((n) => <button key={n} type="button" className={ok && mm === n ? "on" : ""} onClick={() => pickM(n)}>{two(n)}</button>)}
-          </div>
+          </Pick>
           <button type="button" className="tpk-done" onClick={shut}>Done</button>
         </div>, document.body)}
     </>
@@ -17381,7 +17679,7 @@ const HlLibEdit = ({ ed, set, cols, n, taken, onSave, onCancel }) => {
     </span>
   );
 };
-const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, nowMin, api }) => {
+const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [], today, nowMin, api }) => {
   useClock12();
   // the form while a class is added or changed: { id?, name, room, dow, from, to, tint, rep: "week" | "once", once? }
   const [form, setForm] = useState(null);
@@ -17394,11 +17692,12 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
   const [pickOpen, setPickOpen] = useState(false); // the colour picker, under the pencil
   const [nt, setNt] = useState(null);             // a class's notes, open: { c, k (the lesson's date) }
   const [mv, setMv] = useState(null);             // a weekly class dropped somewhere new, asking which weeks: { left, top, up, k, k0 }
+  const [all, setAll] = useState(false);          // the list of every class and event (HlClsAll), from the bar
   // a timetable read off a picture (HL_OCR_OK): { busy } while it is read, { err }, or { found } to be checked
   const [scan, setScan] = useState(null);
   const fileIn = useRef(null), over = useRef(false), sayT = useRef(0), body = useRef(null), drag = useRef(null), held = useRef(null), tap = useRef(null);
   const ntOpen = useRef(false);
-  ntOpen.current = !!nt;
+  ntOpen.current = !!nt || all;
   // a day's width on screen, so a block can tell how many lines its words will take (the week is a grid of 7 columns)
   const [colW, setColW] = useState(110);
   useLayoutEffect(() => {
@@ -17454,6 +17753,8 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
       if (!over.current || ntOpen.current || !(e.metaKey || e.ctrlKey) || (e.key !== "Backspace" && e.key !== "Delete") || e.repeat) return;
       const t = e.target, tag = (t && t.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || (t && t.isContentEditable)) return;
+      // nor from inside the class form, a pop-up or a menu: ⌘⌫ on the form's time field once took the whole week (4 November 2026)
+      if (t && t.closest && t.closest('.hl-form, [role="dialog"], [role="menu"], .lg-float')) return;
       e.preventDefault();
       setForm(null);
       api.current.clearCls();
@@ -17489,9 +17790,18 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
   const from = Math.min(8, ...shown.map((p) => Math.floor(p.s / 60)), ...dues.map((a) => Math.floor(hlMin(a.at) / 60)));
   const to = Math.max(18, ...shown.map((p) => Math.ceil(p.e / 60)), ...dues.map((a) => Math.min(24, Math.floor(hlMin(a.at) / 60) + 1)));
   const hours = Array.from({ length: to - from }, (_, i) => from + i);
+  // a deadline's flag in the head pressed: its line scrolled to the middle of the window, then its tab nods (transform only)
+  const toDue = (id) => {
+    const el = body.current && body.current.querySelector(`.hl-due[data-due="${CSS.escape(id)}"]`);
+    if (!el) return;
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
+    const tab = el.querySelector(".hl-due-tab");
+    if (tab && !calm) setTimeout(() => tab.animate([{ transform: "none" }, { transform: "translateY(-3px) scale(1.08)" }, { transform: "none" }], { duration: 520, delay: 0, easing: "ease-in-out", iterations: 2 }), 450);
+  };
   const set = (p) => setForm((f) => ({ ...f, ...p }));
   const open = (f) => { setAsk(false); setLibOpen(false); setLibEd(null); setPickOpen(false); setForm(f); };
-  const openCls = (c) => open({ ...c, rep: c.once ? "once" : "week" });
+  const openCls = (c) => open({ ...c, rep: c.once ? "once" : "week", ev0: !clsK.has(hlNoteKey(c.name)) });
   /* one press opens the class to change it; two in quick succession its notes (29 October 2026: "this ui can be opened by
      double clicking on the class"). The first waits a moment for a second (as the flask does): the form, opening at once,
      would push the week down under the second press */
@@ -17504,8 +17814,8 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
   const ok = form && form.name.trim() && hlTimeOk(form.from) && hlTimeOk(form.to) && form.to !== form.from;
   const save = () => {
     if (!ok) return;
-    const k = dates[form.dow], { rep, ...f } = form;
-    api.current.saveCls({ ...f, once: rep === "once" ? k : null, since: rep === "week" && (!form.id || form.once) ? k : undefined });
+    const k = dates[form.dow], { rep, ev0, ...f } = form;
+    api.current.saveCls({ ...f, ev: evOf(form), once: rep === "once" ? k : null, since: rep === "week" && (!form.id || form.once) ? k : undefined });
     setForm(null);
   };
   const del = (how) => { api.current.delCls(form.id, how, dates[form.dow]); setForm(null); setAsk(false); };
@@ -17589,8 +17899,36 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
     return () => window.removeEventListener("pointerdown", away, true);
   }, [mv]);
   const shortDay = (k) => { const t = hlDate(k); return `${t.getDate()} ${MONTHS_SHORT[t.getMonth()]}`; };
+  /* what the bar's buttons did, and more, without a button each (4 November 2026: "less buttons, though the core features
+     still exists"): the week's right-click menu, a class's, and the command bar (⌘P) */
+  const weekActs = () => [
+    { id: "hl-add", icon: "add", text: "Add a class or an event", run: () => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" }) },
+    { id: "hl-all", icon: "school", text: "Classes and events", tip: "See them all, change one, or say which are classes", run: () => { setForm(null); setAll(true); } },
+    HL_OCR_OK && { id: "hl-scan", icon: "add_photo_alternate", text: "Read a timetable off a picture", tip: "Or drop or paste a picture on the week", off: !!(scan && scan.busy), run: () => fileIn.current?.click() },
+    classes.length > 0 && { id: "hl-clear", icon: "delete", text: "Clear the timetable", key: "⌘⌫", tip: "Everything off the week, with Undo", danger: true, run: () => { setForm(null); api.current.clearCls(); } },
+  ].filter(Boolean);
+  useCmds(() => weekActs().map((c) => ({ ...c, tip: c.tip || "Health · week" })));
+  const dayMenu = (e, w) => {
+    const r = e.currentTarget.getBoundingClientRect(), hr = Math.min(22, from + Math.floor((e.clientY - r.top) / HL_HOUR)), at = `${pad(hr)}:00`;
+    const [add, ...rest] = weekActs();
+    openCtx(e, [{ ...add, text: `Add a class or an event at ${clk(at)}`, run: () => open({ ...hlNewCls(w, at), rep: "week" }) }, null, ...rest.map((c) => (c.danger ? [null, c] : [c])).flat()]);
+  };
+  const clsMenu = (e, c, k) => {
+    const isC = clsK.has(hlNoteKey(c.name)), del = (how) => api.current.delCls(c.id, how, k);
+    openCtx(e, [{ icon: "edit", text: "Change", run: () => openCls(c) }, { icon: "sticky_note_2", text: "Notes", run: () => { setForm(null); setNt({ c, k }); } },
+      { icon: isC ? "event" : "school", text: isC ? "Make it an event" : "Make it a class", run: () => api.current.clsKind(c.name, !isC) }, null,
+      ...(c.once ? [{ icon: "delete", text: "Delete", danger: true, run: () => del("all") }]
+        : [{ icon: "event_busy", text: `Delete only ${shortDay(k)}`, danger: true, run: () => del("one") }, { icon: "delete_sweep", text: "Delete from this week on", danger: true, run: () => del("after") },
+           { icon: "delete", text: "Delete every week", danger: true, run: () => del("all") }])]);
+  };
   const wkName = wk === thisWk ? "This week" : wk === hlAddDays(thisWk, 7) ? "Next week" : wk === hlAddDays(thisWk, -7) ? "Last week" : `Week of ${shortDay(wk)}`;
-  const inLib = form && lib.some((q) => q.name.toLowerCase() === form.name.trim().toLowerCase());
+  /* which names are classes; the rest are events (4 November 2026: "make option if i want to make it become a class or
+     not"). The form's switch shows what the name typed is, until it is pressed; a new name is a class, a block changed
+     keeps what it was. Only classes are in the quick list */
+  const names = hlAsgNames(classes, lib), clsK = new Set(hlMineList(names, mine).map((c) => hlNoteKey(c.name)));
+  const evOf = (f) => (f.ev != null ? f.ev : names.some((c) => hlNoteKey(c.name) === hlNoteKey(f.name)) ? !clsK.has(hlNoteKey(f.name)) : !!f.ev0);
+  const ev = !!form && evOf(form), libCls = lib.filter((q) => clsK.has(hlNoteKey(q.name)));
+  const inLib = form && libCls.some((q) => q.name.toLowerCase() === form.name.trim().toLowerCase());
   return (
     <div className="hl-week" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
          onDragOver={HL_OCR_OK ? (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); } : undefined}
@@ -17604,23 +17942,13 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
         <span className="hl-wk-sub">{shortDay(dates[0])} – {shortDay(dates[6])}</span>
         {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
         <span className="hl-bar-sp" />
-        <button className="hl-ibtn" title="Add a class" aria-label="Add a class" onClick={() => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" })}><span className="msym" aria-hidden="true">add</span></button>
-        {HL_OCR_OK && (
-          <>
-            <button className="hl-ibtn hl-scan-btn" disabled={!!(scan && scan.busy)} onClick={() => fileIn.current?.click()} aria-label="Read a timetable off a picture"
-                    title={scan && scan.busy ? "Reading the picture…" : "Read your timetable off a screenshot or a photo: the classes it finds are shown to check before they go in. You can also drop or paste a picture on the week."}>
-              <span className="msym" aria-hidden="true">{scan && scan.busy ? "autorenew" : "add_photo_alternate"}</span>
-            </button>
-            <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />
-          </>
-        )}
-        {/* every class off at once, with Undo for 10 seconds (the note at the foot of the window) */}
-        {classes.length > 0 && (
-          <button className="hl-ibtn hl-clear-btn" aria-label="Clear the timetable" onClick={() => { setForm(null); api.current.clearCls(); }}
-                  title="Take every class off the timetable (⌘⌫ with the pointer on the week). Undo is offered for 10 seconds.">
-            <span className="msym" aria-hidden="true">delete</span>
-          </button>
-        )}
+        <button className={`hl-ibtn${all ? " on" : ""}`} title="Your classes and events: see them all, change one, or say which are classes" aria-label="Classes and events"
+                onClick={() => { setForm(null); setAll(true); }}><span className="msym" aria-hidden="true">school</span></button>
+        <button className="hl-ibtn" title="Add a class or an event" aria-label="Add a class or an event" onClick={() => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" })}><span className="msym" aria-hidden="true">add</span></button>
+        {/* the picture reader and the bin are in the week's right-click menu and the command bar since 4 November 2026 (fewer
+            buttons); a picture dropped or pasted on the week is read as before. While one is read, the bar says so */}
+        {scan && scan.busy && <span className="hl-ibtn hl-scan-btn" aria-live="polite" title="Reading the picture…"><span className="msym" aria-hidden="true">autorenew</span></span>}
+        {HL_OCR_OK && <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />}
       </div>
       {scan && scan.found && (
         <HlScanSheet found={scan.found} week={scan.week} onCancel={() => setScan(null)}
@@ -17629,18 +17957,22 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
       <HlSlide open={!!form}>
         {form && (
         <div className="hl-form" key={form.id || "new"}>
+          <SlideSeg cls="hl-kind" value={ev ? "ev" : "cls"} onPick={(v) => { set({ ev: v === "ev" }); setLibOpen(false); setLibEd(null); }}
+                    options={[["cls", "Class", "One of your classes: kept in My classes, and assignments can be tied to it"], ["ev", "Event", "Anything else (a party, practice, a meeting): it stands on the week, but isn't one of your classes"]]} />
           <span className="hl-name-row">
-            <input className="jr-in" placeholder="What (Calculus II, futsal…)" value={form.name} maxLength={60} ref={hlFocusForm} onChange={(e) => set({ name: e.target.value })}
+            <input className="jr-in" placeholder={ev ? "What (futsal, a party…)" : "What (Calculus II, BTW1042…)"} value={form.name} maxLength={60} ref={hlFocusForm} onChange={(e) => set({ name: e.target.value })}
                    onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setForm(null); }} />
             {/* his classes, one press away (28 October 2026: "have quick select for my classes (i can add more and or delete
                 classes) like a button for a drop down"): each class saved goes in by itself; × takes one out */}
-            <button className={`hl-ibtn hl-lib-btn${libOpen ? " on" : ""}`} title="My classes" aria-label="My classes" aria-expanded={libOpen} onClick={() => { setLibOpen((v) => !v); setLibEd(null); }}>
-              <span className="msym" aria-hidden="true">expand_more</span>
-            </button>
-            {libOpen && (
+            {!ev && (
+              <button className={`hl-ibtn hl-lib-btn${libOpen ? " on" : ""}`} title="My classes" aria-label="My classes" aria-expanded={libOpen} onClick={() => { setLibOpen((v) => !v); setLibEd(null); }}>
+                <span className="msym" aria-hidden="true">expand_more</span>
+              </button>
+            )}
+            {libOpen && !ev && (
               <span className="hl-lib lg-float" role="listbox" aria-label="My classes">
-                {!lib.length && <small className="hl-lib-none">The classes you add show here, to pick again in one press.</small>}
-                {lib.map((q) => (libEd && libEd.from === q.name ? (
+                {!libCls.length && <small className="hl-lib-none">The classes you add show here, to pick again in one press.</small>}
+                {libCls.map((q) => (libEd && libEd.from === q.name ? (
                   <HlLibEdit key={q.name} ed={libEd} set={(pp) => setLibEd((e) => ({ ...e, ...pp }))} cols={cols}
                              n={classes.filter((c) => hlNoteKey(c.name) === hlNoteKey(q.name)).length}
                              taken={lib.some((o) => o.name !== q.name && hlNoteKey(o.name) === hlNoteKey(libEd.name))}
@@ -17648,7 +17980,7 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
                              onSave={() => { api.current.libSet(q.name, libEd, libEd.also); setLibEd(null); }} />
                 ) : (
                   <span key={q.name} className="hl-lib-it" style={{ "--c": hlClsCol(q) }}>
-                    <button className="hl-lib-go" onClick={() => { set({ name: q.name, room: q.room, tint: q.tint, col: q.col }); setLibOpen(false); }}>
+                    <button className="hl-lib-go" onClick={() => { set({ name: q.name, room: q.room, tint: q.tint, col: q.col, ev: undefined }); setLibOpen(false); }}>
                       <i /><b>{q.name}</b>{q.room && <small>{q.room}</small>}
                     </button>
                     <button className="hl-lib-ed" title={`Change ${q.name}`} aria-label={`Change ${q.name}`}
@@ -17666,7 +17998,7 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
           </span>
           <input className="jr-in" placeholder="Where (room)" value={form.room} maxLength={40} onChange={(e) => set({ room: e.target.value })}
                  onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
-          <span className="jr-pick">{DOW_FULL.map((n, w) => <button key={n} className={`jr-chip${form.dow === w ? " on" : ""}`} onClick={() => set({ dow: w })}>{n}</button>)}</span>
+          <Pick>{DOW_FULL.map((n, w) => <button key={n} className={`jr-chip${form.dow === w ? " on" : ""}`} onClick={() => set({ dow: w })}>{n}</button>)}</Pick>
           <span className="hl-times">
             <TimeField value={form.from} onChange={(v) => set({ from: v })} label="Starts" />
             <i>to</i>
@@ -17717,11 +18049,27 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
         )}
       </HlSlide>
       <div className="hl-tt" style={{ "--hh": `${HL_HOUR}px` }}>
-        <div className="hl-tt-head"><i />{DOW_FULL.map((n, w) => <b key={n} className={dates[w] === today ? "now" : ""}>{n}<i>{hlDate(dates[w]).getDate()}</i></b>)}</div>
+        {/* a day with a deadline says so under its date (4 November 2026: his 23:55 deadline was drawn at the foot of a
+            sixteen-hour week, far below the window, and he took it for missing); pressed, the week scrolls to its line,
+            which nods */}
+        <div className="hl-tt-head"><i />{DOW_FULL.map((n, w) => {
+          const dd = dues.filter((a) => a.due === dates[w]).sort((p, q) => (p.at < q.at ? -1 : 1));
+          return (
+            <b key={n} className={dates[w] === today ? "now" : ""}>{n}<i>{hlDate(dates[w]).getDate()}</i>
+              {dd.length > 0 && (
+                <button className="hl-tt-due" onClick={() => toDue(dd[0].id)}
+                        title={`${dd.map((a) => `Due ${clk(a.at)}: ${a.title || hlAsgKind(a.kind)[1]}`).join("\n")}\nPress to see it on the week`}>
+                  <span className="msym" aria-hidden="true">flag</span>{clk(dd[0].at)}{dd.length > 1 ? ` +${dd.length - 1}` : ""}
+                </button>
+              )}
+            </b>
+          );
+        })}</div>
         <div className={`hl-tt-body${fresh ? " in" : ""}`} ref={body} style={{ height: hours.length * HL_HOUR }}>
           <div className="hl-tt-hours">{hours.map((hr) => <span key={hr} style={{ top: (hr - from) * HL_HOUR }}>{clkHour(hr)}</span>)}</div>
           {DOW_FULL.map((n, w) => (
             <div key={n} className={`hl-tt-day${dates[w] === today ? " now" : ""}`}
+                 onContextMenu={(e) => { if (e.target === e.currentTarget) dayMenu(e, w); }}
                  onClick={(e) => {
                    if (e.target !== e.currentTarget) return;
                    const r = e.currentTarget.getBoundingClientRect(), hr = from + Math.floor((e.clientY - r.top) / HL_HOUR);
@@ -17747,8 +18095,9 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
                           onPointerDown={p.head ? (e) => down(e, c, w) : undefined} onPointerMove={p.head ? move : undefined} onPointerUp={p.head ? up : undefined}
                           onPointerCancel={p.head ? cancel : undefined} onLostPointerCapture={p.head ? cancel : undefined}
                           onClick={(e) => { if (e.detail === 0) openCls(c); else if (!p.head) press(c, w > 0 ? w - 1 : w); }}
+                          onContextMenu={(e) => clsMenu(e, c, dates[p.head ? w : Math.max(0, w - 1)])}
                           onKeyDown={(e) => { if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); setForm(null); setNt({ c, k: dates[p.head ? w : Math.max(0, w - 1)] }); } }}
-                          title={`${c.name} · ${clk(c.from)}–${clk(c.to)}${night ? " the next day" : ""}${c.room ? ` · ${c.room}` : ""}${c.once ? " · this date only" : " · every week"}\nDouble-click for its notes${kept ? ` (${hlKeptSay(kept)})` : ""}`}>
+                          title={`${c.name}${clsK.has(hlNoteKey(c.name)) ? "" : " (event)"} · ${clk(c.from)}–${clk(c.to)}${night ? " the next day" : ""}${c.room ? ` · ${c.room}` : ""}${c.once ? " · this date only" : " · every week"}\nDouble-click for its notes${kept ? ` (${hlKeptSay(kept)})` : ""}`}>
                     <b style={{ "--nl": nameL }}>{c.name}</b>
                     {showT && <span style={{ "--nl": timeL }}>{when}</span>}
                     {showR && <span style={{ "--nl": roomL }}>{c.room}</span>}
@@ -17759,7 +18108,7 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
               })}
               {dates[w] === today && nowMin >= from * 60 && nowMin < to * 60 && <span className="hl-now" style={{ top: ((nowMin - from * 60) / 60) * HL_HOUR }} />}
               {dues.filter((a) => a.due === dates[w]).map((a, i) => (
-                <button key={`due-${a.id}`} className="hl-due" style={{ top: ((hlMin(a.at) - from * 60) / 60) * HL_HOUR, animationDelay: `${240 + w * 30 + i * 60}ms` }}
+                <button key={`due-${a.id}`} className="hl-due" data-due={a.id} style={{ top: ((hlMin(a.at) - from * 60) / 60) * HL_HOUR, animationDelay: `${240 + w * 30 + i * 60}ms` }}
                         title={`Due ${clk(a.at)}: ${a.title || hlAsgKind(a.kind)[1]}${a.cls ? ` · ${a.cls}` : ""}\nPress to open it`}
                         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); api.current.asgOpen(a.id); }}>
                   <span className="hl-due-tab"><span className="msym" aria-hidden="true">flag</span><b>{a.title || hlAsgKind(a.kind)[1]}</b><i>{clk(a.at)}</i></span>
@@ -17777,15 +18126,95 @@ const HlWeek = memo(({ classes, lib, cols = [], notes = {}, asg = [], today, now
           )}
         </div>
       </div>
-      <div className={`hl-hint${form ? " off" : ""}`} aria-hidden={!!form}>Press an empty hour to add a class, a class to change it, or drag it to another day or time. Double-click a class for its notes.</div>
+      <div className={`hl-hint${form ? " off" : ""}`} aria-hidden={!!form}>Press an empty hour to add a class or an event, one to change it, or drag it to another day or time. Double-click one for its notes, right-click for more{HL_OCR_OK ? ", or drop a picture of your timetable to read it" : ""}.</div>
       {nt && (() => {
         const c = classes.find((o) => o.id === nt.c.id) || nt.c;
         return <HlClsNotes key={c.id} cls={c} k={nt.k} notes={notes[hlNoteKey(c.name)]} api={api} onClose={() => setNt(null)}
                            onEdit={() => { setNt(null); openCls(c); }} />;
       })()}
+      {all && <HlClsAll classes={classes} lib={lib} mine={mine} cols={cols} notes={notes} asg={asg} api={api} onClose={() => setAll(false)} />}
     </div>
   );
 });
+
+/* ---------- health: every class and event on the week, in one list (4 November 2026, his words: "the user will be confused
+   because all the events put in automatically becomes a class. make option if i want to make it become a class or not,
+   and make a ui for the user to see and edit all of the classes"). Opened from the week's bar (the cap). Each name on the
+   timetable or in his quick list once: its colour, when it is on, its room, what is kept about it; a switch Class / Event
+   (a class is in My classes and assignments can be tied to it; an event only stands on the week); the pencil changes its
+   name, room and colour on every block of it, in the quick list, its notes and the assignments tied to it; the bin takes
+   it off the week, with Undo. The rows keep their order while it is open, so a switch pressed sends none to the other end */
+const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
+  useClock12();
+  const [ed, setEd] = useState(null);             // the one being changed: { from (its name as it stands), name, room, tint, col, also }
+  const edNow = useRef(null);
+  edNow.current = ed;
+  // (Esc while one is being changed only stops that)
+  const sh = useSheet(onClose, (e) => {
+    if (e.key !== "Escape" || !edNow.current) return false;
+    e.preventDefault(); e.stopImmediatePropagation(); setEd(null);
+    return true;
+  });
+  const names = hlAsgNames(classes, lib), clsK = new Set(hlMineList(names, mine).map((c) => hlNoteKey(c.name)));
+  // the order as it was opened: classes, then events, each by name; one new since (or renamed) goes last
+  const order = useRef(null);
+  if (!order.current) order.current = [...names].sort((p, q) => clsK.has(hlNoteKey(q.name)) - clsK.has(hlNoteKey(p.name)) || p.name.localeCompare(q.name)).map((c) => hlNoteKey(c.name));
+  const at = (c) => { const i = order.current.indexOf(hlNoteKey(c.name)); return i < 0 ? 1e6 : i; };
+  const rows = [...names].sort((p, q) => at(p) - at(q));
+  const nCls = names.filter((c) => clsK.has(hlNoteKey(c.name))).length, nEv = names.length - nCls;
+  // when it is on the week, in a few words: every week's days first, then single dates; three, then how many more
+  const when = (k) => {
+    const bl = classes.filter((c) => hlNoteKey(c.name) === k).sort((p, q) => (p.once || "").localeCompare(q.once || "") || p.dow - q.dow || (p.from < q.from ? -1 : 1));
+    if (!bl.length) return "Not on the week";
+    const say = bl.map((c) => `${c.once ? hlNice(c.once) : `Every ${DOW_FULL[c.dow]}`} ${clk(c.from)}`);
+    return say.length > 3 ? `${say.slice(0, 3).join(" · ")} · +${say.length - 3}` : say.join(" · ");
+  };
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 10vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
+         onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
+      <div role="dialog" aria-modal="true" aria-label="Classes and events" className="glass hl-nt hl-ca" style={{ ...sh.pop, "--c": HL_CLS[0] }} onClick={stop}>
+        <div className="fx-head">
+          <div className="hl-nt-hd">
+            <div className="hl-nt-name">Classes and events</div>
+            <div className="hl-nt-when">{nCls} {nCls === 1 ? "class" : "classes"} · {nEv} {nEv === 1 ? "event" : "events"}</div>
+          </div>
+          <span className="hl-nt-tools"><button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button></span>
+        </div>
+        <div className="hl-nt-body">
+          <small className="hl-ca-say">A class is kept in My classes, and assignments can be tied to it. An event only stands on the week.</small>
+          {!rows.length && <div className="hl-ca-none">Nothing on your timetable yet. Press an empty hour on the week to add a class or an event.</div>}
+          {rows.map((c) => {
+            const k = hlNoteKey(c.name), kept = notes[k], na = asg.filter((a) => hlNoteKey(a.cls) === k).length;
+            if (ed && ed.from === c.name) return (
+              <HlLibEdit key={k} ed={ed} set={(p) => setEd((e) => ({ ...e, ...p }))} cols={cols} n={0}
+                         taken={names.some((o) => hlNoteKey(o.name) !== k && hlNoteKey(o.name) === hlNoteKey(ed.name))}
+                         onCancel={() => setEd(null)}
+                         onSave={() => { const kn = hlNoteKey(ed.name); order.current = order.current.map((q) => (q === k ? kn : q)); api.current.libSet(c.name, ed, true); setEd(null); }} />
+            );
+            return (
+              <div key={k} className="hl-ca-row" style={{ "--c": hlClsCol(c) }}>
+                <i className="hl-ca-dot" />
+                <span className="hl-ca-txt">
+                  <b>{c.name}</b>
+                  <small>{when(k)}{c.room ? ` · ${c.room}` : ""}{kept ? ` · ${hlKeptSay(kept)}` : ""}{na ? ` · ${na} ${na === 1 ? "assignment" : "assignments"}` : ""}</small>
+                </span>
+                <SlideSeg cls="hl-ca-kind" value={clsK.has(k) ? "cls" : "ev"} onPick={(v) => api.current.clsKind(c.name, v === "cls")}
+                          options={[["cls", "Class", "One of your classes: kept in My classes, and assignments can be tied to it"], ["ev", "Event", "Not a class: it only stands on the week"]]} />
+                <button className="hl-lib-ed hl-ca-ed" title={`Change ${c.name}: its name, room and colour, everywhere`} aria-label={`Change ${c.name}`}
+                        onClick={() => setEd({ from: c.name, name: c.name, room: c.room || "", tint: c.tint || 0, col: c.col, also: true })}>
+                  <span className="msym" aria-hidden="true">edit</span>
+                </button>
+                <button className="trash-btn bin-sm hl-ca-x" title={`Take ${c.name} off the week (Undo is offered)`} aria-label={`Take ${c.name} off the week`} onClick={() => api.current.clsDrop(c.name)}>
+                  <TrashIcon />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>, document.body);
+};
 
 /* ---------- health: a class's notes (29 October 2026, his words: "include information and sort of description for the
    lessons, say i want to mark an important powerpoint that i will possibly lose cause everything gets stacked, or links to
@@ -17854,8 +18283,8 @@ const HlLesItem = ({ it, nkey, lid, api, onOpen }) => {
       </button>
       <textarea className="hl-lf-about" value={about} maxLength={4000} rows={3} spellCheck={false} placeholder="Add a description" aria-label={`About ${it.t || "this"}`}
                 onChange={(e) => setAbout(e.target.value)} onBlur={save} />
-      <button className="hl-nt-x hl-lf-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.lesItemDel(nkey, lid, it.id)}>
-        <span className="msym" aria-hidden="true">close</span>
+      <button className="trash-btn bin-sm hl-lf-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.lesItemDel(nkey, lid, it.id)}>
+        <TrashIcon />
       </button>
     </div>
   );
@@ -17990,13 +18419,14 @@ const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, o
           </div>
         </span>
         <span className="hl-nt-tools">
-          <button className="x-btn hl-nt-edit" style={S.closeBtn} aria-label="Delete this lesson" title="Delete this lesson (Undo is offered)"
+          <button className="trash-btn" style={S.delRound} aria-label="Delete this lesson" title="Delete this lesson (Undo is offered)"
                   onClick={() => { api.current.lessonDel(nkey, lesson.id); onBack(); }}>
-            <span className="msym" aria-hidden="true">delete</span>
+            <TrashIcon />
           </button>
           <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={onClose}>✕</button>
         </span>
       </div>
+      <div className="hl-nt-body">
       <RichBox html={lesson.aboutH} text={lesson.about} label="About this lesson" placeholder="What this lesson was about: the topic, what was set, what to read…"
                onType={(html, text) => { about.current = { html, text }; }} onLeave={saveAbout} />
       {lineBox("Paste a link or write a note, then Enter")}
@@ -18013,6 +18443,7 @@ const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, o
           </div>
         )}
       </div>
+      </div>
       <div className="fx-foot">
         <span key={say} className={say ? "hl-nt-say" : ""}>{say || `${title.trim() || name} of ${cls.name}. ${HL_FILE_OK ? "Files stay where they are on your Mac: only where they are is kept." : ""}`}</span>
       </div>
@@ -18022,8 +18453,8 @@ const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, o
 const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
   useClock12();
   const key = hlNoteKey(cls.name), n = notes || { about: "", items: [] }, lessons = n.lessons || [];
-  // the lesson open (its id); opened from a block whose date has a lesson, that lesson at once
-  const [les, setLes] = useState(() => { const l = k && lessons.find((q) => q.k === k); return l ? l.id : null; });
+  // the lesson open (its id); it always opens on the class itself, the block's date's lesson only outlined in the list (4 November 2026: going straight into Week 1 was unwanted)
+  const [les, setLes] = useState(null);
   const lesson = les ? lessons.find((q) => q.id === les) || null : null, lesNow = useRef(null);
   lesNow.current = lesson;
   const [about, setAbout] = useState(n.about);
@@ -18106,8 +18537,8 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
                 title={it.star ? "Not important" : "Important: keep it at the top"} onClick={() => api.current.noteSet(key, it.id, { star: it.star ? 0 : 1 })}>
           <span className="msym" aria-hidden="true">star</span>
         </button>
-        <button className="hl-nt-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.noteDel(key, it.id)}>
-          <span className="msym" aria-hidden="true">close</span>
+        <button className="trash-btn bin-sm" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.noteDel(key, it.id)}>
+          <TrashIcon />
         </button>
       </div>
     );
@@ -18145,6 +18576,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
             <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
           </span>
         </div>
+        <div className="hl-nt-body">
         <RichBox html={n.aboutH} text={n.about} label="About this class" placeholder="About this class: the lecturer, what to bring, how it's marked…"
                  onType={(html, text) => { aboutH.current = html; aboutRef.current = text; setAbout(text); }} onLeave={keepAbout} />
         <div className="hl-nt-list">
@@ -18177,6 +18609,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
           {starred.map(row)}
           {starred.length > 0 && rest.length > 0 && <div className="hl-nt-grp">Everything else</div>}
           {rest.map(row)}
+        </div>
         </div>
         <div className="fx-foot">
           <span key={say} className={say ? "hl-nt-say" : ""}>{say || `Kept for every ${cls.name} class. ${HL_FILE_OK ? "Files stay where they are on your Mac: only where they are is kept." : ""}`}</span>
@@ -18337,6 +18770,12 @@ const hlMineList = (names, mine) => {
   const g = names.filter((c) => HL_CODE.test(c.name));
   return g.length ? g : names;
 };
+/* which names are classes, as keys (4 November 2026, his words: "all the events put in automatically becomes a class. make
+   option if i want to make it become a class or not"): the timetable's form and its list of classes and events choose it
+   too. Until he has chosen, the guess above; the first choice writes the guess down with it, so a name with a course code
+   added later can't turn every other class into an event */
+const hlMineKeys = (x) => (Array.isArray(x.mine) ? x.mine : hlMineList(hlAsgNames(x.classes, x.clsLib), null).map((c) => hlNoteKey(c.name)));
+const hlMineWith = (x, keys, on) => [...hlMineKeys(x).filter((k) => !keys.includes(k)), ...(on ? keys : [])].slice(-200);
 const hlAsgCol = (name, classes, lib) => {
   const k = hlNoteKey(name), c = k && (lib.find((q) => hlNoteKey(q.name) === k) || classes.find((q) => hlNoteKey(q.name) === k));
   return c ? hlClsCol(c) : HL_DUE;
@@ -18476,8 +18915,8 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
                    onChange={(e) => setSub(e.target.value)} onBlur={keep} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
           </div>
           <span className="hl-nt-tools">
-            <button className="x-btn" style={S.closeBtn} aria-label="Delete this" title="Delete (Undo is offered)" onClick={() => { gone.current = true; api.current.asgDel(a.id); sh.shut(); }}>
-              <span className="msym" aria-hidden="true" style={{ fontSize: 18 }}>delete</span>
+            <button className="trash-btn" style={S.delRound} aria-label="Delete this" title="Delete (Undo is offered)" onClick={() => { gone.current = true; api.current.asgDel(a.id); sh.shut(); }}>
+              <TrashIcon />
             </button>
             <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button>
           </span>
@@ -18529,19 +18968,19 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
                    onChange={(e) => setHow(e.target.value)} onBlur={keep} onKeyDown={enterOut} />
           </label>
         </div>
-        <span className="jr-pick hl-as-kinds">
+        <Pick cls="hl-as-kinds">
           {HL_ASG_KINDS.map(([k, n, ic]) => (
             <button key={k} className={`jr-chip${a.kind === k ? " on" : ""}`} onClick={() => api.current.asgSet(a.id, { kind: k })}><span className="msym" aria-hidden="true">{ic}</span>{n}</button>
           ))}
-        </span>
+        </Pick>
         <div className="hl-as-clsrow">
-          <span className="jr-pick hl-as-cls">
+          <Pick cls="hl-as-cls">
             {shown.map((c) => (
               <button key={c.name} className={`jr-chip${onKey === hlNoteKey(c.name) ? " on" : ""}`} style={{ "--c": hlClsCol(c) }} title={c.name}
                       onClick={() => api.current.asgSet(a.id, { cls: onKey === hlNoteKey(c.name) ? "" : c.name })}><i /><span>{hlClsShort(c.name)}</span></button>
             ))}
             {!shown.length && <small className="hl-as-nocls">{names.length ? "No classes picked yet: press the sliders to choose them." : "Classes you put on the week show here, to tie this to one."}</small>}
-          </span>
+          </Pick>
           {names.length > 0 && (
             <button className={`hl-as-cls-ed${pickCls ? " on" : ""}`} aria-expanded={pickCls} aria-label="Choose which are your classes" title="Which are your classes this semester"
                     onClick={() => setPickCls((v) => !v)}><span className="msym" aria-hidden="true">tune</span></button>
@@ -18597,8 +19036,8 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
               {pics.map((q) => (
                 <span key={q.id} className="hl-as-pic">
                   <button className="hl-as-pic-go" onClick={() => setView(q.img)} aria-label={`Open ${q.t || "the picture"}`}><Shot id={q.img} /></button>
-                  <button className="hl-nt-x" aria-label={`Delete ${q.t || "the picture"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, q.id)}>
-                    <span className="msym" aria-hidden="true">close</span>
+                  <button className="hl-nt-x trash-btn" aria-label={`Delete ${q.t || "the picture"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, q.id)}>
+                    <TrashIcon />
                   </button>
                 </span>
               ))}
@@ -18613,8 +19052,8 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
                   <span className="hl-nt-tx"><b>{it.t || hlNoteName(it.url || "")}</b>{hlNoteSub(it) && <small>{hlNoteSub(it)}</small>}</span>
                   {go && <span className="msym hl-nt-out" aria-hidden="true">{it.file ? "open_in_new" : "north_east"}</span>}
                 </button>
-                <button className="hl-nt-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, it.id)}>
-                  <span className="msym" aria-hidden="true">close</span>
+                <button className="trash-btn bin-sm" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, it.id)}>
+                  <TrashIcon />
                 </button>
               </div>
             );
@@ -18647,7 +19086,10 @@ const HlAsgList = memo(({ asg, classes, lib, api }) => {
   const row = ({ a, ms }, i) => {
     const ds = hlDueSay(ms, now), kind = hlAsgKind(a.kind);
     return (
-      <div key={a.id} className={`hl-as-row ${a.done ? "done" : ds.lvl}`} style={{ "--c": hlAsgCol(a.cls, classes, lib), animationDelay: `${i * 40}ms` }}>
+      <div key={a.id} className={`hl-as-row ${a.done ? "done" : ds.lvl}`} style={{ "--c": hlAsgCol(a.cls, classes, lib), animationDelay: `${i * 40}ms` }}
+           onContextMenu={(e) => openCtx(e, [{ icon: "open_in_new", text: "Open", run: () => api.current.asgOpen(a.id) },
+             { icon: a.done ? "remove_done" : "check", text: a.done ? "Not done" : "Mark done", run: () => api.current.asgSet(a.id, { done: a.done ? 0 : 1 }) }, null,
+             { icon: "delete", text: "Delete", danger: true, run: () => api.current.asgDel(a.id) }])}>
         <button className={`hl-as-tick${a.done ? " on" : ""}`} aria-pressed={!!a.done} aria-label={a.done ? "Not done" : "Mark done"} title={a.done ? "Not done" : "Mark done"}
                 onClick={() => api.current.asgSet(a.id, { done: a.done ? 0 : 1 })}>
           <span className="msym" aria-hidden="true">check</span>
@@ -19428,6 +19870,23 @@ const HlSleepLog = ({ h, api, day, today, onClose }) => {
     document.body
   );
 };
+// the day's three rings in words under the pointer, in the month's grid (see HlActivity's setHov)
+const HlMonthTip = ({ h, goal, set }) => {
+  const [hov, setHov] = useState(null);
+  set.current = setHov;
+  if (!hov) return null;
+  const q = hlDayOf(h, hov.k), v = hlRingVals(h, q);
+  return (
+    <span key={hov.k} className="hl-mtip" style={{ left: hov.l, top: hov.t }} role="tooltip">
+      <b>{hlNice(hov.k)}</b>
+      {[["Steps", `${hlFmt(q.steps)} / ${hlFmt(goal)}`, v[0]], ["Move", `${hlFmt(q.move)} / ${hlFmt(h.profile.move)} kcal`, v[1]],
+        ["To-dos", q.todos.length ? `${q.done} / ${q.todos.length}` : "none", q.todos.length ? v[2] : null]].map(([n, t, f], i) => (
+        <span key={n} style={{ "--c": HL_TINT[i][0] }}><i />{n}<em>{t}</em><small>{f === null ? "" : `${Math.round(f * 100)}%`}</small></span>
+      ))}
+      {hlSleepMin(h.sleep[hov.k]) && <span style={{ "--c": "#b7a4e6" }}><i />Sleep<em>{hlDur(hlSleepMin(h.sleep[hov.k]))}</em><small /></span>}
+    </span>
+  );
+};
 const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
   const [how, setHow] = useState(false);         // how to set up the iPhone's shortcut, unfolded
   const [byHand, setByHand] = useState(false);   // (and in it, the steps by hand)
@@ -19447,9 +19906,54 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
   // the steps the diet goal asks for a day (hlPlan: the goal plus what the eating doesn't cut), when it asks more than the goal
   const kgNow = hlWeightOn(h, today), plan = h.goal && h.profile.cm && kgNow ? hlPlan({ ...h.profile, kg: kgNow }, h.goal, today, h.goal.way) : null;
   const diet = plan && !plan.done && plan.steps > goal ? plan.steps : 0;
-  const [hov, setHov] = useState(null);          // the month's day under the pointer: { k, l, t } (its middle and top in the grid)
-  const bars = Array.from({ length: 14 }, (_, i) => hlAddDays(day, i - 13));
+  // the month's day under the pointer ({ k, l, t }: its middle and top in the grid) is the tip's own state (HlMonthTip), so a
+  // day crossed redraws the tip alone, not this card's hundreds of step bars (4 November 2026, a code review)
+  const tipSet = useRef(null), setHov = useRef((v) => tipSet.current && tipSet.current(v)).current;
+  // the bars: from the first day with steps (a year back at most, and always the fortnight before the day on screen) to today,
+  // or to the day on screen when it is later; 400 at most. Fourteen are in view; the rest is scrolled to.
+  const earliest = useMemo(() => { let m = null; for (const k in h.steps) if (h.steps[k] && (!m || k < m)) m = k; return m; }, [h.steps]);
+  const yr = hlAddDays(today, -365), back = hlAddDays(day, -13);
+  let b0 = !earliest ? back : earliest > yr ? earliest : yr;
+  if (back < b0) b0 = back;
+  if (hlAddDays(day, -386) > b0) b0 = hlAddDays(day, -386);
+  let b1 = day > today ? day : today;
+  if (hlAddDays(b0, 399) < b1) b1 = hlAddDays(b0, 399);
+  const bars = Array.from({ length: hlDays(b0, b1) + 1 }, (_, i) => hlAddDays(b0, i)), dayAt = hlDays(b0, day);
+  // one scale for every bar, so a day compares with any other while they scroll by
   const top = Math.max(goal * 1.25, diet * 1.1, ...bars.map((k) => h.steps[k] || 0));
+  // the lines' words, in the column on the left at their lines' heights (shares of the 150px the bars stand in), pushed apart
+  // when the two would touch
+  let kG = goal / top, kD = diet / top;
+  if (diet > 0 && kD - kG < 26 / 150) { const m = (kD + kG) / 2; kD = m + 13 / 150; kG = m - 13 / 150; }
+  const barsSc = useRef(null), barsWas = useRef({}), barsAt = useRef(0);
+  // the day on screen stays where it is when it is already in view (a bar pressed); a day picked anywhere else that is out
+  // of view is scrolled to, at the right end, as the fourteen bars always stood; days put in front keep the view still
+  useLayoutEffect(() => {
+    const sc = barsSc.current, p = barsWas.current;
+    barsWas.current = { b0, day };
+    if (!sc) return;
+    if (p.b0 && p.b0 !== b0) sc.scrollLeft += hlDays(b0, p.b0) * hlBarStep(sc);
+    const el = sc.firstChild.children[dayAt];
+    if (el && p.day !== day) {
+      const a = el.offsetLeft, b = a + el.offsetWidth;
+      if (!p.day) sc.scrollLeft = b - sc.clientWidth;
+      else if (a < sc.scrollLeft - 1 || b > sc.scrollLeft + sc.clientWidth + 1)
+        sc.scrollTo({ left: b - sc.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    }
+    const s = hlBarStep(sc);
+    if (s) barsAt.current = Math.round(sc.scrollLeft / s);
+  }, [b0, day]);
+  // the first day in view is kept as it scrolls (no React), so a window made wider or narrower still starts on it
+  useEffect(() => {
+    const sc = barsSc.current;
+    if (!sc) return;
+    let w0 = sc.clientWidth;
+    const onScroll = () => { const s = hlBarStep(sc); if (s) barsAt.current = Math.round(sc.scrollLeft / s); };
+    const ro = new ResizeObserver(() => { if (sc.clientWidth === w0) return; w0 = sc.clientWidth; sc.scrollLeft = barsAt.current * hlBarStep(sc); });
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    ro.observe(sc);
+    return () => { sc.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, []);
   const week = Array.from({ length: 7 }, (_, i) => hlAddDays(day, i - 6)).filter((k) => k <= today);
   const wSteps = week.map((k) => h.steps[k] || 0), met = wSteps.filter((n) => n >= goal).length;
   const nights = week.map((k) => hlSleepMin(h.sleep[k])).filter(Boolean), sleepAvg = nights.length ? Math.round(nights.reduce((a, b) => a + b, 0) / nights.length) : 0;
@@ -19458,6 +19962,23 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
   // the month of the day on screen, Monday first
   const d0 = hlDate(day), first = hlKey(new Date(d0.getFullYear(), d0.getMonth(), 1)), dim = new Date(d0.getFullYear(), d0.getMonth() + 1, 0).getDate();
   const lead = hlDow(first);
+  // the month's picked day is one box that slides to the day picked (4 November 2026, the day turn); put there, not slid,
+  // when the month itself is new, and when the grid is made wider or narrower
+  const mGrid = useRef(null), mSel = useRef(null), mWas = useRef(""), mPut = useRef(null);
+  mPut.current = (still) => {
+    const g = mGrid.current, s = mSel.current, b = g && g.querySelector(":scope > .hl-mday.sel");
+    if (!s) return;
+    if (!b) { s.style.opacity = "0"; return; }
+    const glide = !still && mWas.current === first;
+    mWas.current = first;
+    s.style.transition = glide ? "" : "none";
+    s.style.width = `${b.offsetWidth}px`; s.style.height = `${b.offsetHeight}px`;
+    s.style.transform = `translate(${b.offsetLeft}px, ${b.offsetTop}px)`;
+    s.style.opacity = "1";
+    if (!glide) { void s.offsetWidth; s.style.transition = ""; }
+  };
+  useLayoutEffect(() => mPut.current(false), [day, first]);
+  useEffect(() => { const ro = new ResizeObserver(() => mPut.current(true)); if (mGrid.current) ro.observe(mGrid.current); return () => ro.disconnect(); }, []);
   const read = async (f) => {
     if (!f) return;
     setSaid(""); setBusy(0);
@@ -19484,38 +20005,50 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
         <div className="hl-steps-in hl-goal-in">
           <span className="hl-cap">Step goal</span>
           <HlNum value={goal} max={60000} label="Step goal" onPick={(n) => { if (n >= 1000 && n <= 60000) api.current.profile({ steps: Math.round(n) }); }} />
-          {diet > 0 && <small className="hl-diet-say">Your diet goal asks <b>{hlFmt(diet)}</b></small>}
+          {diet > 0 && <small className="hl-diet-say">Your diet goal asks <b><Num v={diet} /></b></small>}
         </div>
         {/* sleep and waking (28 October 2026) stood here until 31 October: they are in the sleep panel now, under the month */}
         <div className="hl-stats">
-          <span><b>{dd.km.toFixed(1)}</b> km</span>
-          <span><b>{hlFmt(dd.stepKcal)}</b> kcal from steps</span>
-          <span><b>{hlFmt(wSteps.length ? wSteps.reduce((a, b) => a + b, 0) / wSteps.length : 0)}</b> a day this week</span>
-          <span><b>{met}</b> of {week.length} days on goal</span>
-          {sleepAvg > 0 && <span><b>{hlDur(sleepAvg)}</b> sleep a night</span>}
-          {streak > 1 && <span className="hl-good"><span className="msym">local_fire_department</span><b>{streak}</b> days in a row</span>}
+          <span><b><Num v={dd.km} f={(n) => n.toFixed(1)} /></b> km</span>
+          <span><b><Num v={dd.stepKcal} /></b> kcal from steps</span>
+          <span><b><Num v={wSteps.length ? wSteps.reduce((a, b) => a + b, 0) / wSteps.length : 0} /></b> a day this week</span>
+          <span><b><Num v={met} /></b> of <Num v={week.length} /> days on goal</span>
+          {sleepAvg > 0 && <span><b><Num v={sleepAvg} f={hlDurN} /></b> sleep a night</span>}
+          {streak > 1 && <span className="hl-good"><span className="msym">local_fire_department</span><b><Num v={streak} /></b> days in a row</span>}
         </div>
       </div>
-      <div className="hl-bars" key={day}>
+      {/* the bars scroll back through the days (4 November 2026, his words: "make me be able to horizontally scroll the steps
+          bar graph to the previous days, but dont change the selected day. only change selected day if i click it"); the lines'
+          words stand in their own column on the left, where no bar is under them (his picture: "Diet goal 18,600" on the last bar) */}
+      <div className="hl-bars">
+        <div className="hl-bars-key">
+          <span className="hl-goal-key" style={{ bottom: `calc(20px + var(--plot) * ${kG})` }}><small>Goal</small><b><Num v={goal} /></b></span>
+          {diet > 0 && <span className="hl-goal-key diet" style={{ bottom: `calc(20px + var(--plot) * ${kD})` }}><small>Diet goal</small><b><Num v={diet} /></b></span>}
+        </div>
         {/* a line stands on the bars' own scale: the bars fill the box above the days' 20px strip, so the line is measured
             in that height too (2 November 2026: measured in the whole box, a 19.0k bar stood under the 18,500 line) */}
-        <span className="hl-goal-line" style={{ bottom: `calc(20px + (100% - 20px) * ${goal / top})` }}><i>Goal {hlFmt(goal)}</i></span>
-        {diet > 0 && <span className="hl-goal-line diet" style={{ bottom: `calc(20px + (100% - 20px) * ${diet / top})` }}><i>Diet goal {hlFmt(diet)}</i></span>}
-        {bars.map((k, i) => {
-          const n = h.steps[k] || 0;
-          return (
-            <button key={k} className={`hl-bar${k === day ? " sel" : ""}${n >= goal ? " met" : ""}${k > today ? " later" : ""}`} onClick={() => api.current.pick(k)}
-                    title={`${hlNice(k)}: ${hlFmt(n)} steps`}>
-              <span className="hl-bar-col" style={{ "--h": `${(n / top) * 100}%` }}><i style={{ height: `${(n / top) * 100}%`, animationDelay: `${i * 22}ms` }} />{n > 0 && <em>{n >= 1000 ? `${(Math.floor(n / 100) / 10).toFixed(1)}k` : n}</em>}</span>
-              <span className="hl-bar-d">{DOW[hlDow(k)]}</span>
-            </button>
-          );
-        })}
+        <span className="hl-goal-line" style={{ bottom: `calc(20px + var(--plot) * ${goal / top})` }} />
+        {diet > 0 && <span className="hl-goal-line diet" style={{ bottom: `calc(20px + var(--plot) * ${diet / top})` }} />}
+        <div className="hl-bars-sc" ref={barsSc}>
+          <div className="hl-bars-tr">
+            {bars.map((k, i) => {
+              const n = h.steps[k] || 0;
+              return (
+                <button key={k} className={`hl-bar${k === day ? " sel" : ""}${n >= goal ? " met" : ""}${k > today ? " later" : ""}`} onClick={() => api.current.pick(k)}
+                        title={`${hlNice(k)}: ${hlFmt(n)} steps`}>
+                  <span className="hl-bar-col" style={{ "--h": `${(n / top) * 100}%` }}><i style={{ height: `${(n / top) * 100}%`, animationDelay: `${Math.min(13, Math.max(0, i - dayAt + 13)) * 22}ms` }} />{n > 0 && <em>{n >= 1000 ? `${(Math.floor(n / 100) / 10).toFixed(1)}k` : n}</em>}</span>
+                  <span className="hl-bar-d">{DOW[hlDow(k)]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
       <div className="hl-month">
         <div className="hl-month-head"><b>{MONTHS_FULL[d0.getMonth()]}</b><span>The three rings of each day: steps, moving, to-dos</span></div>
         <div className="hl-month-row">
-        <div className="hl-month-grid" onPointerLeave={() => setHov(null)}>
+        <div className="hl-month-grid" ref={mGrid} onPointerLeave={() => setHov(null)}>
+          <i className="hl-msel" ref={mSel} aria-hidden="true" />
           {DOW.map((n, i) => <span key={i} className="hl-mdow">{n}</span>)}
           {Array.from({ length: lead }, (_, i) => <span key={`e${i}`} />)}
           {Array.from({ length: dim }, (_, i) => {
@@ -19530,19 +20063,7 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
           })}
           {/* the day's three rings in words, in their colours (28 October 2026: "when hovering over the rings … have information
               just like on the finance app") */}
-          {hov && (() => {
-            const q = hlDayOf(h, hov.k), v = hlRingVals(h, q);
-            return (
-              <span key={hov.k} className="hl-mtip" style={{ left: hov.l, top: hov.t }} role="tooltip">
-                <b>{hlNice(hov.k)}</b>
-                {[["Steps", `${hlFmt(q.steps)} / ${hlFmt(goal)}`, v[0]], ["Move", `${hlFmt(q.move)} / ${hlFmt(h.profile.move)} kcal`, v[1]],
-                  ["To-dos", q.todos.length ? `${q.done} / ${q.todos.length}` : "none", q.todos.length ? v[2] : null]].map(([n, t, f], i) => (
-                  <span key={n} style={{ "--c": HL_TINT[i][0] }}><i />{n}<em>{t}</em><small>{f === null ? "" : `${Math.round(f * 100)}%`}</small></span>
-                ))}
-                {hlSleepMin(h.sleep[hov.k]) && <span style={{ "--c": "#b7a4e6" }}><i />Sleep<em>{hlDur(hlSleepMin(h.sleep[hov.k]))}</em><small /></span>}
-              </span>
-            );
-          })()}
+          <HlMonthTip h={h} goal={goal} set={tipSet} />
         </div>
         {/* the month in figures beside its rings (27 October 2026, his picture of the empty room right of them); smaller since
             29 October, with the night's sleep rated under them and the month's sleep in a corner of that ("beside the calendar
@@ -19560,9 +20081,9 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
             <div className="hl-mside">
               {/* one slim line since 31 October 2026 ("the steps info on top a lot smaller"); each says it in full under the pointer */}
               <div className="hl-msum">
-                {[[hlFmt(tot), "steps", "Steps this month", HL_TINT[0][0]], [hlFmt(logged ? tot / logged : 0), "a day", "Steps a day, on average", HL_TINT[0][1]],
-                  [`${hit}/${ks.length}`, "at goal", "Days at your step goal", "#5ee3a9"], [closed, "steps + move closed", "Days with the steps and move rings both closed", HL_TINT[1][0]],
-                  [vs[bi] ? hlFmt(vs[bi]) : "–", vs[bi] ? `best · ${hlNice(ks[bi]).slice(4)}` : "best day", "Best day", "#f0d88a"]].map(([v, k, t, c]) => (
+                {[[<Num v={tot} />, "steps", "Steps this month", HL_TINT[0][0]], [<Num v={logged ? tot / logged : 0} />, "a day", "Steps a day, on average", HL_TINT[0][1]],
+                  [<><Num v={hit} />/<Num v={ks.length} /></>, "at goal", "Days at your step goal", "#5ee3a9"], [<Num v={closed} />, "steps + move closed", "Days with the steps and move rings both closed", HL_TINT[1][0]],
+                  [vs[bi] ? <Num v={vs[bi]} /> : "–", vs[bi] ? `best · ${hlNice(ks[bi]).slice(4)}` : "best day", "Best day", "#f0d88a"]].map(([v, k, t, c]) => (
                   <span key={t} className="hl-msum-t" style={{ "--c": c }} title={t}><i aria-hidden="true" /><b>{v}</b><small>{k}</small></span>
                 ))}
               </div>
@@ -19575,11 +20096,11 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
                   <div className="hl-slp-top">
                     <svg className="hl-slp-ring" viewBox="0 0 80 80" aria-hidden="true">
                       <circle cx="40" cy="40" r={R} />
-                      {sc && <circle key={`${day}${sc.score}`} className="on" cx="40" cy="40" r={R} style={{ strokeDasharray: C, strokeDashoffset: C * (1 - sc.score / 100), "--c0": C }} />}
+                      {sc && <circle className="on" cx="40" cy="40" r={R} style={{ strokeDasharray: C, strokeDashoffset: C * (1 - sc.score / 100), "--c0": C }} />}
                     </svg>
-                    <b className="hl-slp-n">{sc ? sc.score : "–"}</b>
+                    <b className="hl-slp-n">{sc ? <Num v={sc.score} /> : "–"}</b>
                     <span className="hl-slp-say">
-                      {sc ? <><b>{sc.word}</b><em>{hlDur(sc.min)} · {clk(q.bed)} – {clk(q.wake)}</em><small>{sc.why}</small></>
+                      {sc ? <><b>{sc.word}</b><em><Num v={sc.min} f={hlDurN} /> · {clk(q.bed)} – {clk(q.wake)}</em><small>{sc.why}</small></>
                         : <><b>Not rated yet</b><small>Put in when you went to sleep and woke, below, and the night is rated here{HL_PHONE_OK ? " (or let your iPhone send it)" : ""}.</small></>}
                     </span>
                   </div>
@@ -19590,21 +20111,23 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
                     <i aria-hidden="true">→</i>
                     <span className="msym" aria-hidden="true">sunny</span>
                     <TimeField value={q.wake || ""} label="Woke up" onChange={(v) => api.current.setSleep(day, { wake: v })} />
-                    <small>{hlSleepMin(q) ? <><b>{hlDur(hlSleepMin(q))}</b> of sleep</> : "When you went to sleep, and woke"}</small>
+                    <small>{hlSleepMin(q) ? <><b><Num v={hlSleepMin(q)} f={hlDurN} /></b> of sleep</> : "When you went to sleep, and woke"}</small>
                   </span>
-                  <span className="hl-slp-feel" role="group" aria-label="How you slept">
+                  <Pick base="hl-slp-feel" role="group" aria-label="How you slept">
                     <small>How did you sleep?</small>
                     {HL_FEEL.map(([ic, w], i) => (
                       <button key={ic} className={q.feel === i + 1 ? "on" : ""} aria-pressed={q.feel === i + 1} title={w} aria-label={w} disabled={day > today}
                               onClick={() => api.current.setSleep(day, { feel: q.feel === i + 1 ? 0 : i + 1 })}><span className="msym" aria-hidden="true">{ic}</span></button>
                     ))}
-                  </span>
+                  </Pick>
                 </div>
                 <div className="hl-slp-mo">
                   <span className="hl-cap">{MONTHS_FULL[d0.getMonth()]}</span>
-                  <span className="hl-slp-fig"><b>{had.length ? hlDur(avg((x) => x.s.min)) : "–"}</b><small>a night</small></span>
-                  <span className="hl-slp-fig"><b>{had.length ? avg((x) => x.s.score) : "–"}</b><small>rating, on average</small></span>
-                  {feelAvg > 0 && <span className="hl-slp-fig"><b className="msym" title={HL_FEEL[Math.round(feelAvg) - 1][1]}>{HL_FEEL[Math.round(feelAvg) - 1][0]}</b><small>how you felt</small></span>}
+                  <div className="hl-slp-figs">
+                    <span className="hl-slp-fig"><b>{had.length ? <Num v={avg((x) => x.s.min)} f={hlDurN} /> : "–"}</b><small>a night</small></span>
+                    <span className="hl-slp-fig"><b>{had.length ? <Num v={avg((x) => x.s.score)} /> : "–"}</b><small>rating, on average</small></span>
+                    {feelAvg > 0 && <span className="hl-slp-fig"><b className="msym" title={HL_FEEL[Math.round(feelAvg) - 1][1]}>{HL_FEEL[Math.round(feelAvg) - 1][0]}</b><small>how you felt</small></span>}
+                  </div>
                   <button className="hl-slp-bars" aria-label="Sleep history" onClick={() => setSlpLog(true)}>
                     {nights.map(({ k, s: x }) => <i key={k} className={`${x && x.score < 50 ? "low" : ""}${k === day ? " sel" : ""}`} style={{ height: `${x ? Math.max(8, Math.min(100, (x.min / 600) * 100)) : 4}%` }} title={x ? `${hlNice(k)}: ${hlDur(x.min)}, ${x.score}` : hlNice(k)} />)}
                   </button>
@@ -19682,15 +20205,15 @@ const HlBody = memo(({ profile, kg, api }) => {
       </div>
       <div className="hl-actv">
         <span className="hl-cap">How active, besides the steps</span>
-        <span className="jr-pick">
+        <Pick>
           {HL_ACT.map(([f, name, say]) => <button key={f} className={`jr-chip${profile.act === f ? " on" : ""}`} title={say} onClick={() => api.current.profile({ act: f })}>{name}</button>)}
-        </span>
+        </Pick>
       </div>
       {bmi > 0 ? (
         <div className="hl-bmi">
           <div className="hl-bmi-n">
             <span className="hl-cap">BMI</span>
-            <b style={{ color: band[2] }}>{bmi.toFixed(1)}</b>
+            <b style={{ color: band[2] }}><Num v={bmi} f={(n) => n.toFixed(1)} /></b>
             <span style={{ color: band[2] }}>{band[1]}</span>
           </div>
           <div className="hl-gauge">
@@ -19703,17 +20226,17 @@ const HlBody = memo(({ profile, kg, api }) => {
             </div>
             <div className="hl-gauge-t">{[18.5, 23, 25, 30].map((v) => <span key={v} style={{ left: at(v) }}>{v}</span>)}</div>
             <div className="hl-note">
-              Healthy for {profile.cm} cm: <b>{hlKg(lo)}–{hlKg(hi)} kg</b> (BMI 18.5–22.9, the ranges for Asian bodies).
-              {kg > hi ? <> That is <b>{hlKg(kg - hi)} kg</b> above it.</> : kg < lo ? <> That is <b>{hlKg(lo - kg)} kg</b> under it.</> : <> You are in it.</>}
+              Healthy for {profile.cm} cm: <b><Num v={lo} f={hlKg} live={hlKg1} />–<Num v={hi} f={hlKg} live={hlKg1} /> kg</b> (BMI 18.5–22.9, the ranges for Asian bodies).
+              {kg > hi ? <> That is <b><Num v={kg - hi} f={hlKg} live={hlKg1} /> kg</b> above it.</> : kg < lo ? <> That is <b><Num v={lo - kg} f={hlKg} live={hlKg1} /> kg</b> under it.</> : <> You are in it.</>}
             </div>
           </div>
         </div>
       ) : <div className="hl-empty">Type your height and weight to see your BMI and what your body burns.</div>}
       {bmr > 0 && (
         <div className="hl-tiles">
-          <div className="hl-tile"><span className="hl-cap">At rest</span><b>{hlFmt(bmr)}</b><small>kcal a day (BMR)</small></div>
-          <div className="hl-tile"><span className="hl-cap">A day, as you live</span><b>{hlFmt(bmr * profile.act)}</b><small>kcal (TDEE)</small></div>
-          <div className="hl-tile"><span className="hl-cap">Your step goal</span><b>{hlFmt(profile.steps * hlStepKcal(kg))}</b><small>kcal for {hlFmt(profile.steps)} steps</small></div>
+          <div className="hl-tile"><span className="hl-cap">At rest</span><b><Num v={bmr} /></b><small>kcal a day (BMR)</small></div>
+          <div className="hl-tile"><span className="hl-cap">A day, as you live</span><b><Num v={bmr * profile.act} /></b><small>kcal (TDEE)</small></div>
+          <div className="hl-tile"><span className="hl-cap">Your step goal</span><b><Num v={profile.steps * hlStepKcal(kg)} /></b><small>kcal for <Num v={profile.steps} /> steps</small></div>
         </div>
       )}
     </div>
@@ -19772,7 +20295,7 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
       <div className="hl-diet">
         {!ready && <div className="hl-empty">Type your height and weight under Body first: the plan is worked out from them.</div>}
         <div className="hl-goal-form">
-          <span>I am <b>{kg ? hlKg(kg) : "…"} kg</b> and want to reach</span>
+          <span>I am <b>{kg ? <Num v={kg} f={hlKg} live={hlKg1} /> : "…"} kg</b> and want to reach</span>
           <HlNumLive value={target} onChange={setTarget} ph={kg ? hlKg(Math.round(kg * 0.85)) : "75"} unit="kg" dp={1} label="Target weight" onEnter={setGoal} />
           <span>in</span>
           <HlNumLive value={months} onChange={setMonths} ph="3" unit="months" label="Months" onEnter={setGoal} />
@@ -19789,8 +20312,8 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
       <div className="hl-goal-head">
         <div>
           <span className="hl-cap">Goal</span>
-          <b className="hl-goal-big">{hlKg(g.target)} kg <small>by {hlLong(g.by)}</small></b>
-          <span className="hl-goal-sub">{left ? `${left} days left` : "The day has come"} · {plan && !plan.done ? `${hlKg(plan.abs)} kg to ${plan.lose ? "lose" : "gain"}` : "reached"} · started at {hlKg(g.start)} kg on {hlNice(g.from)}</span>
+          <b className="hl-goal-big"><Num v={g.target} f={hlKg} live={hlKg1} /> kg <small>by {hlLong(g.by)}</small></b>
+          <span className="hl-goal-sub">{left ? <><Num v={left} /> days left</> : "The day has come"} · {plan && !plan.done ? <><Num v={plan.abs} f={hlKg} live={hlKg1} /> kg to {plan.lose ? "lose" : "gain"}</> : "reached"} · started at {hlKg(g.start)} kg on {hlNice(g.from)}</span>
         </div>
         <div className="hl-goal-prog" title={`${Math.round(prog * 100)}% of the way`}>
           <span className="hl-prog-bar"><i style={{ transform: `scaleX(${prog})` }} /></span>
@@ -19801,10 +20324,10 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
         <>
           {plan.lose && <SlideSeg cls="hl-way" value={g.way} onPick={(v) => api.current.goal({ ...g, way: v })} options={HL_WAYS} />}
           <div className="hl-tiles">
-            <div className="hl-tile"><span className="hl-cap">Each day</span><b>{plan.lose ? "−" : "+"}{hlFmt(plan.daily)}</b><small>kcal {plan.lose ? "short of" : "over"} what you burn</small></div>
-            <div className="hl-tile"><span className="hl-cap">Eat about</span><b>{hlFmt(plan.eat)}</b><small>kcal a day (you burn {hlFmt(plan.tdee)})</small></div>
-            <div className="hl-tile"><span className="hl-cap">Walk</span><b>{hlFmt(plan.steps)}</b><small>steps a day{plan.extraSteps ? ` (${hlFmt(p.steps)} + ${hlFmt(plan.extraSteps)})` : ""}</small></div>
-            <div className="hl-tile"><span className="hl-cap">That is</span><b>{plan.perWeek.toFixed(2)}</b><small>kg a week, {plan.pct.toFixed(1)}% of you</small></div>
+            <div className="hl-tile"><span className="hl-cap">Each day</span><b>{plan.lose ? "−" : "+"}<Num v={plan.daily} /></b><small>kcal {plan.lose ? "short of" : "over"} what you burn</small></div>
+            <div className="hl-tile"><span className="hl-cap">Eat about</span><b><Num v={plan.eat} /></b><small>kcal a day (you burn <Num v={plan.tdee} />)</small></div>
+            <div className="hl-tile"><span className="hl-cap">Walk</span><b><Num v={plan.steps} /></b><small>steps a day{plan.extraSteps ? ` (${hlFmt(plan.own)} + ${hlFmt(plan.extraSteps)})` : ""}</small></div>
+            <div className="hl-tile"><span className="hl-cap">That is</span><b><Num v={plan.perWeek} f={(n) => n.toFixed(2)} /></b><small>kg a week, <Num v={plan.pct} f={(n) => n.toFixed(1)} />% of you</small></div>
           </div>
           {plan.lose && plan.eat <= plan.floor + 0.5 && <div className="hl-note">Eating under {hlFmt(plan.floor)} kcal a day is not advised, so what that leaves is walked.</div>}
           {plan.fast ? (
@@ -19829,7 +20352,7 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
           {plan && <small className={ate > plan.eat ? "bad" : ""}>{ate ? (ate > plan.eat ? `${hlFmt(ate - plan.eat)} over` : `${hlFmt(plan.eat - ate)} left`) : `of ${hlFmt(plan.eat)}`}</small>}
         </span>
         <span className="hl-diet-go">
-          {plan && plan.extraSteps > 0 && p.steps !== plan.steps && <button className="bk-btn" onClick={() => api.current.profile({ steps: Math.min(60000, plan.steps) })}>Make {hlFmt(plan.steps)} my step goal</button>}
+          {plan && plan.extraSteps > 0 && p.steps !== plan.steps && <button className="bk-btn" onClick={() => { const n = Math.min(60000, plan.steps); api.current.profile({ steps: n, stepsIn: n - plan.own }); }}>Make {hlFmt(plan.steps)} my step goal</button>}
           <button className="bk-btn" onClick={() => { setTarget(String(g.target)); api.current.goal(null); }}>Change goal</button>
         </span>
       </div>
@@ -19839,8 +20362,8 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
 // a number box whose text belongs to its parent (the goal form reads it as it is typed); Enter hands it over
 const HlNumLive = ({ value, onChange, ph, unit, dp = 0, label, onEnter }) => (
   <span className={`hl-num${unit ? " u" : ""}`}>
-    <input className="pc-in" inputMode={dp ? "decimal" : "numeric"} aria-label={label} placeholder={ph} value={value}
-           onChange={(e) => onChange(numIn(e.target.value, dp))} onKeyDown={(e) => { if (e.key === "Enter" && onEnter) onEnter(); }} />
+    <input className="pc-in" inputMode={dp ? "decimal" : "numeric"} aria-label={label} placeholder={ph} value={grp(value)}
+           onChange={(e) => onChange(numIn(ungrp(e), dp))} onKeyDown={(e) => { if (e.key === "Enter" && onEnter) onEnter(); }} />
     {unit && <i>{unit}</i>}
   </span>
 );
@@ -19873,16 +20396,16 @@ const HlGym = memo(({ gym, day, today, kg, api }) => {
     <div className="hl-gym">
       <div className="hl-gym-head">
         <span className="hl-stats">
-          <span><b>{thisWeek.length}</b> session{thisWeek.length === 1 ? "" : "s"} this week</span>
-          <span><b>{hlDur(thisWeek.reduce((a, s) => a + s.min, 0))}</b></span>
-          <span><b>{hlFmt(thisWeek.reduce((a, s) => a + hlVolume(s), 0))}</b> kg lifted</span>
+          <span><b><Num v={thisWeek.length} /></b> session{thisWeek.length === 1 ? "" : "s"} this week</span>
+          <span><b><Num v={thisWeek.reduce((a, s) => a + s.min, 0)} f={hlDurN} /></b></span>
+          <span><b><Num v={thisWeek.reduce((a, s) => a + hlVolume(s), 0)} /></b> kg lifted</span>
         </span>
         {!d && <button className="hl-save" onClick={() => setD(hlDraftOf(null))}><span className="msym">add</span>Log a session{day !== today ? ` on ${hlNice(day)}` : ""}</button>}
       </div>
       {d && (
         <div className="hl-sheet">
           <div className="hl-sheet-row">
-            <span className="jr-pick">{HL_SPLITS.map((n) => <button key={n} className={`jr-chip${d.name === n ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: n }))}>{n}</button>)}</span>
+            <Pick>{HL_SPLITS.map((n) => <button key={n} className={`jr-chip${d.name === n ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: n }))}>{n}</button>)}</Pick>
             <input className="jr-in hl-sname" value={HL_SPLITS.includes(d.name) ? "" : d.name} placeholder="Or a name of its own" maxLength={40} onChange={(e) => setD((v) => ({ ...v, name: e.target.value }))} />
             <span className="hl-num u"><input className="pc-in" inputMode="numeric" value={d.min} placeholder="60" aria-label="Minutes" onChange={(e) => setD((v) => ({ ...v, min: e.target.value.replace(/\D/g, "").slice(0, 3) }))} /><i>min</i></span>
           </div>
@@ -19896,7 +20419,7 @@ const HlGym = memo(({ gym, day, today, kg, api }) => {
                 {e.sets.map((x, k) => (
                   <span key={k} className="hl-set">
                     <i>{k + 1}</i>
-                    <input className="pc-in" inputMode="decimal" value={x.kg} placeholder="kg" aria-label="Kilos" onChange={(ev) => setSet(i, k, { kg: numIn(ev.target.value, 2) })} />
+                    <input className="pc-in" inputMode="decimal" value={grp(x.kg)} placeholder="kg" aria-label="Kilos" onChange={(ev) => setSet(i, k, { kg: numIn(ungrp(ev), 2) })} />
                     <em>×</em>
                     <input className="pc-in" inputMode="numeric" value={x.reps} placeholder="reps" aria-label="Reps" onChange={(ev) => setSet(i, k, { reps: ev.target.value.replace(/\D/g, "").slice(0, 3) })} />
                   </span>
@@ -20240,13 +20763,93 @@ const CardArrange = ({ cards, order, solo, onOrder, onClose }) => {
     </div>, document.body);
 };
 const HL_TODAY_HINT = "flow-hl-today-hint";      // the app's, not an account's: said once
+/* ---------- health: the day turn (4 November 2026, his words: "when changing days, a lot of the ui aggressively shifts and
+   jumps. i want you to add quick seamless and smooth animations to all of them"). The page is taken just before the day
+   changes (dayTurnTake, in setDay) and played once the new day is laid out, before it is drawn (dayTurnPlay):
+   - every card glides from its old height to its new one, as its fold does (the box round its content, `.fold-box`); the
+     cards below follow it with nothing drawn again (see the performance rules);
+   - a part of the day's cards, the hero or the title row that moved slides from where it stood (the separate `translate`,
+     counted from the nearest part that slides too, so nothing moves twice; a card's own move is the glide above it);
+   - a part that is new fades in, unless it has an entrance of its own (the to-dos, the title); words that changed come up
+     from faint.
+   The rings, the figures (Num), the ticks and the month's picked day run to their new places by themselves. A turn pressed
+   while one is playing starts from where everything is. ---------- */
+const DT_MS = 300, DT_EASE = "cubic-bezier(0.22,1,0.36,1)";
+const DT_CARDS = new Set(["to-do", "activity", "diet", "gym"]);         // the cards that show the day (the others show the week, or no day)
+const DT_SKIP = "svg, .hl-bars-sc, .pk-box, .seg-box, .hl-msel, .hl-mtip, .info-tip";     // what has a motion of its own, or isn't laid out with the rest
+const dtOwn = (el) => { let s = ""; for (const n of el.childNodes) if (n.nodeType === 3) s += n.nodeValue; return s.trim(); };
+const dtWalk = (el, out) => { for (const c of el.children) if (!c.matches(DT_SKIP)) { out.push(c); dtWalk(c, out); } return out; };
+const dtSecs = (page) => [...page.children].filter((s) => s.hasAttribute("data-mv"));
+const dtDeep = (s) => !s.dataset.card || DT_CARDS.has(s.dataset.card);
+const dayTurnTake = (page) => {
+  if (!page || matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  const at = new Map(), boxes = new Map();
+  for (const s of dtSecs(page)) {
+    const r = s.getBoundingClientRect();
+    at.set(s, { x: r.left, y: r.top });
+    const box = s.querySelector(":scope > .fold-box");
+    if (box) boxes.set(box, box.getBoundingClientRect().height);
+    if (dtDeep(s)) for (const el of dtWalk(s, [])) { const q = el.getBoundingClientRect(); at.set(el, { x: q.left, y: q.top, z: !q.width && !q.height, t: dtOwn(el) }); }
+  }
+  return { at, boxes };
+};
+const dayTurnPlay = (page, snap, live) => {
+  for (const a of live) a.cancel();          // a turn still playing: its parts were taken where they stood, mid-way
+  live.clear();
+  if (!page || !snap) return;
+  const glides = [], slides = [], fades = [], words = [];
+  for (const [box, h0] of snap.boxes) {
+    if (!box.isConnected) continue;
+    const h1 = box.getBoundingClientRect().height;
+    if (Math.abs(h1 - h0) > 1) glides.push([box, h0, h1]);
+  }
+  // acc: the translate the nearest part above it starts from; fresh: a part above it is new (it fades with that one)
+  const visit = (el, acc, fresh) => {
+    for (const c of el.children) {
+      if (c.matches(DT_SKIP)) continue;
+      const o = snap.at.get(c);
+      let next = acc, nf = fresh;
+      if (!o) { if (!fresh && !c.getAnimations().length) fades.push(c); nf = true; }
+      else if (!fresh) {
+        const r = c.getBoundingClientRect();
+        if (!(o.z && !r.width && !r.height)) {
+          const dx = o.x - r.left - acc[0], dy = o.y - r.top - acc[1];
+          if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+            const cs = getComputedStyle(c);
+            if (cs.display !== "inline" && cs.position !== "fixed") { slides.push([c, dx, dy]); next = [acc[0] + dx, acc[1] + dy]; }
+          }
+          const t = dtOwn(c);
+          if (t && o.t && t !== o.t) words.push(c);
+        }
+      }
+      visit(c, next, nf);
+    }
+  };
+  for (const s of dtSecs(page)) {
+    const o = snap.at.get(s);
+    if (!o || !dtDeep(s)) continue;
+    const r = s.getBoundingClientRect();
+    visit(s, [o.x - r.left, o.y - r.top], false);
+  }
+  const go = (el, kf, ms = DT_MS) => { const a = el.animate(kf, { duration: ms, easing: DT_EASE }); live.add(a); a.onfinish = a.oncancel = () => live.delete(a); };
+  for (const [box, h0, h1] of glides) go(box, [{ height: `${h0}px` }, { height: `${h1}px` }]);
+  // (one frame at offset 0: where it starts; it ends on its own value. A lone frame without one is taken as the end)
+  for (const [c, dx, dy] of slides) go(c, [{ translate: `${dx}px ${dy}px`, offset: 0 }]);
+  for (const c of fades.slice(0, 120)) go(c, [{ opacity: 0, offset: 0 }], 240);
+  for (const c of words.slice(0, 80)) go(c, [{ opacity: 0.25, offset: 0 }], 260);
+  if (glides.length || slides.length || fades.length || words.length) warm.moved = performance.now() + DT_MS;
+};
 function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, who }) {
   useClock12();
   const dev = useDevOpt();
   const today = hlKey(new Date());
   const [h, setH] = useState(hlBlank);
   const [loaded, setLoaded] = useState(false);
-  const [day, setDay] = useState(today);
+  const [day, setDayNow] = useState(today);
+  // every change of day goes through here, so the page is taken as it stands first (the day turn, dayTurnTake)
+  const pageRef = useRef(null), turnSnap = useRef(null), turnLive = useRef(new Set());
+  const setDay = (v) => { turnSnap.current = dayTurnTake(pageRef.current); setDayNow(v); };
+  useLayoutEffect(() => { const s = turnSnap.current; turnSnap.current = null; if (s) dayTurnPlay(pageRef.current, s, turnLive.current); }, [day]);
   // the way back to today is the date itself; told once, the first time a day other than today is on screen (the green Today
   // button that stood beside it went on 29 October 2026)
   const [todayHint, setTodayHint] = useState(false);
@@ -20425,12 +21028,12 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     // days it was on keep it, ticks and all. Pressed on the first day there is nothing to keep, so it goes
     end: (id) => up((x) => ({ ...x, todos: x.todos.flatMap((t) => (t.id !== id ? [t] : day <= t.from ? [] : [{ ...t, len: hlDays(t.from, day) }])) })),
     // a class saved from the form: every week (from the week it was put in), or this week only (`once`, its date); its
-    // name goes into the quick list the first time
+    // name goes into the quick list the first time. `ev`: an event, not a class (it stays out of the quick list)
     saveCls: (f) => up((x) => {
       const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), dow: f.dow, from: f.from, to: f.to, tint: f.tint,
                   ...(HL_HEX.test(f.col || "") ? { col: f.col.toLowerCase() } : {}), ...(f.once ? { once: f.once } : f.since ? { since: f.since } : {}) };
       const keep = (o) => ({ ...(f.once ? {} : { ...(o.since && !f.since ? { since: o.since } : {}), ...(o.until ? { until: o.until } : {}), ...(o.skip ? { skip: o.skip } : {}) }), ...(o.test ? { test: true } : {}) });
-      const lib = x.clsLib.some((q) => q.name.toLowerCase() === c.name.toLowerCase()) ? x.clsLib : [...x.clsLib, { name: c.name, room: c.room, tint: c.tint, ...(c.col ? { col: c.col } : {}) }].slice(-60);
+      const lib = f.ev || x.clsLib.some((q) => q.name.toLowerCase() === c.name.toLowerCase()) ? x.clsLib : [...x.clsLib, { name: c.name, room: c.room, tint: c.tint, ...(c.col ? { col: c.col } : {}) }].slice(-60);
       const classes = f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...keep(o) } : o)) : [...x.classes, c];
       const was = f.id && x.classes.find((o) => o.id === f.id), ko = was && hlNoteKey(was.name), kn = hlNoteKey(c.name);
       let clsNotes = x.clsNotes;
@@ -20438,8 +21041,24 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
         clsNotes = { ...clsNotes, [kn]: clsNotes[ko] };
         if (!classes.some((o) => hlNoteKey(o.name) === ko)) delete clsNotes[ko];
       }
-      return { ...x, clsLib: lib, classes, clsNotes };
+      return { ...x, clsLib: lib, classes, clsNotes, mine: hlMineWith(x, [kn], !f.ev) };
     }),
+    // a name made a class or an event (the form's switch does it as it saves; the list of them at once). A class joins the
+    // quick list when it is not there, so it can be picked again; an event stays where it is in it (only classes are shown)
+    clsKind: (name, on) => up((x) => {
+      const k = hlNoteKey(name), c = on && !x.clsLib.some((q) => hlNoteKey(q.name) === k) && hlAsgNames(x.classes, x.clsLib).find((q) => hlNoteKey(q.name) === k);
+      return { ...x, mine: hlMineWith(x, [k], on), ...(c ? { clsLib: [...x.clsLib, { name: c.name, room: c.room || "", tint: c.tint || 0, ...(c.col ? { col: c.col } : {}) }].slice(-60) } : {}) };
+    }),
+    // a class or an event off the week altogether, every block of it and its place in the quick list, with Undo; its notes
+    // and the assignments tied to it are kept (they come back with it)
+    clsDrop: (name) => {
+      const x0 = hRef.current, k = hlNoteKey(name);
+      const gone = x0.classes.filter((c) => hlNoteKey(c.name) === k), q = x0.clsLib.find((o) => hlNoteKey(o.name) === k);
+      if (!gone.length && !q) return;
+      up((x) => ({ ...x, classes: x.classes.filter((c) => hlNoteKey(c.name) !== k), clsLib: x.clsLib.filter((o) => hlNoteKey(o.name) !== k) }));
+      offerUndo(name, () => up((x) => ({ ...x, classes: [...x.classes, ...gone.filter((c) => !x.classes.some((o) => o.id === c.id))],
+                                          clsLib: q && !x.clsLib.some((o) => hlNoteKey(o.name) === k) ? [...x.clsLib, q] : x.clsLib })));
+    },
     // a class's notes (double click on it): its few words, and links, notes and files, each with the date of the lesson it
     // was kept from and a star for what must not get lost under the rest
     noteAbout: (key, about, html) => up((x) => {
@@ -20562,7 +21181,8 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
         : x.classes.map((c) => (c.id !== id ? c : how === "one" ? { ...c, skip: { ...c.skip, [k]: 1 } } : { ...c, until: hlAddDays(k, -1) })) }));
       offerUndo(was.name, () => up((x) => ({ ...x, classes: x.classes.some((c) => c.id === id) ? x.classes.map((c) => (c.id === id ? was : c)) : [...x.classes, was] })));
     },
-    libAdd: (c) => up((x) => (x.clsLib.some((q) => q.name.toLowerCase() === c.name.trim().toLowerCase()) || !c.name.trim() ? x : { ...x, clsLib: [...x.clsLib, { name: c.name.trim(), room: (c.room || "").trim(), tint: c.tint || 0 }].slice(-60) })),
+    libAdd: (c) => up((x) => (!c.name.trim() ? x : { ...x, mine: hlMineWith(x, [hlNoteKey(c.name)], true),
+      ...(x.clsLib.some((q) => q.name.toLowerCase() === c.name.trim().toLowerCase()) ? {} : { clsLib: [...x.clsLib, { name: c.name.trim(), room: (c.room || "").trim(), tint: c.tint || 0 }].slice(-60) }) })),
     libDel: (name) => up((x) => ({ ...x, clsLib: x.clsLib.filter((q) => q.name !== name) })),
     mineSet: (keys) => up((x) => ({ ...x, mine: keys })),
     // a kept file found in a new place (fileFind in main.cjs): its path changes wherever it is kept
@@ -20573,12 +21193,15 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     }),
     // a class of his in the list, changed (30 October 2026). With `also`, the classes on the timetable that go by its old
     // name change with it (name, room, colour) and their notes follow a new name; without, they stay as they are
+    // (since 4 November 2026 also one only on the timetable, from the list of classes and events, always `also`; the
+    // assignments tied to it and whether it is a class follow a new name)
     libSet: (from, p, also) => up((x) => {
-      const name = hlText(p.name, 60).trim(), kf = hlNoteKey(from), kn = hlNoteKey(name);
-      if (!name || !x.clsLib.some((o) => hlNoteKey(o.name) === kf) || (kn !== kf && x.clsLib.some((o) => hlNoteKey(o.name) === kn))) return x;
+      const name = hlText(p.name, 60).trim(), kf = hlNoteKey(from), kn = hlNoteKey(name), inLib = x.clsLib.some((o) => hlNoteKey(o.name) === kf);
+      if (!name || !(inLib || (also && x.classes.some((o) => hlNoteKey(o.name) === kf))) || (kn !== kf && x.clsLib.some((o) => hlNoteKey(o.name) === kn))) return x;
       const q = { name, room: hlText(p.room, 40).trim(), tint: Number.isInteger(p.tint) && p.tint >= 0 && p.tint < HL_CLS.length ? p.tint : 0, ...(HL_HEX.test(p.col || "") ? { col: p.col.toLowerCase() } : {}) };
       const clsLib = x.clsLib.map((o) => (hlNoteKey(o.name) === kf ? q : o));
-      if (!also) return { ...x, clsLib };
+      const was = hlMineKeys(x).includes(kf);
+      if (!also) return { ...x, clsLib, ...(kn !== kf && was ? { mine: hlMineWith(x, [kn], true) } : {}) };
       const classes = x.classes.map((c) => {
         if (hlNoteKey(c.name) !== kf) return c;
         const { col, ...rest } = c;
@@ -20591,7 +21214,9 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
         clsNotes = { ...clsNotes, [kn]: b ? { about: b.about || a.about, items: [...b.items, ...a.items].slice(-300), ...(ls.length ? { lessons: ls } : {}) } : a };
         delete clsNotes[kf];
       }
-      return { ...x, clsLib, classes, clsNotes, ...(kn !== kf && Array.isArray(x.mine) ? { mine: x.mine.map((k) => (k === kf ? kn : k)) } : {}) };
+      if (kn === kf) return { ...x, clsLib, classes, clsNotes };
+      const asg = x.asg.map((a) => (hlNoteKey(a.cls) === kf ? { ...a, cls: name } : a));
+      return { ...x, clsLib, classes, clsNotes, asg, mine: [...hlMineKeys(x).filter((k) => k !== kf && k !== kn), ...(was ? [kn] : [])].slice(-200) };
     }),
     colAdd: (hex) => up((x) => (!HL_HEX.test(hex || "") || x.clsCols.includes(hex.toLowerCase()) ? x : { ...x, clsCols: [...x.clsCols, hex.toLowerCase()].slice(-12) })),
     colDel: (hex) => up((x) => ({ ...x, clsCols: x.clsCols.filter((q) => q !== hex) })),
@@ -20613,7 +21238,8 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
         return { id: uid(), name: f.name.trim(), room: (f.room || "").trim(), dow: f.dow, from: f.from, to: f.to, tint: tint[k],
                  ...(HL_HEX.test(f.col || "") ? { col: f.col } : {}), ...(week ? { once: hlAddDays(week, f.dow) } : {}) };
       });
-      return { ...x, classes: [...x.classes, ...add] };
+      // (a timetable read off a picture is classes; one that is not can be made an event in the list of them)
+      return { ...x, classes: [...x.classes, ...add], mine: hlMineWith(x, [...new Set(add.map((c) => hlNoteKey(c.name)))], true) };
     }),
     // a day's steps typed: they are his from then on (an Apple Health import leaves them alone)
     setSteps: (k, n) => up((x) => {
@@ -20633,7 +21259,12 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       });
       return { kept };
     },
-    profile: (p) => up((x) => ({ ...x, profile: { ...x.profile, ...p }, tests: { ...x.tests, profile: 0 } })),
+    // (a step goal typed by hand is all his own: the part the diet plan had put in it is forgotten)
+    profile: (p) => up((x) => {
+      const q = { ...x.profile, ...p };
+      if ("steps" in p && !("stepsIn" in p)) delete q.stepsIn;
+      return { ...x, profile: q, tests: { ...x.tests, profile: 0 } };
+    }),
     weigh: (v) => api.current.weighOn(today, v),
     weighOn: (k, v) => up((x) => {
       if (k > today) return x;
@@ -20812,7 +21443,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   const shopLeft = h.shop.reduce((n, q) => n + q.items.filter((t) => !t.got).length, 0);
   const hlCards = {
     "to-do": (
-          <FoldCard key="to-do" name="to-do" title="To-do" sub={dd.todos.length ? `${dd.done} of ${dd.todos.length} done` : ""}>
+          <FoldCard key="to-do" name="to-do" title="To-do" sub={dd.todos.length ? <><Num v={dd.done} /> of <Num v={dd.todos.length} /> done</> : ""}>
             <HlTodos todos={h.todos} day={day} today={today} api={api} />
           </FoldCard>
     ),
@@ -20823,7 +21454,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     ),
     "week": (
           <FoldCard key="week" name="week" title="Week" sub={nextCls ? `${day === today ? "Next" : "First"}: ${nextCls.name} at ${clk(nextCls.from)}` : `${h.classes.length} a week`}>
-            <HlWeek classes={h.classes} lib={h.clsLib} cols={h.clsCols} notes={h.clsNotes} asg={h.asg} today={today} nowMin={nowMin} api={api} />
+            <HlWeek classes={h.classes} lib={h.clsLib} mine={h.mine} cols={h.clsCols} notes={h.clsNotes} asg={h.asg} today={today} nowMin={nowMin} api={api} />
           </FoldCard>
     ),
     "assignments": (
@@ -20832,7 +21463,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
           </FoldCard>
     ),
     "activity": (
-          <FoldCard key="activity" name="activity" title="Activity" sub={`${hlFmt(dd.steps)} of ${hlFmt(p.steps)} steps`}>
+          <FoldCard key="activity" name="activity" title="Activity" sub={<><Num v={dd.steps} /> of <Num v={p.steps} /> steps</>}>
             <HlActivity h={h} day={day} today={today} api={api} phoneSaid={phoneSaid} />
           </FoldCard>
     ),
@@ -20862,13 +21493,14 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       {view === "home" ? (
         <HomeDash market="health" M={HL_M} who={who} loaded={loaded} layout={hdashLive.current || hdashNow} ctx={hlCtx} api={dashApi} busy={!!(settingsOpen || tpOpen)} />
       ) : (
-      <div className={`hl-page month-view${entering ? " enter" : ""}`}>
+      <div ref={pageRef} className={`hl-page month-view${entering ? " enter" : ""}`}>
         <div data-mv="" style={S.topRow}>
           <h1 key={dayWord} className="hl-title" style={S.title}>{dayWord.split("").map((ch, i) => <span key={i} className={ch === "t" ? "tt" : undefined}>{ch}</span>)}</h1>
           <div style={S.navBox} className="hl-nav">
             <span className="month-nav">
               <button className="nav-arrow" title="The day before (←)" onClick={() => setDay(hlAddDays(day, -1))}>‹</button>
-              <button className="month-btn" style={S.monthLabelBtn} title={day === today ? "Today" : "Back to today"} onClick={() => setDay(today)}>{hlNice(day)}</button>
+              {/* as wide as the widest date (the hidden two), so the arrows stay put under the pointer from day to day */}
+              <button className="month-btn hl-day-btn" style={S.monthLabelBtn} title={day === today ? "Today" : "Back to today"} onClick={() => setDay(today)}><span>{hlNice(day)}</span><span aria-hidden="true">Wed 30 Sept</span><span aria-hidden="true">Wed 30 June</span></button>
               <button className="nav-arrow" title="The day after (→)" onClick={() => setDay(hlAddDays(day, 1))}>›</button>
             </span>
             <Linger on={todayHint ? 1 : null} show={(out) => <span className={`hl-today-hint${out ? " out" : ""}`} role="status">Press the date to jump back to today</span>} />
@@ -20878,7 +21510,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
         {/* the day at a glance: the three rings, the steps big, and four tiles */}
         <div data-mv="" className="hero hl-hero" style={{ "--hc": HL_TINT[0][0] }}>
           <div className="hl-hero-in">
-            <div className="hl-hero-rings" key={day}><HlRings vals={vals} /></div>
+            <div className="hl-hero-rings"><HlRings vals={vals} /></div>
             <div className="hl-hero-main">
               <div className="hero-head">
                 <span className="hero-lead">
@@ -20896,7 +21528,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
               <div className="hl-rr-list">
                 {[["Steps", dd.steps, p.steps, ""], ["Move", dd.move, p.move, " kcal"], ["To-dos", dd.done, dd.todos.length, ""]].map(([name, v, goal, unit], i) => (
                   <span key={name} className="hl-rr" style={{ "--c": HL_TINT[i][0] }}>
-                    <i /><b>{name}</b><span>{hlFmt(v)}<em> / {hlFmt(goal)}{unit}</em></span><small>{goal ? Math.round((v / goal) * 100) : 0}%</small>
+                    <i /><b>{name}</b><span><Num v={v} /><em> / <Num v={goal} />{unit}</em></span><small><Num v={goal ? (v / goal) * 100 : 0} />%</small>
                   </span>
                 ))}
               </div>
@@ -20905,13 +21537,13 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
           <div className="hero-tiles">
             <div className="hero-tile" style={{ "--tc": HL_TINT[0][0] }} title="Worked out from your steps and your height">
               <span className="ht-cap">Distance</span>
-              <span className="ht-val">{dd.km.toFixed(1)}<small> km</small></span>
-              <span className="ht-sub">≈ {hlFmt(dd.stepKcal)} kcal from steps</span>
+              <span className="ht-val"><Num v={dd.km} f={(n) => n.toFixed(1)} /><small> km</small></span>
+              <span className="ht-sub">≈ <Num v={dd.stepKcal} /> kcal from steps</span>
             </div>
             <div className="hero-tile" style={{ "--tc": kg ? band[2] : "#8e969e" }} title="Your latest weight, and its BMI on the Asian scale">
               <span className="ht-cap">Weight</span>
-              <span className="ht-val">{kg ? hlKg(kg) : "–"}<small> kg</small></span>
-              <span className="ht-sub" style={kg && p.cm ? { color: band[2] } : undefined}>{kg && p.cm ? `BMI ${hlBmi(kg, p.cm).toFixed(1)} · ${band[1]}` : "Type it under Body"}</span>
+              <span className="ht-val">{kg ? <Num v={kg} f={hlKg} live={hlKg1} /> : "–"}<small> kg</small></span>
+              <span className="ht-sub" style={kg && p.cm ? { color: band[2] } : undefined}>{kg && p.cm ? <>BMI <Num v={hlBmi(kg, p.cm)} f={(n) => n.toFixed(1)} /> · {band[1]}</> : "Type it under Body"}</span>
             </div>
             <div className="hero-tile" style={{ "--tc": nextCls ? hlClsCol(nextCls) : "#8e969e" }} title="The next thing on your timetable">
               <span className="ht-cap">{day === today ? "Next" : "First"}</span>
@@ -20920,7 +21552,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
             </div>
             <div className="hero-tile" style={{ "--tc": "#e6c877" }} title="Your diet goal">
               <span className="ht-cap">Goal</span>
-              <span className="ht-val">{plan ? (plan.done ? "Reached" : <>{hlKg(plan.abs)}<small> kg to go</small></>) : "–"}</span>
+              <span className="ht-val">{plan ? (plan.done ? "Reached" : <><Num v={plan.abs} f={hlKg} live={hlKg1} /><small> kg to go</small></>) : "–"}</span>
               <span className="ht-sub">{h.goal ? `${hlKg(h.goal.target)} kg by ${hlNice(h.goal.by)}` : "Set one under Diet goal"}</span>
             </div>
           </div>
@@ -24197,7 +24829,7 @@ export default function PnlCalendar() {
       acc = CAT_COLORS[c]; icon = CATS[c].icon;
       title = big ? `Biggest ${CATS[c].label.toLowerCase()} purchases` : `Top ${CATS[c].label.toLowerCase()} spending`;
       controls = (
-        <div className="wr-chips">
+        <Pick as="div" base="wr-chips">
           {r.catRows.map((cr) => (
             <button key={cr.c} className={`wr-chip${cr.c === c ? " on" : ""}`} style={{ "--acc": CAT_COLORS[cr.c] }}
                     onClick={() => setRecapDetail(`${big ? "catbig" : "cat"}:${cr.c}`)}>
@@ -24206,7 +24838,7 @@ export default function PnlCalendar() {
           ))}
           <span style={{ flex: 1 }} />
           <SlideSeg value={big ? "big" : "item"} onPick={(v) => setRecapDetail(`${v === "big" ? "catbig" : "cat"}:${c}`)} options={[["item", "By item"], ["big", "Single purchases"]]} />
-        </div>
+        </Pick>
       );
       if (big) {
         const rows = r.txs.filter((t) => t.cat === c).sort((a, b) => b.amount - a.amount).slice(0, 10);
@@ -24482,7 +25114,7 @@ export default function PnlCalendar() {
             {/* top-10 panel that opens under the grid */}
             <div ref={recapDetailRef} style={{ display: "grid", gridTemplateRows: recapDetailOpen ? "1fr" : "0fr",
                  transition: "grid-template-rows .38s cubic-bezier(0.4,0,0.2,1)" }}>
-              <div style={S.fold}>
+              <div style={S.fold} ref={(el) => { if (el) el.inert = !recapDetailOpen; }}>
                 <div style={{ paddingTop: 12, opacity: recapDetailOpen ? 1 : 0, transform: recapDetailOpen ? "none" : "translateY(-10px)",
                               transition: "opacity .28s ease, transform .32s cubic-bezier(0.22,1,0.36,1)" }}>
                   {recapDetail && renderRecapDetail(r, (v) => `${v >= 0 ? "+" : "−"}${fmt(Math.abs(v))}`)}
@@ -24538,7 +25170,7 @@ export default function PnlCalendar() {
         </div>
         {rest.length > 0 && (
           <>
-            <div style={{ display: "grid", gridTemplateRows: shown ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
+            <div style={{ display: "grid", gridTemplateRows: shown ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !shown; }}>
               <div style={S.fold}>
                 {insOpen && (
                   <div key={`ins-${insRun}-${year}-${month}`} style={{ opacity: insClosing ? 0 : 1, transform: insClosing ? "translateY(-10px)" : "none",
@@ -24640,7 +25272,7 @@ export default function PnlCalendar() {
                     : "No date yet: it needs deposits in two of the last six months"}
                 </span>
               </div>
-              <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }}>
+              <div style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .3s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !open; }}>
                 <div style={S.fold}>
                   <div style={{ ...S.goalFundRow, opacity: open ? 1 : 0, transition: "opacity .24s ease" }}>
                     <AmountField value={open ? fundAmt : ""} setValue={setFundAmt} accent="green" cur={cur} width={150}
@@ -24675,7 +25307,7 @@ export default function PnlCalendar() {
               <span style={{ flex: 1 }} />
               <span className={`plain-arrow chev${doneOpen ? " up" : ""}`}><Chevron /></span>
             </button>
-            <div style={{ display: "grid", gridTemplateRows: doneOpen ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }}>
+            <div style={{ display: "grid", gridTemplateRows: doneOpen ? "1fr" : "0fr", transition: "grid-template-rows .34s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !doneOpen; }}>
               <div style={{ overflow: goalIconMenu && completed.some((g) => g.id === goalIconMenu) ? "visible" : "hidden", minHeight: 0 }}>
                 <div style={{ opacity: doneOpen ? 1 : 0, transform: doneOpen ? "none" : "translateY(-8px)", transition: "opacity .26s ease, transform .3s cubic-bezier(0.22,1,0.36,1)" }}>
                   {doneMounted && completed.map((g, gi) => renderGoalRow(g, gi, completed))}
@@ -24684,7 +25316,7 @@ export default function PnlCalendar() {
             </div>
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateRows: newGoalOpen ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }}>
+        <div style={{ display: "grid", gridTemplateRows: newGoalOpen ? "1fr" : "0fr", transition: "grid-template-rows .32s cubic-bezier(0.4,0,0.2,1)" }} ref={(el) => { if (el) el.inert = !newGoalOpen; }}>
           <div style={S.fold}>
             <div style={{ ...S.goalFundRow, paddingTop: 12, opacity: newGoalOpen ? 1 : 0, transition: "opacity .24s ease" }}>
               <input style={{ ...S.darkInput, width: 190 }} placeholder="Goal, e.g. Emergency fund"
@@ -25849,6 +26481,16 @@ export default function PnlCalendar() {
         .jr-pick .jr-chip:hover { background: rgba(255,255,255,0.06); border-color: transparent; }
         .jr-pick .jr-chip.on { border-color: transparent; }
         .jr-pick .jr-chip.own:focus { border-color: rgba(255,255,255,0.55); background: rgba(24,27,31,0.62); }
+        /* Pick: the picked choice's look is a box of copies of it that slides to it. Clipped as .wr-seg.slide is, for the
+           same reason (its body is wider than the choice); the windows clip sideways only, so a shadow above and below shows.
+           :not(#pk) outweighs every choice's own .on rule (.jr-chip.tf.on, .pc-side-b.long.on …) */
+        .pk { position: relative; overflow: clip; overflow-clip-margin: 6px; }
+        .pk > :not(.pk-box) { position: relative; z-index: 1; }
+        .pk.sl > .on:not(#pk) { background: none !important; border-color: transparent !important; box-shadow: none !important; }
+        .pk-box { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
+        .pk.sl > .pk-box { opacity: 1; }
+        .pk-f, .pk-l, .pk-r { position: absolute; left: 0; top: 0; overflow-x: clip; }
+        .pk-f { overflow: hidden; }
         .jr-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
         .jr-add { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 16px 0 11px; border-radius: 11px; cursor: pointer;
                   border: 1px solid var(--tone-bd); background: var(--tone-bg); color: var(--tone); font-size: 13.5px; font-weight: 700;
@@ -27876,6 +28518,44 @@ export default function PnlCalendar() {
         .undo-note.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
         .undo-note b { display: inline-block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; font-weight: 600; color: var(--c-ink-hi); }
         .undo-note .un-b { padding: 5px 12px; border: 0; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--c-ink-hi); background: rgba(255,255,255,0.09); cursor: pointer; transition: background .16s ease, transform .22s var(--ease); }
+        /* the right-click menu (CtxMenu) and the command bar (CmdBar, ⌘P): fewer buttons, the actions kept (4 November 2026) */
+        .ctx { position: fixed; z-index: 120; min-width: 200px; max-width: 300px; padding: 5px; border-radius: 14px; display: flex; flex-direction: column;
+               animation: ctxIn .16s var(--ease) backwards; }
+        @keyframes ctxIn { from { opacity: 0; transform: scale(0.96); } }
+        .ctx-it { display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px 0 8px; border: 0; border-radius: 9px; background: none;
+                  font: inherit; font-size: 13px; color: var(--c-ink-hi); text-align: left; cursor: pointer; outline: none; }
+        .ctx-it .msym { width: 18px; flex: none; font-size: 17px; color: #aab1b8; }
+        .ctx-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ctx-it kbd { flex: none; font: inherit; font-size: 11.5px; color: #8e969e; letter-spacing: 0.02em; }
+        .ctx-it:hover, .ctx-it:focus-visible { background: rgba(255,255,255,0.09); }
+        .ctx-it:focus:not(:focus-visible):not(:hover) { background: rgba(255,255,255,0.05); }
+        .ctx-it.danger, .ctx-it.danger .msym { color: #ff9aa3; }
+        .ctx-it.danger:hover, .ctx-it.danger:focus-visible { background: rgba(255,93,108,0.14); }
+        .ctx-it:disabled { opacity: 0.4; cursor: default; }
+        .ctx-line { display: block; height: 1px; margin: 4px 8px; background: rgba(255,255,255,0.09); }
+        .cmd { width: min(640px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - max(56px, 14vh) - 32px)); display: flex; flex-direction: column;
+               padding: 8px; border-radius: 22px; overflow: hidden; }
+        .cmd-in { display: flex; align-items: center; gap: 10px; flex: none; height: 50px; padding: 0 12px 0 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .cmd-in .msym { font-size: 21px; color: #aab1b8; }
+        .cmd-in input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: none; font: inherit; font-size: 16px; color: var(--c-ink-hi); }
+        .cmd-in input::placeholder { color: #8e969e; }
+        .cmd-in kbd, .cmd-it kbd { flex: none; padding: 2px 7px; border-radius: 6px; background: rgba(255,255,255,0.07); font: inherit; font-size: 11.5px; color: #aab1b8; }
+        .cmd-list { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px 2px 4px; scrollbar-width: thin; }
+        .cmd-hi { position: absolute; left: 2px; right: 2px; top: 0; border-radius: 12px; background: rgba(255,255,255,0.08); pointer-events: none;
+                  transition: transform .2s var(--ease), opacity .15s ease; }
+        .cmd-it[aria-disabled] { opacity: 0.45; cursor: default; }
+        .cmd-grp { padding: 10px 12px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; }
+        .cmd-it { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 6px 12px; border: 0; border-radius: 12px; background: none;
+                  font: inherit; color: var(--c-ink-hi); text-align: left; cursor: pointer; }
+        .cmd-it > .msym { width: 22px; flex: none; font-size: 19px; color: #aab1b8; }
+        .cmd-it.on > .msym { color: var(--c-ink-hi); }
+        .cmd-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .cmd-t b { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cmd-t small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cmd-go { flex: none; font-size: 16px; color: #8e969e; opacity: 0; transition: opacity .15s ease; }
+        .cmd-it.on .cmd-go { opacity: 1; }
+        .cmd-none { margin: 0; padding: 22px 14px; font-size: 13px; color: #8e969e; }
+        .cmd-foot { display: flex; gap: 16px; flex: none; padding: 8px 14px 4px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11.5px; color: #8e969e; }
         .undo-note .un-b:hover { background: rgba(255,255,255,0.16); }
         /* the names of the columns over the rows of the Coins / Stocks card */
         .bd-head span { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--c-mute); text-align: right; white-space: nowrap; }
@@ -28981,6 +29661,33 @@ export default function PnlCalendar() {
         .trash-btn:hover { background: var(--c-red-pale) !important; border-color: var(--c-red-pale) !important; color: #111 !important; }
         .trash-lid { transition: transform .25s cubic-bezier(0.34, 1.4, 0.64, 1); transform-box: fill-box; transform-origin: 15% 85%; }
         .trash-btn:hover .trash-lid { transform: rotate(-26deg) translate(-1.5px, -1px); }
+        /* the same bin at a list row's size (Health's to-dos, shopping, classes, notes) */
+        button.bin-sm { width: 28px; height: 26px; padding: 0; flex: none; border-radius: 8px; border: 1px solid rgba(255,93,108,0.28);
+                        background: rgba(255,93,108,0.06); color: #ff8d97; font-size: 0; cursor: pointer; }
+        /* a row's bin waits for the pointer, and the row's tools make room for it (4 November 2026, his words: "i want the delete
+           buton to be hidden, and shows up when hovering over that button. the other butons shift left and right. make this
+           animation smooth and seamless"). At rest the tools stand over the bin's place (translate by --bs: the bin's width
+           and the gap before it), so no hole is left; with the pointer on the row (or focus in it, or its category list open)
+           they slide left and the bin grows in where they stood. Going, the bin goes first and the tools close over its place.
+           Only translate, transform and opacity move; translate leaves each tool's own transform (a press) alone */
+        .entry-row, .hl-todo { --bs: 40px; }
+        .hl-ca-row { --bs: 38px; }
+        .hl-nt-it { --bs: 30px; }
+        .hl-shp-head { --bs: 36px; }
+        :is(.entry-row, .hl-todo, .hl-ca-row, .hl-nt-it, .hl-shp-head) > .trash-btn, .hl-lf .hl-lf-x, .hl-as-pic .hl-nt-x {
+          opacity: 0; transform: scale(0.55); pointer-events: none;
+          transition: opacity .14s ease, transform .24s var(--ease), background .18s ease, border-color .18s ease, color .18s ease; }
+        :is(.entry-row, .hl-todo, .hl-ca-row, .hl-nt-it, .hl-shp-head):is(:hover, :focus-within) > .trash-btn, .entry-row:has(.cat-pop) > .trash-btn,
+        .hl-lf:is(:hover, :focus-within) .hl-lf-x, .hl-as-pic:is(:hover, :focus-within) .hl-nt-x {
+          opacity: 1; transform: none; pointer-events: auto;
+          transition: opacity .22s ease .08s, transform .38s var(--ease) .04s, background .18s ease, border-color .18s ease, color .18s ease; }
+        .entry-row > :is(.note-btn, .span-btn, .parts-btn, .side-chip, .bin-sh), .hl-todo > .hl-tags, .hl-ca-row > :is(.hl-ca-kind, .hl-ca-ed),
+        .hl-nt-it > .hl-nt-star, .hl-shp-head > :is(.hl-tag, .bk-btn) {
+          translate: var(--bs) 0;
+          transition: translate .34s var(--ease) .05s, background .18s ease, background-color .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease, transform .22s var(--ease); }
+        :is(.entry-row, .hl-todo, .hl-ca-row, .hl-nt-it, .hl-shp-head):is(:hover, :focus-within) > :is(.note-btn, .span-btn, .parts-btn, .side-chip, .bin-sh, .hl-tags, .hl-ca-kind, .hl-ca-ed, .hl-nt-star, .hl-tag, .bk-btn),
+        .entry-row:has(.cat-pop) > .bin-sh {
+          translate: none; transition: translate .36s var(--ease), background .18s ease, background-color .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease, transform .22s var(--ease); }
         .plus-btn span { display: inline-block; transition: transform .18s ease; }
         .plus-btn:hover span { transform: scale(1.25); }
         .draw-btn { display: inline-flex; align-items: center; justify-content: center; }
@@ -29723,6 +30430,10 @@ export default function PnlCalendar() {
                  background: rgba(255,255,255,0.025); border: 1px solid transparent; }
         .wd-go:hover { color: #ffffff; background: var(--lg-lens); border-color: rgba(255,255,255,0.14); }
         .wd-go .msym { font-size: 16px; }
+        /* on Home a widget's ↗ (and only the ↗: a +, a pencil, a swap stay in sight) shows while the pointer is on the widget
+           (or it is tabbed to): its title opens the same page (4 November 2026: fewer buttons) */
+        .dg-cell .wd-go.open { opacity: 0; transition: opacity .18s ease, color .16s ease, background-color .16s ease, border-color .16s ease; }
+        .dg-cell:hover .wd-go.open, .dg-cell .wd-go.open:focus-visible { opacity: 1; }
         .wd-big, .wd-big * { font-family: system-ui, -apple-system, 'Inter', sans-serif; }
         .wd-big { font-weight: 700; font-stretch: 125%; letter-spacing: -0.02em; line-height: 1.08; color: var(--c-ink-hi); font-variant-numeric: tabular-nums;
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; font-size: clamp(20px, calc(var(--u) * 0.27), 30px); }
@@ -29746,6 +30457,11 @@ export default function PnlCalendar() {
                   font: inherit; font-size: 12.5px; font-weight: 600; color: light-dark(#17191d, #ffffff); background: var(--wc); }
         .wd-btn .msym { font-size: 17px; margin-left: -3px; }
         .wd-btn:hover { background: color-mix(in srgb, var(--wc) 84%, #ffffff); }
+        /* on Home a widget's own button is tinted, not filled: the toolbar's Log is the one filled button there, so the board
+           reads as information with one way to act on it (4 November 2026: fewer buttons, one primary) */
+        .dg-cell .wd-btn { color: color-mix(in srgb, var(--wc) 70%, var(--c-ink-hi)); background: color-mix(in srgb, var(--wc) 15%, transparent);
+                           box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wc) 26%, transparent); transition: background-color .16s ease; }
+        .dg-cell .wd-btn:hover { background: color-mix(in srgb, var(--wc) 25%, transparent); }
         .wd-end { margin-top: auto; display: flex; }
         .wd-balin { display: flex; align-items: center; gap: 8px; flex: none; }
         .wd-balin input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.25);
@@ -30558,6 +31274,9 @@ export default function PnlCalendar() {
         .hl-title > .tt { margin-left: -3px; }
         @keyframes hlTitleIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .hl-nav { position: relative; }
+        .hl-day-btn { display: inline-grid; justify-items: center; font-variant-numeric: tabular-nums; }
+        .hl-day-btn > span { grid-area: 1 / 1; }
+        .hl-day-btn > span[aria-hidden] { visibility: hidden; }
         .hl-today-hint { position: absolute; left: 50%; top: calc(100% + 10px); z-index: 20; padding: 7px 12px; border-radius: 10px; white-space: nowrap; pointer-events: none;
                    font-size: 12px; font-weight: 600; color: var(--c-ink-2); background: #1c1f23; transform: translateX(-50%);
                    box-shadow: 0 10px 26px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09);
@@ -30743,6 +31462,11 @@ export default function PnlCalendar() {
         .hl-ask { display: inline-flex; flex-wrap: wrap; gap: 6px; animation: hlFormIn .22s var(--ease) backwards; }
         .hl-tt-head b i { display: block; margin-top: 1px; font-style: normal; font-size: 13px; font-weight: 700; letter-spacing: 0; color: var(--c-ink-2); }
         .hl-tt-head b.now i { color: #a8e1ff; }
+        .hl-tt-due { display: flex; align-items: center; justify-content: center; gap: 2px; width: fit-content; max-width: 100%; height: 18px; margin: 4px auto 0; padding: 0 6px 0 4px;
+                     border: none; border-radius: 6px; background: rgba(242,165,230,0.16); color: #f2a5e6; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700;
+                     letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; white-space: nowrap; transition: background-color .16s ease; }
+        .hl-tt-due:hover { background: rgba(242,165,230,0.28); }
+        .hl-tt-due .msym { font-size: 12px; font-variation-settings: 'FILL' 1; }
         .hl-cls { touch-action: none; }
         /* while dragged, where it will land is a pill above the block, never over its words (overflow shows for that) */
         .hl-cls.drag { z-index: 6; cursor: grabbing; overflow: visible; box-shadow: inset 3px 0 0 var(--c), 0 14px 30px rgba(0,0,0,0.45); opacity: 0.95; }
@@ -30774,9 +31498,27 @@ export default function PnlCalendar() {
         :is(.hl-form-go, .hl-lib-ed-go) .hl-save { padding: 0 calc(var(--hb) * 0.6); }
         :is(.hl-form-go, .hl-ask, .hl-mv-ask, .hl-lib-ed-go) .msym { margin: 0; vertical-align: baseline; font-size: 17px; }
         .hl-form-go .hl-form-notes, .hl-mv-ask .hl-mv-x { width: var(--hb); padding: 0; }
-        .hl-nt { position: relative; display: flex; flex-direction: column; gap: 12px; width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - 64px));
+        .hl-nt { position: relative; display: flex; flex-direction: column; gap: 12px; width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - max(40px, 10vh) - 24px));
                  padding: 22px 18px 14px; border-radius: 28px; overflow: hidden; }
         .hl-nt .fx-head { padding-bottom: 2px; }
+        /* the timetable form's Class / Event switch, as tall as the name beside it; and the list of every class and event (HlClsAll) */
+        .hl-form .hl-kind { flex: none; height: 34px; box-sizing: border-box; }
+        .hl-form .hl-kind button { padding: 0 12px; font-size: 12.5px; }
+        .hl-ca { width: min(620px, calc(100vw - 48px)); }
+        .hl-ca .hl-nt-body { gap: 2px; }
+        .hl-ca-say { padding: 0 4px 8px; font-size: 12px; line-height: 1.4; color: #8e969e; }
+        .hl-ca-none { padding: 18px 4px; font-size: 13px; color: #8e969e; }
+        .hl-ca-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 4px 6px 10px; border-radius: 12px; transition: background-color .16s ease; }
+        .hl-ca-row:hover { background: rgba(255,255,255,0.05); }
+        .hl-ca-dot { width: 10px; height: 10px; flex: none; border-radius: 3px; background: var(--c); }
+        .hl-ca-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .hl-ca-txt b { font-size: 13.5px; font-weight: 600; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hl-ca-txt small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        .hl-ca-kind { flex: none; }
+        .hl-ca .hl-ca-ed { width: 30px; height: 30px; opacity: 0.6; }
+        .hl-ca .hl-ca-ed .msym { font-size: 17px; }
+        .hl-ca-row:hover .hl-ca-ed, .hl-ca-ed:focus-visible { opacity: 1; }
+        .hl-ca .hl-lib-edit { margin: 4px 0; }
         .hl-nt-hd { position: relative; min-width: 0; padding-left: 14px; }
         .hl-nt-hd::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 4px; border-radius: 4px; background: var(--c); }
         .hl-nt-name { font-size: 19px; font-weight: 700; line-height: 1.2; color: var(--c-ink-hi); overflow-wrap: anywhere; }
@@ -30819,8 +31561,6 @@ export default function PnlCalendar() {
         .hl-nt-star:hover { color: #f0d88a; background: rgba(240,216,138,0.10); }
         .hl-nt-star.on { color: #f0d88a; }
         .hl-nt-star.on .msym { font-variation-settings: 'FILL' 1; }
-        .hl-nt-x { opacity: 0; }
-        .hl-nt-it:hover .hl-nt-x, .hl-nt-x:focus-visible { opacity: 1; }
         .hl-nt-x:hover { color: #ff9aa3; background: rgba(255,93,108,0.12); }
         .hl-nt-none { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 20px 22px; text-align: center; }
         .hl-nt-none .msym { font-size: 30px; color: #6f777f; }
@@ -30872,7 +31612,6 @@ export default function PnlCalendar() {
         .hl-lf-about:hover { background: rgba(255,255,255,0.055); }
         .hl-lf-about:focus { background: rgba(24,27,31,0.62); border-color: rgba(255,255,255,0.4); }
         .hl-lf-x { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; }
-        .hl-lf:hover .hl-lf-x, .hl-lf-x:focus-visible { opacity: 1; }
         .hl-nt .fx-foot { flex: none; }
         .hl-nt-say { color: #f0d88a; animation: fadeIn .3s ease backwards; }
         .hl-nt-drop { position: absolute; inset: 10px; z-index: 5; border-radius: 22px; border: 2px dashed color-mix(in srgb, var(--c) 70%, #ffffff); background: rgba(10,12,14,0.6);
@@ -30916,8 +31655,12 @@ export default function PnlCalendar() {
         .hl-as-wt { flex: none; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #f6c7ee; background: rgba(242,165,230,0.13); }
         .hl-as-pop { width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - max(40px, 8vh) - 24px)); }
         /* the middle scrolls (the head and the foot stay), so a long brief in the notes never squeezes the rest */
-        .hl-as-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; margin: 0 -8px; padding: 4px 8px 6px; }
-        .hl-as-body .hl-nt-list { flex: none; overflow: visible; }
+        .hl-as-body, .hl-nt-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; margin: 0 -8px; padding: 4px 8px 6px; }
+        .hl-as-body .hl-nt-list, .hl-nt-body .hl-nt-list { flex: none; overflow: visible; }
+        /* a class's and a lesson's notes (4 November 2026, his picture: the pop-up ran off the screen, the files could not be
+           scrolled to and the description slid under the link line): the description, the line and the files scroll as one,
+           none of them squeezed, between the head and the foot */
+        .hl-nt-body > * { flex: none; }
         .hl-as-smart { display: flex; flex-direction: column; gap: 6px; flex: none; }
         .hl-as-read.tp-line { height: 44px; padding: 0 8px 0 14px; }
         .hl-as-read .msym { color: #f2a5e6; }
@@ -30994,7 +31737,6 @@ export default function PnlCalendar() {
                         background: rgba(255,255,255,0.04); cursor: zoom-in; }
         .hl-as-pic-go img, .hl-as-pic-go canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
         .hl-as-pic .hl-nt-x { position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; background: rgba(10,12,14,0.62); color: #e8eaec; }
-        .hl-as-pic:hover .hl-nt-x { opacity: 1; }
         .hl-as-none { padding: 14px 20px 10px; }
         .hl-due { position: absolute; left: -2px; right: -2px; height: 16px; margin-top: -8px; padding: 0; border: none; background: none; z-index: 3; cursor: pointer;
                   animation: hlDueIn .45s var(--ease) backwards; }
@@ -31029,7 +31771,6 @@ export default function PnlCalendar() {
         .hl-diet-say { font-size: 11.5px; color: #8e969e; }
         .hl-diet-say b { color: #ffcf7a; }
         .hl-goal-line.diet { border-top-color: rgba(255,170,90,0.6); }
-        .hl-goal-line.diet i { left: auto; right: 2px; color: #ffcf7a; }
         .hl-month-grid { position: relative; }
         .hl-mtip { position: absolute; z-index: 20; transform: translate(-50%, calc(-100% - 8px)); display: flex; flex-direction: column; gap: 5px; min-width: 196px; padding: 10px 12px;
                    border-radius: 12px; background: #1c1f23; box-shadow: 0 12px 30px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.09); pointer-events: none; animation: fadeIn .14s ease backwards; }
@@ -31173,11 +31914,23 @@ export default function PnlCalendar() {
         .hl-stats b { color: #eef1f4; font-weight: 700; font-variant-numeric: tabular-nums; }
         .hl-good { color: #ffaf7a; display: inline-flex; align-items: center; gap: 3px; }
         .hl-good .msym { font-size: 16px; }
-        .hl-bars { position: relative; display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; height: 170px; margin: 18px 0 6px; padding-bottom: 20px; }
-        .hl-goal-line { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
-        .hl-goal-line i { position: absolute; left: 2px; top: -17px; font-style: normal; font-size: 10.5px; color: #9cf0c8; font-variant-numeric: tabular-nums; }
-        .hl-bar { position: relative; display: flex; flex-direction: column; justify-content: flex-end; padding: 0; border: none; background: none; cursor: pointer; }
-        .hl-bar-col { position: relative; flex: 1; display: flex; align-items: flex-end; border-radius: 7px; background: rgba(255,255,255,0.025); }
+        /* the steps bars (4 November 2026): the words of the lines in a column on the left; the bars scroll sideways under the
+           lines, fourteen days in view (100cqw: the scroller's width, less its 13 gaps), snapped to whole days. The 22px on top
+           of the scroller is room for the tallest bar's figure, which the scroller would otherwise cut off */
+        .hl-bars { --plot: 150px; position: relative; display: flex; gap: 8px; height: 192px; margin: 0 0 6px; }
+        .hl-bars-key { position: relative; flex: none; width: 52px; }
+        .hl-goal-key { position: absolute; right: 0; transform: translateY(50%); display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2;
+                       color: #9cf0c8; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
+        .hl-goal-key small { font-size: 9.5px; opacity: 0.8; }
+        .hl-goal-key b { font-size: 10.5px; font-weight: 600; }
+        .hl-goal-key.diet { color: #ffcf7a; }
+        .hl-goal-line { position: absolute; left: 56px; right: 0; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
+        .hl-bars-sc { position: relative; flex: 1; min-width: 0; padding-top: 22px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+                      scroll-snap-type: x mandatory; container-type: inline-size; }
+        .hl-bars-sc::-webkit-scrollbar { display: none; }
+        .hl-bars-tr { display: grid; grid-auto-flow: column; grid-auto-columns: calc((100cqw - 78px) / 14); gap: 6px; width: max-content; height: 170px; box-sizing: border-box; padding-bottom: 20px; }
+        .hl-bar { position: relative; display: flex; flex-direction: column; justify-content: flex-end; padding: 0; border: none; background: none; cursor: pointer; scroll-snap-align: start; }
+        .hl-bar-col { position: relative; flex: 1; display: flex; align-items: flex-end; border-radius: 7px; background: rgba(255,255,255,0.025); transition: box-shadow .25s ease; }
         .hl-bar-col > i { display: block; width: 100%; border-radius: 7px; background: linear-gradient(180deg, rgba(47,208,138,0.55), rgba(47,208,138,0.22));
                           transform-origin: 50% 100%; animation: cbarUp .55s var(--ease) backwards; }
         .hl-bar.met .hl-bar-col > i { background: linear-gradient(180deg, #9cf0c8, #2fd08a); box-shadow: 0 0 14px rgba(47,208,138,0.35); }
@@ -31189,7 +31942,7 @@ export default function PnlCalendar() {
         .hl-bar-col em { position: absolute; left: 50%; bottom: calc(var(--h, 100%) + 4px); transform: translateX(-50%); z-index: 3; padding: 1px 5px; border-radius: 6px; background: rgba(24,27,31,0.88);
                          font-style: normal; font-size: 10px; color: #c7cdd2; white-space: nowrap; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
         .hl-bar:hover .hl-bar-col em, .hl-bar.sel .hl-bar-col em { opacity: 1; }
-        .hl-bar-d { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; font-size: 10.5px; color: #6f777f; }
+        .hl-bar-d { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; font-size: 10.5px; color: #6f777f; transition: color .25s ease; }
         .hl-bar.sel .hl-bar-d { color: #eef1f4; font-weight: 700; }
         .hl-month { margin-top: 22px; }
         .hl-month-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
@@ -31217,7 +31970,7 @@ export default function PnlCalendar() {
         .hl-slp-top { position: relative; display: flex; align-items: center; gap: 20px; }
         .hl-slp-ring { width: 120px; height: 120px; flex: none; transform: rotate(-90deg); }
         .hl-slp-ring circle { fill: none; stroke: rgba(183,164,230,0.12); stroke-width: 7; }
-        .hl-slp-ring circle.on { stroke: #b7a4e6; stroke-linecap: round; animation: hlSlpIn .9s var(--ease) backwards; }
+        .hl-slp-ring circle.on { stroke: #b7a4e6; stroke-linecap: round; animation: hlSlpIn .9s var(--ease) backwards; transition: stroke-dashoffset .6s var(--ease); }
         @keyframes hlSlpIn { from { stroke-dashoffset: var(--c0); } }
         .hl-slp-n { position: absolute; left: 0; top: 50%; width: 120px; transform: translateY(-50%); text-align: center; font-size: 32px; font-weight: 800; color: #eef1f4; font-variant-numeric: tabular-nums; }
         .hl-slp-say { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -31240,14 +31993,16 @@ export default function PnlCalendar() {
         .hl-slp-feel button.on .msym { font-variation-settings: 'FILL' 1; }
         .hl-slp-feel button:disabled { cursor: default; opacity: 0.4; }
         .hl-slp-mo { display: flex; flex-direction: column; gap: 9px; padding: 18px 16px 14px; min-width: 0; background: rgba(183,164,230,0.05); border-left: 1px solid rgba(255,255,255,0.05); }
-        .hl-slp-fig { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+        .hl-slp-figs { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 9px; align-items: baseline; min-width: 0; }
+        .hl-slp-fig { display: contents; }
         .hl-slp-fig b { font-size: 19px; font-weight: 700; color: #eef1f4; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .hl-slp-fig b.msym { font-size: 22px; font-weight: normal; color: #d6c9ff; align-self: center; }
+        .hl-slp-fig b.msym { font-size: 22px; font-weight: normal; color: #d6c9ff; align-self: center; justify-self: start; margin-left: -2px; }
+        .hl-slp-fig b.msym + small { align-self: center; }
         .hl-slp-fig small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hl-slp-bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; margin-top: auto; padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer; width: 100%;
                        transition: background-color .16s ease; }
         .hl-slp-bars:hover { background: rgba(183,164,230,0.07); }
-        .hl-slp-bars i { flex: 1; min-width: 2px; border-radius: 2px; background: rgba(183,164,230,0.5); }
+        .hl-slp-bars i { flex: 1; min-width: 2px; border-radius: 2px; background: rgba(183,164,230,0.5); transition: background-color .25s ease; }
         .hl-slp-bars i.low { background: rgba(255,154,163,0.55); }
         .hl-slp-bars i.sel { background: #d6c9ff; }
         .hl-slp-n2 { font-size: 10.5px; color: #6f777f; }
@@ -31304,7 +32059,9 @@ export default function PnlCalendar() {
         .hl-mday { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 0 3px; border: none; border-radius: 10px; background: none; cursor: pointer;
                    transition: background .18s ease; }
         .hl-mday:hover { background: rgba(255,255,255,0.05); }
-        .hl-mday.sel { background: rgba(255,255,255,0.08); }
+        .hl-mday.sel, .hl-mday.sel:hover { background: none; }
+        .hl-msel { position: absolute; left: 0; top: 0; border-radius: 10px; background: rgba(255,255,255,0.08); pointer-events: none; opacity: 0;
+                   transition: transform .34s var(--ease-soft), opacity .2s ease; }
         .hl-mday svg { width: 38px; height: 38px; }
         .hl-mday i { font-style: normal; font-size: 10.5px; color: #8e969e; font-variant-numeric: tabular-nums; }
         .hl-mday.today i { color: #a8e1ff; font-weight: 700; }
@@ -31412,7 +32169,7 @@ export default function PnlCalendar() {
         .hl-gym-cols { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 18px; align-items: start; }
         .hl-gym-cols:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
         .hl-sessions { display: flex; flex-direction: column; gap: 4px; }
-        .hl-sess { border-radius: 12px; background: rgba(255,255,255,0.03); animation: fadeRight .34s ease backwards; transition: background .2s ease; }
+        .hl-sess { border-radius: 12px; background: rgba(255,255,255,0.03); animation: fadeRight .34s ease backwards; transition: background .2s ease, box-shadow .25s ease; }
         .hl-sess.sel { box-shadow: inset 3px 0 0 #e2808c; }
         .hl-sess.open { background: rgba(255,255,255,0.055); }
         .hl-sess-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 6px 12px; border: none; background: none; cursor: pointer; text-align: left; color: #c7cdd2; font-size: 13px; }
@@ -31457,6 +32214,7 @@ export default function PnlCalendar() {
                        background: #22262a; box-shadow: 0 8px 18px rgba(0,0,0,0.4); opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .18s ease, transform .2s var(--ease); }
         .hl-bi:hover .hl-bi-tools, .hl-bi:focus-within .hl-bi-tools { opacity: 1; transform: translateY(0); pointer-events: auto; }
         .hl-bi-tools .hl-bi-del, .hl-bi-tools .hl-bi-open { width: 24px; height: 24px; padding: 0; border: none; border-radius: 7px; background: none; color: #8a9299; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .hl-bi-tools .hl-bi-del { color: #ff8d97; }
         .hl-bi-tools .hl-bi-del:hover { color: #ff8d97; background: rgba(255,93,108,0.12); }
         .hl-bi-tools .hl-bi-open:hover { color: #eef1f4; background: rgba(255,255,255,0.08); }
         .hl-bi-tools .msym { font-size: 16px; }
@@ -32030,7 +32788,7 @@ export default function PnlCalendar() {
             </span>
           </div>
 
-          <div data-mv="" style={{ display: "grid", gridTemplateRows: showIncomeList ? "1fr" : "0fr", transition: "grid-template-rows .28s cubic-bezier(0.4, 0, 0.2, 1)" }}>
+          <div data-mv="" style={{ display: "grid", gridTemplateRows: showIncomeList ? "1fr" : "0fr", transition: "grid-template-rows .28s cubic-bezier(0.4, 0, 0.2, 1)" }} ref={(el) => { if (el) el.inert = !showIncomeList; }}>
             <div style={S.fold}>
               <div className="glass-soft" style={{ ...S.incomeList, opacity: showIncomeList ? 1 : 0, transform: showIncomeList ? "translateY(0)" : "translateY(-10px)", transition: "opacity .25s ease, transform .25s ease" }}>
                 {monthIncomes.length === 0 ? (
@@ -32242,7 +33000,11 @@ export default function PnlCalendar() {
                         <div style={{ display: "flex",
                           animation: removing[it.id] === true ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${90 + idx * 45}ms backwards`,
                           transformOrigin: "center center" }}>
-                          <div className="entry-row glass-soft inc" style={S.entryRow}>
+                          <div className="entry-row glass-soft inc" style={S.entryRow}
+                               onContextMenu={(e) => { if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return; openCtx(e, [
+                                 { icon: "edit_note", text: it.note ? "Details" : "Add details", run: () => setNoteOpen(noteOpen === it.id ? null : it.id) },
+                                 { icon: "date_range", text: "Split across months", run: () => setSpanOpen(spanOpen === it.id ? null : it.id) }, null,
+                                 { icon: "delete", text: "Delete", danger: true, run: () => deleteIncome(it.id) }]); }}>
                             <span className="row-grab" title="Drag up or down to reorder, or onto another day to move it" onMouseDown={stopDown}
                                   onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "inc", day: selected, drop: (to) => moveApi.current.drop("inc", it.id, to), order: (k) => moveApi.current.order("inc", it.id, k) })}><span className="msym" aria-hidden="true">drag_indicator</span></span>
                             <RowAmt aria-label="Income amount" style={{ ...S.entryAmt, color: "#3ddc97" }} inputMode="numeric" isMYR={isMYR} shown={dispStr(it.amount)}
@@ -32322,14 +33084,20 @@ export default function PnlCalendar() {
                           animation: removing[it.id] === true ? "popOutCenter .24s ease both" : `fadeDown .25s ease ${160 + idx * 45}ms backwards`,
                           transformOrigin: "center center" }}>
                           {it.zero ? (
-                          <div className="entry-row glass-soft nospend-row" style={S.entryRow}>
+                          <div className="entry-row glass-soft nospend-row" style={S.entryRow}
+                               onContextMenu={(e) => openCtx(e, [{ icon: "delete", text: "Remove no-spend mark", danger: true, run: () => deleteExpense(it.id) }])}>
                             <span className="msym" style={{ fontSize: 19, color: "#8fd7a4", marginLeft: 4 }}>do_not_disturb_on</span>
                             <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "#c9f2dd" }}>No spend day</span>
-                            <span style={{ fontSize: 12, color: "#8fd7a4", marginRight: 6 }}>+{fmt(dailyLimit)} kept</span>
+                            <span className="bin-sh" style={{ fontSize: 12, color: "#8fd7a4", marginRight: 6 }}>+{fmt(dailyLimit)} kept</span>
                             <button className="trash-btn" style={S.delBtn} onClick={() => deleteExpense(it.id)} title="Remove no-spend mark"><TrashIcon /></button>
                           </div>
                           ) : (
-                          <div className="entry-row glass-soft exp" style={S.entryRow}>
+                          <div className="entry-row glass-soft exp" style={S.entryRow}
+                               onContextMenu={(e) => { if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return; openCtx(e, [
+                                 { icon: "edit_note", text: it.note ? "Details" : "Add details", run: () => setNoteOpen(noteOpen === it.id ? null : it.id) },
+                                 it.parts && { icon: "receipt_long", text: "Items", run: () => setPartsOpen(partsOpen === it.id ? null : it.id) },
+                                 { icon: "category", text: "Category", run: () => setCatMenu({ id: it.id, stage: "cats", closing: false }) }, null,
+                                 { icon: "delete", text: "Delete", danger: true, run: () => deleteExpense(it.id) }]); }}>
                             <span className="row-grab" title="Drag up or down to reorder, or onto another day to move it" onMouseDown={stopDown}
                                   onPointerDown={(e) => rowDrag(e, { grid: calGrid.current, kind: "exp", day: selected, drop: (to) => moveApi.current.drop("exp", it.id, to), order: (k) => moveApi.current.order("exp", it.id, k) })}><span className="msym" aria-hidden="true">drag_indicator</span></span>
                             <RowAmt aria-label="Expense amount" style={{ ...S.entryAmt, color: "#ff5d6c" }} inputMode="numeric" isMYR={isMYR} shown={dispStr(it.amount)}
@@ -32352,7 +33120,7 @@ export default function PnlCalendar() {
                                 <span className="msym" style={{ fontSize: 15 }}>receipt_long</span>{it.parts.length}
                               </button>
                             )}
-                            <span style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+                            <span className="bin-sh" style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
                               <button className="ham-btn" style={S.catBtn} title="Category"
                                       onClick={() => setCatMenu(catMenu && catMenu.id === it.id ? null : { id: it.id, stage: "cats", closing: false })}>
                                 <CatReel cat={resolvedCat(it)} customIcon={symOf(it, resolvedCat(it))} />
@@ -32656,6 +33424,7 @@ export default function PnlCalendar() {
         );
       })()}
       <UndoNote />
+      <CtxMenu />
       {xNote && <XcleanNote key={xNote.at} n={xNote.soon} onDone={() => setXNote(null)} />}
       {!(launched && (view === "trade" || view === "health")) && quickOpen && <QuickLog api={quickApi} cur={cur} isMYR={isMYR} seed={quickSeed} onClose={closeQuick} plain={!launched} />}
       {launched && view !== "trade" && view !== "health" && billOpen && <BillSplit api={billApi} cur={cur} isMYR={isMYR} onClose={closeBill} />}
@@ -32786,6 +33555,7 @@ const S = {
   iconPop: { position: "absolute", bottom: "calc(100% + 8px)", right: -4, borderRadius: 12, padding: 6, display: "grid", gridTemplateColumns: "repeat(6, 32px)", gap: 2, zIndex: 42, boxShadow: "0 12px 28px rgba(0,0,0,0.5)" },
   iconOpt: { background: "none", border: "none", borderRadius: 7, width: 32, height: 30, color: "#9aa3ab", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   delBtn: { background: "rgba(255,93,108,0.06)", border: "1px solid rgba(255,93,108,0.28)", color: "#ff8d97", borderRadius: 10, width: 34, height: 32, padding: 0, cursor: "pointer", flexShrink: 0, marginLeft: 6 },
+  delRound: { background: "rgba(255,93,108,0.06)", border: "1px solid rgba(255,93,108,0.28)", color: "#ff8d97", borderRadius: 99, width: 30, height: 30, padding: 0, cursor: "pointer", flexShrink: 0 },
 
   backdrop: { position: "fixed", inset: 0, background: ld("rgba(0,0,0,0.45)", "rgba(28,36,52,0.28)"), backdropFilter: "blur(10px) saturate(115%)", WebkitBackdropFilter: "blur(10px) saturate(115%)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24 },
   modal: { borderRadius: 20, width: "min(900px, 92vw)", maxHeight: "88vh", overflow: "auto", padding: "20px 22px 18px", transformOrigin: "center center" },

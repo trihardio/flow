@@ -1,11 +1,12 @@
 {
   "name": "flow",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "check": "sh tools/check.sh",
     "preview": "vite preview",
     "app": "vite build && (env -u ELECTRON_RUN_AS_NODE electron . 2>&1 | grep -v -e sandbox_extension_issue_file -e \"Window move completed without beginning\"; true)",
     "dmg": "vite build && electron-builder --mac dmg --arm64",

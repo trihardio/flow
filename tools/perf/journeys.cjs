@@ -1900,8 +1900,23 @@ const devacc = async (c) => {
 // the page is read for text that should never show (NaN, undefined, Infinity, [object, Invalid Date, null) and for
 // text cut off in its box; the run's log also holds every console error. Each press is a step, so `report.cjs hunt`
 // (after --trace) says where the page or the graphics process stood still.
+// Since 4 November 2026 also `over`: two controls (buttons, boxes, links) of the same panel that cover a quarter or more of
+// the smaller one, neither inside the other, both seen (opacity, visibility, pointer). A pop-up over the page is no
+// overlap: the two must share their nearest panel (a card, a pop-up, a widget, a row)
 const HUNT = String.raw`(() => {
-  const host = document.querySelector('.warm-host'), bad = [], cut = [];
+  const host = document.querySelector('.warm-host'), bad = [], cut = [], over = [];
+  const ctl = [...document.querySelectorAll('button, input:not([type=hidden]), select, textarea, a[href], [role=button], [role=switch]')].filter((e) => {
+    if (host && host.contains(e)) return false; const r = e.getBoundingClientRect(); if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) return false;
+    const cs = getComputedStyle(e); if (cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none' || e.closest('[aria-hidden=true], [inert]')) return false;
+    for (let a = e; a && a !== document.body; a = a.parentElement) if (+getComputedStyle(a).opacity < 0.05) return false;   // faded out with a parent
+    return true;
+  }).slice(0, 700).map((e) => ({ e, r: e.getBoundingClientRect(), p: e.parentElement && e.parentElement.closest('[role=dialog], .glass, .flow-card, .wdg, .dg-cell, .entry-row, .ctx, .cmd, .lg-float') }));
+  const nm = (e) => (e.getAttribute('aria-label') || e.title || e.innerText || e.placeholder || e.className || e.tagName).toString().trim().replace(/\s+/g, ' ').slice(0, 24);
+  for (let i = 0; i < ctl.length; i++) for (let j = i + 1; j < ctl.length; j++) {
+    const a = ctl[i], b = ctl[j]; if (a.p !== b.p || a.e.contains(b.e) || b.e.contains(a.e)) continue;
+    const w = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left), h = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+    if (w > 0 && h > 0 && w * h >= 0.25 * Math.min(a.r.width * a.r.height, b.r.width * b.r.height)) over.push(nm(a.e) + ' × ' + nm(b.e));
+  }
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const t = n.nodeValue; if (!t.trim()) continue;
@@ -1911,7 +1926,8 @@ const HUNT = String.raw`(() => {
     if (/NaN|undefined|Infinity|\[object|Invalid Date|\bnull\b/.test(t)) bad.push(t.trim().slice(0, 50));
     if (el.scrollWidth > el.clientWidth + 1 && /hidden|clip/.test(cs.overflowX) && !/ellipsis/.test(cs.textOverflow)) cut.push((el.className && el.className.baseVal === undefined ? String(el.className).split(' ')[0] : el.tagName) + ': ' + t.trim().slice(0, 30));
   }
-  return JSON.stringify({ bad: [...new Set(bad)].slice(0, 6), cut: [...new Set(cut)].slice(0, 6) });
+  const o = { bad: [...new Set(bad)].slice(0, 6), cut: [...new Set(cut)].slice(0, 6) }; if (over.length) o.over = [...new Set(over)].slice(0, 6);
+  return JSON.stringify(o);
 })()`;
 const hunt = async (c) => {
   const side = (process.argv.find((a) => a.startsWith("--side=")) || "--side=finance").slice(7);
@@ -1951,6 +1967,8 @@ const hunt = async (c) => {
   await c.sleep(SPLASH_MS);
   if (await c.js(`!!document.querySelector('.acc-in')`)) {
     await typeName(c, "Flow"); await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+    // the test tools and the Dev account are off for somebody new since 3 November 2026: on, and the page again
+    await c.js(`localStorage.setItem('flow-dev', '1'); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
     await c.press(".who-btn"); await c.sleep(3200);
     await click(`document.querySelector('.acc-tile.dev')`); await c.sleep(3800);
   }
@@ -1985,7 +2003,8 @@ const hunt = async (c) => {
     await st("week-compare", `document.querySelector('.wk-cmp:not(.wk-step)')`, 1300);
     await st("week-forward", `document.querySelectorAll('.wk-cmp.wk-step')[1]`, 1300); await click(`document.querySelectorAll('.wk-cmp.wk-step')[1]`); await c.sleep(1200);
     await go(`document.querySelector('.wp-row')`, 900); c.log("PLANS", await c.js(`JSON.stringify([...document.querySelectorAll('.wp-row')].map((r) => r.innerText.replace(/\\n+/g, ' ')))`));
-    await st("plan-happened", `document.querySelector('.wp-row .wp-do')`, 1600);
+    // (only when the test data planned something this week: it doesn't every week)
+    if (await c.js(`!!document.querySelector('.wp-row .wp-do')`)) await st("plan-happened", `document.querySelector('.wp-row .wp-do')`, 1600);
     await go(`document.querySelectorAll('.flow-label')[1]`, 2400);
     for (const n of [1, 2]) { await st(`category-${n}`, `document.querySelectorAll('.flow-label')[1]`, 1600); await esc(); }
     await go(`document.querySelector('.score-card')`, 2400);
@@ -4590,6 +4609,325 @@ const hlasg = async (c) => {
   await shot("as-6-card", '[data-card="assignments"]');
   c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
+// Fewer buttons (4 November 2026; `--shots --fresh --profile=fewer`): Health with test data; on Home a widget right-clicked
+// (its menu) and ⌘P (the command bar: its groups, a word typed, ↓, Esc); on the day page a class and an empty hour right-
+// clicked, a to-do right-clicked, the week's bar; the menu shut by Esc. What each shows is logged, with stills
+const fewer = async (c) => {
+  const cmdP = async () => { c.wc.sendInputEvent({ type: "keyDown", keyCode: "P", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "char", keyCode: "p", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "P", modifiers: ["control"] }); await c.sleep(700); };
+  const rclick = (sel, fx = 0.5, fy = 0.5) => c.js(`(() => { const e = ${sel}; if (!e) return 'not found'; e.scrollIntoView({ block: 'center', behavior: 'instant' }); const r = e.getBoundingClientRect();
+    e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + r.width * ${fx}, clientY: r.top + r.height * ${fy} })); return 'sent'; })()`);
+  const menu = () => c.js(`(() => { const m = document.querySelector('.ctx'); if (!m) return 'no menu'; const r = m.getBoundingClientRect();
+    return JSON.stringify({ items: [...m.querySelectorAll('.ctx-it')].map((b) => b.innerText.replace(/\\s+/g, ' ')), inWin: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, focus: document.activeElement?.className }); })()`);
+  const bar = () => c.js(`(() => { const m = document.querySelector('.cmd'); if (!m) return 'no bar'; const it = [...m.querySelectorAll('.cmd-it')];
+    return JSON.stringify({ groups: [...m.querySelectorAll('.cmd-grp')].map((g) => g.innerText), n: it.length, first: it.slice(0, 5).map((b) => b.innerText.replace(/\\s+/g, ' ')), on: m.querySelector('.cmd-it.on')?.innerText.replace(/\\s+/g, ' '), hi: document.querySelector('.cmd-hi')?.style.transform }); })()`);
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-dev', '1'); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  const p2 = (n) => String(n).padStart(2, "0"), d0 = new Date(), today = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}`;
+  const data = { classes: [{ id: "c1", name: "BTW1042: Tutorial 10", room: "MA 93", dow: (d0.getDay() + 6) % 7, from: "10:00", to: "12:00", tint: 1 }],
+    clsLib: [{ name: "BTW1042: Tutorial 10", room: "MA 93", tint: 1 }], todos: [{ id: "t1", text: "Read chapter 4", from: today, rep: "daily", done: {}, skip: {} }] };
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); true`);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(800);
+  c.log("HOME GO VISIBLE", await c.js(`JSON.stringify([...document.querySelectorAll('.dg-cell .wd-go')].slice(0, 3).map((b) => getComputedStyle(b).opacity))`));
+  c.log("RCLICK WIDGET", await rclick(`document.querySelector('.dg-cell')`, 0.5, 0.6)); await c.sleep(400);
+  c.log("WIDGET MENU", await menu()); if (c.shots) await c.shot("fw-1-widget-menu");
+  c.key("Escape"); await c.sleep(400); c.log("AFTER ESC", await menu());
+  await cmdP(); c.log("BAR", await bar()); if (c.shots) await c.shot("fw-2-bar");
+  await c.js(`(() => { const i = document.querySelector('.cmd-in input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'class'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(400);
+  c.key("Down"); await c.sleep(300);
+  c.log("BAR 'class' ↓", await bar()); if (c.shots) await c.shot("fw-3-bar-typed");
+  c.key("Escape"); await c.sleep(600); c.log("BAR AFTER ESC", await bar());
+  await c.hlDay();
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
+  c.log("WEEK BAR", await c.js(`JSON.stringify([...document.querySelectorAll('[data-card="week"] .hl-scan-bar .hl-ibtn')].map((e) => e.getAttribute('aria-label')))`));
+  c.log("RCLICK CLASS", await rclick(`document.querySelector('.hl-cls')`)); await c.sleep(400);
+  c.log("CLASS MENU", await menu()); if (c.shots) await c.shot("fw-4-class-menu");
+  c.key("Escape"); await c.sleep(400);
+  c.log("RCLICK HOUR", await rclick(`document.querySelectorAll('.hl-tt-day')[6]`, 0.5, 0.15)); await c.sleep(400);
+  c.log("HOUR MENU", await menu()); if (c.shots) await c.shot("fw-5-hour-menu");
+  c.key("Escape"); await c.sleep(400);
+  await cmdP(); c.log("BAR ON DAY", await bar()); c.key("Escape"); await c.sleep(600);
+  c.log("RCLICK TODO", await rclick(`document.querySelector('.hl-todo')`)); await c.sleep(400);
+  c.log("TODO MENU", await menu()); c.key("Escape"); await c.sleep(300);
+  c.log("TODO X", await c.js(`(() => { const x = document.querySelector('.hl-todo > .hl-x'); return x ? getComputedStyle(x).opacity : 'none'; })()`));
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// Every bin in sight (4 November 2026, his words: "the changes you made hid ALL of the trash button on all ui";
+// `--shots --fresh --profile=bins`): test data on finance and crypto, made-up Health data (classes, to-dos, a shopping list),
+// and on each screen every button that deletes or removes, with its own opacity at rest (the pointer on none of them).
+// Since the same evening a row's bin waits for the pointer and the row's tools slide aside for it: per row (`look`) the bin's
+// opacity and right edge and the last tool's right edge and translate, at rest (the tool over the bin's place: no hole),
+// hovered (the tool a bin's width to the left, the bin at 1) and left again, with stills at rest, 60, 140, 240ms and hovered
+const bins = async (c) => {
+  const scan = (name) => c.js(`(() => { const g = {};
+    for (const b of document.querySelectorAll('button')) { const r = b.getBoundingClientRect(); if (!r.width || !r.height) continue;
+      const t = ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')).trim();
+      const kind = b.querySelector('.trash-lid') ? 'bin' : /^(delete|remove|take .* off)/i.test(t) ? 'del' : b.matches('.jr-dots, .span-btn, .wd-go, .fx-del, .jr-shot-x') ? 'tool' : null;
+      if (!kind) continue;
+      const k = kind + ' ' + [...b.classList].filter((x) => !/^(on|has)$/.test(x)).join('.'); (g[k] ||= []).push(+getComputedStyle(b).opacity); }
+    return JSON.stringify(Object.fromEntries(Object.entries(g).map(([k, v]) => [k, v.length + '× ' + [...new Set(v)].join('/')]))); })()`).then((v) => c.log("SCAN " + name, v));
+  const away = () => c.wc.sendInputEvent({ type: "mouseMove", x: 2, y: 2 });
+  const look = async (name, rowSel, toolSel) => {
+    const at = await c.js(`(() => { const r = document.querySelector(${JSON.stringify(rowSel)}); if (!r) return null; r.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const b = r.getBoundingClientRect(); return { x: Math.round(b.left + Math.min(60, b.width * 0.2)), y: Math.round(b.top + b.height / 2), r: { x: Math.floor(b.left) - 4, y: Math.floor(b.top) - 4, width: Math.ceil(b.width) + 8, height: Math.ceil(b.height) + 8 } }; })()`);
+    if (!at) { c.log(name, "no row"); return; }
+    away(); await c.sleep(700);
+    const m = () => c.js(`(() => { const r = document.querySelector(${JSON.stringify(rowSel)}), bin = r.querySelector(':scope > .trash-btn'), t = r.querySelector(${JSON.stringify(toolSel)});
+      const rb = bin.getBoundingClientRect(), rt = t && t.getBoundingClientRect();
+      return JSON.stringify({ bin: +(+getComputedStyle(bin).opacity).toFixed(2), binR: Math.round(rb.right), toolR: rt ? Math.round(rt.right) : '-', translate: t ? getComputedStyle(t).translate : '-' }); })()`);
+    c.log(name, "REST", await m()); if (c.shots) await c.shot(`slide-${name}-0rest`, at.r);
+    c.wc.sendInputEvent({ type: "mouseMove", x: at.x, y: at.y });
+    let t0 = 0; for (const ms of [60, 140, 240]) { await c.sleep(ms - t0); t0 = ms; if (c.shots) await c.shot(`slide-${name}-${ms}`, at.r); }
+    await c.sleep(500); c.log(name, "HOVER", await m()); if (c.shots) await c.shot(`slide-${name}-9hover`, at.r);
+    away(); await c.sleep(700); c.log(name, "LEFT", await m());
+  };
+  const shotOf = async (name, sel) => { const r = await c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const b = e.getBoundingClientRect();
+    const x = Math.max(0, Math.floor(b.left)), y = Math.max(0, Math.floor(b.top)); return { x, y, width: Math.min(innerWidth - x, Math.ceil(b.width)), height: Math.min(innerHeight - y, Math.ceil(b.height)) }; })()`);
+    if (r && r.width > 0 && r.height > 0) await c.shot(name, r); else c.log("NO SHOT", name); };
+  const flask = async () => { await c.press('button[aria-label="Add test data"]'); await c.sleep(2600); };
+  const home = async () => { await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(400); await c.press(".foot-logo"); await c.sleep(4600); };
+  const top = async () => { await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(900); };
+  const dayRows = async () => { for (const d of [new Date().getDate(), 3, 5, 8, 12, 15, 20, 24]) { await c.press(`.cell[data-day="${d}"]`); await c.sleep(1500); if (await c.js(`document.querySelectorAll('.entry-row').length`)) return d; } return 0; };
+  const p2 = (n) => String(n).padStart(2, "0"), d0 = new Date(), today = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}`;
+  const data = { classes: [{ id: "c1", name: "BTW1042: Tutorial 10", room: "MA 93", dow: (d0.getDay() + 6) % 7, from: "10:00", to: "12:00", tint: 1 },
+                           { id: "c2", name: "Golf Hangout", room: "", dow: (d0.getDay() + 6) % 7, from: "15:00", to: "16:00", tint: 4 }],
+    clsLib: [{ name: "BTW1042: Tutorial 10", room: "MA 93", tint: 1 }],
+    todos: [{ id: "t1", text: "Read chapter 4", from: today, rep: "daily", done: {}, skip: {} }, { id: "t2", text: "Buy a lab coat", from: today, rep: "once", done: {}, skip: {} }],
+    shop: [{ id: "s1", place: "Pharmacy", items: [{ id: "i1", text: "Plasters" }, { id: "i2", text: "Vitamin C" }] }] };
+  const fin = { spending: { [today]: [{ id: "a", amount: 45000, desc: "lunch", cat: "food" }, { id: "b", amount: 18000, desc: "kopi" }] },
+    incomes: { [today.slice(0, 7)]: [{ id: "i", amount: 3000000, desc: "pocket money" }] }, limits: {}, currency: "IDR", goals: [], debts: [], plans: [] };
+  const again = async () => { await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1500); };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-dev', '1'); localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))});
+    localStorage.setItem('pnl-calendar-idr', ${JSON.stringify(JSON.stringify(fin))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  // finance: Home, then today's rows
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await top(); away(); await c.sleep(300);
+  await scan("FINANCE HOME");
+  await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
+  await c.press(".ycell", new Date().getMonth()); await c.sleep(3600);
+  c.log("FINANCE DAY", await dayRows());
+  await c.js(`document.querySelector('.entry-row')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(700); away(); await c.sleep(300);
+  await scan("FINANCE MONTH");
+  await look("expense", ".entry-row.exp", ".bin-sh");
+  await look("income", ".entry-row.inc", ".span-btn");
+  await again();
+  // Health: Home, the day, the class list (his picture), to-dos, shopping
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await top(); away(); await c.sleep(300);
+  await scan("HEALTH HOME");
+  await c.hlDay(); await c.sleep(800);
+  await c.js(`document.querySelector('.hl-todo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(1200); away(); await c.sleep(300);
+  await scan("HEALTH TODOS");
+  await look("todo", ".hl-todo:has(.hl-tags)", ".hl-tags");
+  await c.js(`document.querySelector('[data-card="shopping"]')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(1200); away(); await c.sleep(300);
+  await scan("HEALTH SHOPPING");
+  await look("shop", ".hl-shp-head", ".hl-tag");
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
+  await c.js(`document.querySelector('[aria-label="Classes and events"]').click()`); await c.sleep(900); away(); await c.sleep(300);
+  await scan("CLASS LIST");
+  await look("class", ".hl-ca-row", ".hl-ca-ed");
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// A tour for a design pass (4 November 2026; `--shots --fresh --profile=uitour`): test data on finance, crypto and Health, and
+// a still of each one's Home, its month (finance, crypto) or day page (Health) and the cards under it. Nothing pressed beyond
+// the way in and the flask. `--only=finance|crypto|health` does one side
+const uitour = async (c) => {
+  const only = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7);
+  const flask = async () => { await c.press('button[aria-label="Add test data"]'); await c.sleep(2600); };
+  const home = async () => { await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(400); await c.press(".foot-logo"); await c.sleep(4600); };
+  const top = async () => { await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(900); };
+  const view = async (name, sel) => { const ok = await c.js(`(() => { const e = ${sel}; if (!e) return false; e.scrollIntoView({ block: 'start', behavior: 'instant' }); return true; })()`); await c.sleep(1800); if (ok && c.shots) await c.shot(name); c.log("VIEW", name, ok);
+    if (ok) { const r = await c.js(HUNT); if (r !== '{"bad":[],"cut":[]}') c.log("FOUND", name, r); } };
+  const cards = async (p) => { const n = await c.js(`document.querySelectorAll('.flow-card').length`); for (let i = 0; i < Math.min(n, 9); i++) await view(`${p}-card${i}`, `document.querySelectorAll('.flow-card')[${i}]`); };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  // the test tools (off for somebody new since 3 November 2026): on, and the page again
+  await c.js(`localStorage.setItem('flow-dev', '1'); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  if (!only || only === "finance") {
+    await c.press(".wallet-unit.active"); await c.sleep(1400);
+    await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+    await c.press(".big-card"); await c.sleep(6500);
+    await flask(); await top(); if (c.shots) await c.shot("f-home");
+    await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000); if (c.shots) await c.shot("f-year");
+    await c.press(".ycell", new Date().getMonth()); await c.sleep(3600); if (c.shots) await c.shot("f-month");
+    await cards("f");
+    await home();
+  }
+  if (!only || only === "crypto") {
+    await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(5000);
+    await flask(); await top(); if (c.shots) await c.shot("c-home");
+    await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
+    await c.press(".ycell", new Date().getMonth()); await c.sleep(3600); if (c.shots) await c.shot("c-month");
+    await cards("c");
+    await home();
+  }
+  if (!only || only === "health") {
+    await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+    await flask(); await top(); if (c.shots) await c.shot("h-home");
+    await c.hlDay(); await top(); if (c.shots) await c.shot("h-day");
+    await cards("h");
+  }
+  c.log("BUTTONS", await c.js(`[...document.querySelectorAll('button')].filter((b) => { const r = b.getBoundingClientRect(); return r.width && r.height; }).length`));
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// Class or event, and the list of them (4 November 2026; `--shots --fresh --profile=hlkind`): made-up Health data with two
+// course-code classes, a party and golf (no choice made yet, so the guess), then the list from the week's bar: what it shows,
+// a class made an event and golf a class, one renamed (its assignment and its key follow), golf binned (Undo there), Esc;
+// the form's switch: a new event saved out of the quick list, opened again as an event. Then the diet goal's "Make … my step
+// goal" pressed three times: the goal must stay put after the first
+const hlkind = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), key = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  const t = new Date(), plus = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return key(d); };
+  const data = { profile: { cm: 175, kg: 82, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, weights: { [plus(0)]: 82 },
+    goal: { target: 72, by: plus(120), from: plus(-10), start: 83, way: "move" },
+    classes: [{ id: "c1", name: "BTW1042: Tutorial 10", room: "MA 93", dow: 0, from: "14:00", to: "16:00", tint: 1 },
+              { id: "c2", name: "MKW1120: Tutorial 20", room: "", dow: 1, from: "12:00", to: "14:00", tint: 2 },
+              { id: "c3", name: "Eunoia PPI Welcoming Party", room: "", dow: 4, from: "15:30", to: "18:00", tint: 3 },
+              { id: "c4", name: "Golf Hangout", room: "", dow: 2, from: "19:30", to: "21:00", tint: 4 }],
+    clsLib: [{ name: "BTW1042: Tutorial 10", room: "MA 93", tint: 1 }, { name: "MKW1120: Tutorial 20", room: "", tint: 2 }],
+    asg: [{ id: "a1", title: "Poster", sub: "", cls: "BTW1042: Tutorial 10", kind: "assignment", due: plus(9), at: "23:55", about: "", done: false, items: [] }] };
+  const saved = () => c.js(`(() => { const v = JSON.parse(localStorage.getItem('flow-health') || 'null'); if (!v) return 'nothing saved';
+    return JSON.stringify({ mine: v.mine, lib: v.clsLib.map((q) => q.name), cls: [...new Set(v.classes.map((q) => q.name))], asg: v.asg.map((a) => a.cls), steps: v.profile.steps, stepsIn: v.profile.stepsIn || 0 }); })()`);
+  const list = () => c.js(`(() => { const p = document.querySelector('.hl-ca'); if (!p) return 'no list';
+    return JSON.stringify({ head: p.querySelector('.hl-nt-when')?.innerText, rows: [...p.querySelectorAll('.hl-ca-row')].map((r) => [r.querySelector('b').innerText, r.querySelector('.hl-ca-kind button.on')?.innerText, r.querySelector('small').innerText]) }); })()`);
+  const kind = (name, to) => c.js(`(() => { const r = [...document.querySelectorAll('.hl-ca-row')].find((e) => e.querySelector('b').innerText === ${JSON.stringify(name)}); if (!r) return 'no row';
+    const b = [...r.querySelectorAll('.hl-ca-kind button')].find((e) => e.innerText === ${JSON.stringify(to)}); b.click(); return 'pressed'; })()`);
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); true`);
+  await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  c.log("LOADED", await saved());
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
+  c.log("BAR", await c.js(`JSON.stringify([...document.querySelectorAll('[data-card="week"] .hl-scan-bar .hl-ibtn')].map((e) => e.getAttribute('aria-label')))`));
+  await c.js(`document.querySelector('[aria-label="Classes and events"]').click()`); await c.sleep(900);
+  c.log("LIST", await list());
+  if (c.shots) await c.shot("kind-1-list");
+  c.log("MKW → Event", await kind("MKW1120: Tutorial 20", "Event")); await c.sleep(700);
+  c.log("GOLF → Class", await kind("Golf Hangout", "Class")); await c.sleep(700);
+  c.log("AFTER SWITCHES", await list(), await saved());
+  if (c.shots) await c.shot("kind-2-switched");
+  // the pencil on BTW1042: renamed, its room changed, Enter
+  await c.js(`[...document.querySelectorAll('.hl-ca-row')].find((e) => /BTW1042/.test(e.innerText)).querySelector('.hl-ca-ed').click()`); await c.sleep(500);
+  c.log("EDITOR", await c.js(`JSON.stringify({ open: !!document.querySelector('.hl-ca .hl-lib-edit'), also: !!document.querySelector('.hl-ca .hl-lib-also') })`));
+  if (c.shots) await c.shot("kind-3-edit");
+  await c.js(`(() => { const [a, b] = document.querySelectorAll('.hl-ca .hl-lib-edit input.jr-in'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(a, 'BTW1042 Business Stats'); a.dispatchEvent(new Event('input', { bubbles: true })); set.call(b, 'B2.14'); b.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(300);
+  await c.js(`document.querySelector('.hl-ca .hl-lib-edit input.jr-in').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`); await c.sleep(700);
+  c.log("RENAMED", await list(), await saved());
+  // golf in the bin: gone, Undo offered
+  await c.js(`[...document.querySelectorAll('.hl-ca-row')].find((e) => /Golf/.test(e.innerText)).querySelector('.hl-ca-x').click()`); await c.sleep(700);
+  c.log("BINNED", await list(), await saved(), await c.js(`document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || 'no undo'`));
+  await c.js(`document.querySelector('.undo-note.on .un-b')?.click()`); await c.sleep(700);
+  c.log("UNDONE", await list());
+  await c.key("Escape"); await c.sleep(700);
+  c.log("CLOSED", await c.js(`!document.querySelector('.hl-ca')`));
+  // the form: Add, the switch, an event saved
+  await c.js(`document.querySelector('[aria-label="Add a class or an event"]').click()`); await c.sleep(800);
+  const form = () => c.js(`JSON.stringify({ kind: document.querySelector('.hl-form .hl-kind button.on')?.innerText, lib: !!document.querySelector('.hl-form .hl-lib-btn'), ph: document.querySelector('.hl-name-row input')?.placeholder })`);
+  c.log("FORM NEW", await form());
+  if (c.shots) await c.shot("kind-4-form", ".hl-form");
+  await c.js(`[...document.querySelectorAll('.hl-form .hl-kind button')].find((e) => e.innerText === 'Event').click()`); await c.sleep(500);
+  await c.js(`(() => { const a = document.querySelector('.hl-name-row input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(a, 'Futsal'); a.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(300);
+  c.log("FORM EVENT", await form());
+  await c.js(`document.querySelector('.hl-form .hl-save').click()`); await c.sleep(900);
+  c.log("SAVED EVENT", await saved());
+  await c.js(`[...document.querySelectorAll('.hl-cls')].find((e) => /Futsal/.test(e.innerText))?.click()`); await c.sleep(900);
+  c.log("FUTSAL OPENED", await form());
+  await c.js(`[...document.querySelectorAll('.hl-form .bk-btn')].find((e) => e.innerText === 'Cancel')?.click()`); await c.sleep(600);
+  // the diet goal's step button, three presses
+  await c.js(`document.querySelector('[data-card="diet"]')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(1200);
+  for (let i = 0; i < 3; i++) {
+    const b = await c.js(`(() => { const b = [...document.querySelectorAll('.hl-diet-go .bk-btn')].find((e) => /my step goal/.test(e.innerText)); if (!b) return 'no button'; const t = b.innerText; b.click(); return t; })()`);
+    await c.sleep(700);
+    c.log(`STEP PRESS ${i + 1}`, b, await saved());
+  }
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// A deadline in a later week (4 November 2026; `--shots --fresh --profile=hldue`, HLDATA=<a file with a copy of a flow-health
+// value>): his assignment due Friday 20 November did not show on the Week card's week of 16 Nov. That data put in, the week
+// stepped on week by week, and per week what deadlines the page has and draws (with their boxes)
+const hldue = async (c) => {
+  const data = require("fs").readFileSync(process.env.HLDATA, "utf8");
+  const saved = () => c.js(`(() => { const v = JSON.parse(localStorage.getItem('flow-health') || 'null'); return v ? JSON.stringify((v.asg || []).map((a) => [a.title, a.due, a.at, a.done || 0])) : 'nothing saved'; })()`);
+  const week = () => c.js(`(() => { const w = document.querySelector('[data-card="week"]'); if (!w) return 'no week card'; const b = w.querySelector('.hl-tt-body');
+    return JSON.stringify({ lbl: w.querySelector('.hl-wk-lbl')?.innerText, sub: w.querySelector('.hl-wk-sub')?.innerText, body: b ? Math.round(b.getBoundingClientRect().height) : null,
+      days: [...w.querySelectorAll('.hl-tt-head b')].map((e) => e.innerText.replace(/\\s+/g, ' ')),
+      dues: [...w.querySelectorAll('.hl-due')].map((e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); return { t: e.innerText.replace(/\\s+/g, ' '), top: e.style.top, y: Math.round(r.top), h: Math.round(r.height), op: s.opacity, vis: s.visibility, disp: s.display }; }) }); })()`);
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(data)}); true`);
+  c.log("PUT", await saved());
+  await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  c.log("LOADED", await saved());
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1600);
+  for (let i = 0; i < 4; i++) {
+    c.log(`WEEK +${i}`, await week());
+    if (c.shots) await c.shot(`due-${i}`);
+    await c.js(`document.querySelector('[data-card="week"] .hl-wk-nav button[title="The week after"]')?.click()`); await c.sleep(1200);
+  }
+  // the day's flag in the week's head: back to the week of 16 Nov, the line out of view, the flag pressed
+  for (let i = 0; i < 2; i++) { await c.js(`document.querySelector('[data-card="week"] .hl-wk-nav button[title="The week before"]')?.click()`); await c.sleep(900); }
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1200);
+  const line = () => c.js(`(() => { const e = document.querySelector('.hl-due'); if (!e) return 'no line'; const r = e.getBoundingClientRect(); return JSON.stringify({ y: Math.round(r.top), inView: r.top >= 0 && r.bottom <= innerHeight, flag: document.querySelector('.hl-tt-due')?.innerText.replace(/\\s+/g, ' ') || 'no flag' }); })()`);
+  c.log("FLAG BEFORE", await line());
+  if (c.shots) await c.shot("due-flag");
+  await c.press(".hl-tt-due"); await c.sleep(1600);
+  c.log("FLAG AFTER", await line());
+  if (c.shots) await c.shot("due-flag-pressed");
+  // a class's notes from its block (Shift+Enter, as a double click): on the class itself, the block's lesson only outlined;
+  // then a lesson with files: the pop-up inside the window, its middle scrolled to the end, the description above the line
+  await c.js(`document.querySelector('[data-card="week"] .hl-wk-lbl')?.click()`); await c.sleep(1000);
+  const opened = await c.js(`(() => { const b = [...document.querySelectorAll('.hl-cls')].find((e) => /MKW1120/.test(e.innerText)); if (!b) return 'no block'; b.scrollIntoView({ block: 'center', behavior: 'instant' });
+    b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true })); return 'sent'; })()`);
+  await c.sleep(1000);
+  c.log("NOTES", opened, await c.js(`JSON.stringify({ overview: !!document.querySelector('.hl-nt .hl-nt-name'), lesson: !!document.querySelector('.hl-nt .hl-ls-title'), outlined: document.querySelector('.hl-ls-tile.now')?.innerText.replace(/\\s+/g, ' ') || 'none', tiles: [...document.querySelectorAll('.hl-ls-tile')].map((e) => e.innerText.replace(/\\s+/g, ' ')) })`));
+  await c.js(`[...document.querySelectorAll('.hl-ls-tile')].find((e) => /Week 2/.test(e.innerText))?.click()`); await c.sleep(900);
+  const pop = () => c.js(`(() => { const p = document.querySelector('.hl-nt'), b = p && p.querySelector('.hl-nt-body'), ed = p && p.querySelector('.rt-ed'), ln = p && p.querySelector('.hl-nt-add'), fs = p ? [...p.querySelectorAll('.hl-lf')] : [];
+    if (!p) return 'no pop-up'; const r = p.getBoundingClientRect(), br = b ? b.getBoundingClientRect() : null, last = fs.length ? fs[fs.length - 1].getBoundingClientRect() : null;
+    return JSON.stringify({ title: p.querySelector('.hl-ls-title')?.value, top: Math.round(r.top), bottom: Math.round(r.bottom), win: innerHeight, files: fs.length, scroll: b ? [b.scrollTop, b.clientHeight, b.scrollHeight] : null,
+      edBottom: ed ? Math.round(ed.getBoundingClientRect().bottom) : null, lineTop: ln ? Math.round(ln.getBoundingClientRect().top) : null, lastBottom: last ? Math.round(last.bottom) : null, bodyBottom: br ? Math.round(br.bottom) : null }); })()`);
+  c.log("LESSON", await pop());
+  if (c.shots) await c.shot("notes-lesson");
+  const bb = JSON.parse(await c.js(`(() => { const r = document.querySelector('.hl-nt-body')?.getBoundingClientRect(); return JSON.stringify(r ? { x: r.left + r.width / 2, y: r.top + r.height * 0.8 } : null); })()`));
+  if (bb) { await c.move(bb.x, bb.y); for (let i = 0; i < 40; i++) { c.wc.sendInputEvent({ type: "mouseWheel", x: Math.round(bb.x), y: Math.round(bb.y), deltaX: 0, deltaY: -40, canScroll: true }); await c.sleep(8); } await c.sleep(900); }
+  c.log("LESSON SCROLLED", await pop());
+  if (c.shots) await c.shot("notes-lesson-end");
+  c.key("Escape"); await c.sleep(500); c.key("Escape"); await c.sleep(700);
+  // the steps bars: sideways by the wheel, the day on screen stays; a bar pressed picks its day and the bars stay put
+  await c.js(`document.querySelector('[data-card="activity"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
+  const bars = () => c.js(`(() => { const sc = document.querySelector('.hl-bars-sc'); if (!sc) return 'no scroller'; const r = sc.getBoundingClientRect(), bs = [...sc.querySelectorAll('.hl-bar')];
+    const vis = bs.filter((e) => { const q = e.getBoundingClientRect(); return q.left >= r.left - 1 && q.right <= r.right + 1; }), key = document.querySelector('.hl-bars-key')?.getBoundingClientRect();
+    return JSON.stringify({ n: bs.length, inView: vis.length, from: vis[0]?.title, to: vis[vis.length - 1]?.title, sel: sc.querySelector('.hl-bar.sel')?.title, left: Math.round(sc.scrollLeft), max: sc.scrollWidth - sc.clientWidth,
+      keyRight: key ? Math.round(key.right) : null, scLeft: Math.round(r.left), labels: [...document.querySelectorAll('.hl-goal-key')].map((e) => { const q = e.getBoundingClientRect(); return e.innerText.replace(/\\s+/g, ' ') + ' @' + Math.round(q.top) + '-' + Math.round(q.bottom); }) }); })()`);
+  c.log("BARS", await bars());
+  if (c.shots) await c.shot("bars-0", JSON.parse(await c.js(`(() => { const r = document.querySelector('.hl-bars').getBoundingClientRect(); return JSON.stringify({ x: Math.round(r.left - 10), y: Math.round(r.top - 10), width: Math.round(r.width + 20), height: Math.round(r.height + 20) }); })()`)));
+  const sb = JSON.parse(await c.js(`(() => { const r = document.querySelector('.hl-bars-sc').getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 }); })()`));
+  await c.move(sb.x, sb.y);
+  for (let i = 0; i < 30; i++) { c.wc.sendInputEvent({ type: "mouseWheel", x: Math.round(sb.x), y: Math.round(sb.y), deltaX: 12, deltaY: 0, canScroll: true }); await c.sleep(8); }
+  await c.sleep(1200);
+  c.log("BARS SWIPED", await bars());
+  if (c.shots) await c.shot("bars-1", JSON.parse(await c.js(`(() => { const r = document.querySelector('.hl-bars').getBoundingClientRect(); return JSON.stringify({ x: Math.round(r.left - 10), y: Math.round(r.top - 10), width: Math.round(r.width + 20), height: Math.round(r.height + 20) }); })()`)));
+  const pickAt = JSON.parse(await c.js(`(() => { const sc = document.querySelector('.hl-bars-sc'), r = sc.getBoundingClientRect(); const b = [...sc.querySelectorAll('.hl-bar')].find((e) => { const q = e.getBoundingClientRect(); return q.left >= r.left + 30; }); const q = b.getBoundingClientRect(); return JSON.stringify({ x: q.left + q.width / 2, y: q.bottom - 30 }); })()`));
+  await c.click(pickAt.x, pickAt.y); await c.sleep(1200);
+  c.log("BARS PICKED", await bars());
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
 // An assignment's new boxes (30 October 2026; `--shots --fresh --profile=asgfields`): weight, week, where to hand it in, the due
 // line read as typed, then pasted (rules at once, then the Mac's model's answer over them: its answers were taken from
 // electron/due-ai beforehand, one of them with made-up parts that must be dropped), a brief pasted into Notes, the bigger
@@ -5010,7 +5348,7 @@ const hlbarline = async (c) => {
   c.log("CHECK", await c.js(`(() => {
     const box = document.querySelector('.hl-bars'), cols = [...box.querySelectorAll('.hl-bar-col')];
     const b0 = cols[0].getBoundingClientRect().bottom, full = cols[0].getBoundingClientRect().height;
-    const lines = [...box.querySelectorAll('.hl-goal-line')].map((l) => ({ say: l.innerText.trim(), y: l.getBoundingClientRect().bottom, n: +l.innerText.replace(/[^0-9]/g, '') }));
+    const lines = [...box.querySelectorAll('.hl-goal-line')].map((l, j) => { const t = (box.querySelectorAll('.hl-goal-key')[j] || l).innerText; return { say: t.trim(), y: l.getBoundingClientRect().bottom, n: +t.replace(/[^0-9]/g, '') }; });
     const out = lines.map((l) => l.say + ': line ' + (b0 - l.y).toFixed(1) + 'px up');
     const top = lines[0].n / ((b0 - lines[0].y) / full);
     out.push('scale from the first line: ' + Math.round(top) + ' steps = full bar');
@@ -5231,5 +5569,45 @@ const uiastra = async (c) => {
   c.wc.debugger.detach();
 };
 
-module.exports = { hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// The day turn (4 November 2026; `--fresh --profile=hlturn`): made-up Health data whose days differ (to-dos once on one day,
+// sleep and a session on another, steps on each), then the day before pressed three times and the day after three times.
+// Per turn, every second frame for 420ms: the to-do card's add row and the cards below it (their tops), the to-do card's
+// fold height, the ‹ arrow's place, the month's picked-day box, and how many animations run. A jump is a value that
+// changes in one frame; a turn is one that runs over some 300ms
+const hlturn = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), key = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  const t = new Date(), plus = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return key(d); };
+  const once = (id, text, k) => ({ id, text, rep: "once", dows: [], len: 0, from: k, done: {}, skip: {} });
+  const data = { profile: { cm: 175, kg: 82, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, weights: { [plus(0)]: 82 },
+    steps: { [plus(0)]: 4200, [plus(-1)]: 9100, [plus(-2)]: 12000, [plus(-3)]: 3000 },
+    todos: [{ id: "d1", text: "Drink water", rep: "daily", dows: [], len: 0, from: plus(-10), done: { [plus(-1)]: 1 }, skip: {} },
+            once("o1", "Call home", plus(0)), once("o2", "Buy a charger", plus(-1)), once("o3", "Hand in the poster", plus(-1)), once("o4", "Laundry", plus(-1))],
+    sleep: { [plus(-1)]: { bed: "23:30", wake: "07:10", feel: 4 } },
+    gym: [{ id: "g1", day: plus(-1), name: "Push", min: 55, note: "", ex: [{ name: "Bench press", sets: [{ kg: 60, reps: 8 }] }] }] };
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); true`);
+  await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await c.js(`window.scrollTo(0, 0); true`); await c.sleep(1500);
+  const turn = (sel) => c.js(`new Promise((done) => {
+    const q = (s) => document.querySelector(s), top = (s) => { const e = q(s); return e ? Math.round(e.getBoundingClientRect().top) : null; };
+    const read = () => [top('[data-card="to-do"] .hl-add'), top('[data-card="activity"]'), top('[data-card="diet"]'), top('[data-card="gym"]'),
+      Math.round(q('[data-card="to-do"] .fold-box').getBoundingClientRect().height), Math.round(q('.hl-nav .nav-arrow').getBoundingClientRect().left),
+      (q('.hl-msel') || {}).style ? q('.hl-msel').getBoundingClientRect().left | 0 : null, document.getAnimations().length];
+    const out = [read()], t0 = performance.now();
+    document.querySelectorAll('.hl-nav .nav-arrow')[${sel === "back" ? 0 : 1}].click();
+    let i = 0;
+    const step = () => { if (i++ % 2 === 0) out.push(read()); if (performance.now() - t0 < 420) requestAnimationFrame(step); else done(JSON.stringify({ day: q('.hl-day-btn > span').innerText, f: out })); };
+    requestAnimationFrame(step);
+  })`);
+  c.log("COLUMNS", "addRow activityTop dietTop gymTop todoFoldH leftArrowX monthBoxX animations");
+  for (const s of ["back", "back", "back", "next", "next", "next"]) { c.log("TURN " + s, await turn(s)); await c.sleep(700); }
+  c.log("LABEL", await c.js(`JSON.stringify({ w: Math.round(document.querySelector('.hl-day-btn').getBoundingClientRect().width), spans: [...document.querySelectorAll('.hl-day-btn > span')].map((e) => Math.round(e.getBoundingClientRect().width)) })`));
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+module.exports = { bins, fewer, hlturn, uitour, hlkind, hldue, hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

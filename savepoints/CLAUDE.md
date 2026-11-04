@@ -130,3 +130,5 @@ Named snapshots of `src/App.jsx`. How one is loaded and how a new one is made is
 
 - `before-ui-astra.jsx`: complete app before Astra’s overall UI/UX pass (31 October 2026), including all existing uncommitted work. Load with “load before-ui-astra”.
 - `before_shopping.jsx`: before Health's shopping list (the Shopping card, its Home widget; 31 October 2026).
+- `before_bins_back.jsx`: after the first fewer-buttons pass (⌘P, right-click menus, tools on hover), before every bin was put back in sight (4 November 2026).
+- `before_bin_slide.jsx`: bins always in sight, before a row's bin waited for the pointer with its neighbours sliding aside for it (4 November 2026).

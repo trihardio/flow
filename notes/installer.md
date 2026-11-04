@@ -19,3 +19,8 @@ His words: "make custom pixel art background on the dmg distribution file on mac
 - Release `v1.0.0` on github.com/trihardio/flow, assets uploaded under fixed names (`Flow-Mac.dmg`, `Flow-Windows-Setup.exe`) so the README's buttons (`releases/latest/download/…`) keep working for later versions: upload a new version's files under the same names.
 - The README is the GitHub page: the swamp as a banner with FLOW in pixel letters, a sprite per app, pixel download buttons (`docs/art/*.svg`, made by `node tools/readme/art.mjs`).
 - **Not tried on a real Windows PC** (none here): the build was checked by what is inside it.
+
+## Release 1.1.0 (4 November 2026)
+- His words: "check for errors, bugs, lag, ui overlapping, and inconsistencies … then update the newest and latest release to my files folder and update the github". He chose: the files go in the project's `release/` folder, version **1.1.0**.
+- **The routine for a release**: `npm run check` (must pass), `sh tools/perf/hunt-all.sh` (must print "nothing found"; not while he is using the app), the version in `package.json`, `npm run dmg` and `npm run win` (into `release/`), commit and push to `main`, then the GitHub release `v<version>` with the two files under the fixed names `Flow-Mac.dmg` and `Flow-Windows-Setup.exe`.
+- The upload needs his GitHub login: auto mode refuses to read it from the keychain (and `gh` is not installed), so he uploads the two files on the release page himself, or installs `gh` and runs `gh auth login` once, after which `gh release create` can do it.

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/tools/check-hook.sh\"",
+            "timeout": 60,
+            "statusMessage": "Checking Flow builds and passes the lint"
+          }
+        ]
+      }
+    ]
+  }
+}
