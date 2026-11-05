@@ -1,0 +1,11 @@
+{ "about": "A university app's week as a list (his reference, 5 November 2026): day headings, then each class's time range and code",
+  "kind": "timetable", "now": "2026-11-05T12:00:00", "W": 660, "H": 830,
+  "lines": [["Next week", 30, 20, 180, 38], ["Mon, 9 Nov", 30, 107, 124, 24],
+            ["2.00pm–4.00pm", 42, 175, 180, 24], ["BTW1042: Tutorial", 70, 214, 226, 28],
+            ["Tue, 10 Nov", 30, 319, 127, 24], ["12.00pm–2.00pm", 42, 388, 190, 24], ["MKW1120: Tutorial", 70, 427, 228, 28],
+            ["3.00pm–5.00pm", 42, 514, 180, 24], ["ETW1001: Tutorial", 70, 554, 222, 28],
+            ["Thu, 12 Nov", 30, 658, 127, 24], ["10.00am–12.00pm", 42, 727, 200, 24], ["MGW1010: Tutorial", 70, 766, 228, 28]],
+  "expect": [{ "name": "BTW1042: Tutorial", "dow": 0, "from": "14:00", "to": "16:00" },
+             { "name": "MKW1120: Tutorial", "dow": 1, "from": "12:00", "to": "14:00" },
+             { "name": "ETW1001: Tutorial", "dow": 1, "from": "15:00", "to": "17:00" },
+             { "name": "MGW1010: Tutorial", "dow": 3, "from": "10:00", "to": "12:00" }] }

@@ -13,7 +13,8 @@ const cut = (src, a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i + 1)
 const js = cut(main, "/* ocr-start */", "/* ocr-end */").replace("/* ocr-start */", "");
 const reader = cut(app, "/* ---------- health: reading a timetable off a picture", "/* ---------- health: reading a timetable end");
 const pad = (x) => String(x).padStart(2, "0"), hlHm = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
-const read = new Function("pad", "hlHm", `${reader}\nreturn hlReadTimetable;`)(pad, hlHm);
+// (taken out of App.jsx with everything it leans on, wherever that stands: pick.mjs, since 5 November 2026)
+const { hlReadTimetable: read } = await (await import("./pick.mjs")).pick(["hlReadTimetable"]);
 const { ocrStraight: straight, ocrBmp } = new Function(`${cut(main, "/* ocr-loop-start */", "/* ocr-loop-end */")}\nreturn { ocrStraight, ocrBmp };`)();
 const dir = process.argv[2] || path.join(os.tmpdir(), "flow-ocr"), tmp = path.join(os.tmpdir(), "flow-ocr-read.js");
 fs.writeFileSync(tmp, js);
@@ -38,13 +39,37 @@ const want = {
   // to read; and a sheet of hour rows ("8-9", "12-1") with merged cells and no times in them (read off the cells' colours)
   "a-unsw": [["Mon", "13:30", "15:00", "ECON1202 - TUT", "Block G6"], ["Mon", "16:00", "18:30", "COMM1140 - LEC", "MathewsThA"], ["Tue", "11:30", "13:00", "ECON1101-LE1", "Online"], ["Wed", "14:00", "15:30", "ECON1202 - LEC", "Burrows Th"], ["Wed", "16:00", "18:00", "COMM1140 - TUT", "Mat 301"], ["Thu", "09:30", "11:00", "ECON1101 - LE2", "Science Th"], ["Thu", "13:00", "14:30", "ECON1101 -WKS", "Mat 214"], ["Fri", "12:30", "14:00", "ECON1202 -LEC", "InsathG03"]],
   "b-hourly": [["Mon", "08:00", "09:00", "Breakfast", ""], ["Mon", "11:00", "12:00", "To Callaghan", ""], ["Mon", "12:00", "13:00", "CIVL9100 Lecture", ""], ["Mon", "13:00", "14:00", "Lunch", ""], ["Mon", "14:00", "15:00", "CIVL9100 Consolidate", ""], ["Mon", "15:00", "16:00", "To home", ""], ["Mon", "17:00", "18:00", "PDTY1234 Prep, review", ""], ["Mon", "18:00", "19:00", "Dinner", ""], ["Mon", "22:00", "23:00", "Sleep", ""], ["Tue", "08:00", "09:00", "Breakfast", ""], ["Tue", "09:00", "10:00", "To Callaghan", ""], ["Tue", "10:00", "12:00", "PDTY1234 Lecture", ""], ["Tue", "12:00", "13:00", "PDTY1234 Consolidate", ""], ["Tue", "13:00", "14:00", "CIVL9100 Tutorial", ""], ["Tue", "14:00", "15:00", "Lunch", ""], ["Tue", "15:00", "18:00", "Gym", ""], ["Tue", "18:00", "19:00", "To home", ""], ["Tue", "19:00", "20:00", "Dinner", ""], ["Tue", "22:00", "23:00", "Sleep", ""], ["Wed", "08:00", "09:00", "Breakfast", ""], ["Wed", "12:00", "13:00", "Lunch", ""], ["Wed", "13:00", "14:00", "To work", ""], ["Wed", "14:00", "18:00", "WORK", ""], ["Wed", "18:00", "19:00", "To home", ""], ["Wed", "19:00", "20:00", "Dinner", ""], ["Wed", "22:00", "23:00", "Sleep", ""], ["Thu", "08:00", "09:00", "Breakfast", ""], ["Thu", "10:00", "11:00", "GSBS5678 Prep, review", ""], ["Thu", "12:00", "13:00", "Lunch", ""], ["Thu", "15:00", "16:00", "PDTY1234 Tute exercise", ""], ["Thu", "16:00", "17:00", "To NUSpace", ""], ["Thu", "17:00", "19:00", "GSBS5678 Lecture", ""], ["Thu", "19:00", "20:00", "To home", ""], ["Thu", "20:00", "21:00", "Dinner", ""], ["Thu", "22:00", "23:00", "Sleep", ""], ["Fri", "08:00", "09:00", "Breakfast", ""], ["Fri", "10:00", "11:00", "GSBS5678 Consolidate", ""], ["Fri", "12:00", "13:00", "Lunch", ""], ["Fri", "13:00", "14:00", "To Callaghan", ""], ["Fri", "14:00", "15:00", "PDTY1234 Tutorial", ""], ["Fri", "15:00", "18:00", "Gym", ""], ["Fri", "18:00", "19:00", "To home", ""], ["Fri", "19:00", "20:00", "Dinner", ""], ["Fri", "22:00", "23:00", "Sleep", ""], ["Sat", "08:00", "09:00", "Breakfast", ""], ["Sat", "12:00", "13:00", "Lunch", ""], ["Sat", "13:00", "14:00", "To work", ""], ["Sat", "14:00", "18:00", "WORK", ""], ["Sat", "18:00", "19:00", "To home", ""], ["Sat", "19:00", "20:00", "Dinner", ""], ["Sat", "22:00", "23:00", "Sleep", ""], ["Sun", "08:00", "09:00", "Breakfast", ""], ["Sun", "12:00", "13:00", "Lunch", ""], ["Sun", "17:00", "18:00", "CIVL9100 Prep, review", ""], ["Sun", "18:00", "19:00", "Dinner", ""], ["Sun", "22:00", "23:00", "Sleep", ""]],
+  // drawn after his screenshots of 5 November 2026 (make.cjs 7 and 8): his app's week as a dark list, the portal's grid
+  "7-week-dark": [["Mon", "14:00", "16:00", "BTW1042: Tutorial", ""], ["Tue", "12:00", "14:00", "MKW1120: Tutorial", ""], ["Tue", "15:00", "17:00", "ETW1001: Tutorial", ""], ["Thu", "10:00", "12:00", "MGW1010: Tutorial", ""]],
 };
+// assignments off a picture (hlAsgReadMany, 5 November 2026): his deadlines as a dark list, a course page's assessment table,
+// on 5 November 2026 (the dates in them are read against that day)
+const wantAsg = {
+  "asg-1-deadlines": [{ cls: "BTW1042", title: "Individual Research Assignment", due: "2026-11-20", at: "20:55", weight: 25 }, { cls: "MKW1120", title: "Assignment 1: Individual Poster", due: "2026-11-20", at: "23:55", weight: 30 },
+                      { cls: "ETW1001", title: "Assignment 1", due: "2026-11-20", at: "23:55", weight: 15 }, { cls: "MGW1010", title: "Assessment 1: Individual Reflections Essay (Management Around Me)", due: "2026-11-20", at: "23:55" }],
+  "asg-2-table": [{ title: "Assessment 1: Individual Reflections Essay (Management Around Me)", due: "2026-11-20", at: "23:55" }, { title: "Assignment 3A: Proposal Worksheet", due: "2027-01-04", at: "23:55" },
+                  { title: "Assignment 3B: Case Analysis", due: "2027-01-22", at: "23:55" }, { title: "Assessment 2: Interview Managers in Practice", due: "2026-12-10", at: "23:55", weight: 30, kind: "talk" }],
+};
+const { hlAsgReadMany } = await (await import("./pick.mjs")).pick(["hlAsgReadMany"]);
 const min = (t) => +t.slice(0, 2) * 60 + +t.slice(3), norm = (s) => String(s).toLowerCase().replace(/\s+/g, "");
 let ok = 0, all = 0, roomsOk = 0, extra = 0;
 for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".png")).sort()) {
   const name = f.replace(".png", ""), t0 = Date.now();
   const pass = async (deg) => { try { const g = JSON.parse(execFileSync("/usr/bin/osascript", ["-l", "JavaScript", tmp, path.join(dir, f), String(deg)], { encoding: "utf8" })); return Array.isArray(g.lines) ? g : null; } catch (e) { return null; } };
   const res = await straight(pass), lines = res.lines;
+  if (wantAsg[name]) {
+    const got = hlAsgReadMany(lines, new Date("2026-11-05T12:00:00")), used = new Set();
+    console.log(`\n${name}: ${lines.length} lines read in ${Date.now() - t0} ms, ${got.length} assignments`);
+    for (const e of wantAsg[name]) {
+      all++;
+      const same = (q, a, b) => (q === "title" ? String(a || "").toLowerCase().replace(/[^a-z0-9]/g, "") === String(b).toLowerCase().replace(/[^a-z0-9]/g, "") : norm(a) === norm(b));
+      const i = got.findIndex((g, k) => !used.has(k) && Object.keys(e).every((q) => same(q, g[q], e[q])));
+      if (i >= 0) { used.add(i); ok++; roomsOk++; console.log(`  ok   ${e.due} ${e.at} ${e.cls ? e.cls + " " : ""}${e.title}`); }
+      else console.log(`  MISS ${JSON.stringify(e)}`);
+    }
+    got.forEach((g, k) => { if (!used.has(k)) { extra++; console.log(`  EXTRA ${JSON.stringify(g)}`); } });
+    continue;
+  }
   // the picture's colours, as the shell hands them over (the same reading asked with "px")
   const bmp = JSON.parse(execFileSync("/usr/bin/osascript", ["-l", "JavaScript", tmp, path.join(dir, f), String(res.deg || 0), "px"], { encoding: "utf8", maxBuffer: 64 << 20 })).bmp;
   const got = read(lines, +res.W, +res.H, bmp ? ocrBmp(bmp) : null), exp = want[name] || [];

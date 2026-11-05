@@ -22,4 +22,6 @@ if [ -n "$hooks" ]; then fail=1; echo "HOOKS UNDER A CONDITION"; echo "$hooks" |
 # mistakes that make no error (a list without keys, a prop twice, === NaN)
 silent=$(echo "$lint" | awk '/^== silent/{on=1; next} on')
 if ! echo "$silent" | grep -q "^0 found"; then fail=1; echo "SILENT MISTAKES"; echo "$silent" | sed 's/^/  /' | head -20; fi
+# the picture readers on his reference screenshots (tools/ocr/fixtures: timetables and assignments, about a second)
+ocr=$(node tools/ocr/fixtures.mjs 2>&1) || { fail=1; echo "PICTURE READERS"; echo "$ocr" | grep -v "^ok" | sed 's/^/  /' | head -20; }
 [ $fail -eq 0 ] || exit 1

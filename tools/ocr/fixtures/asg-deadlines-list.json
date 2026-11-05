@@ -1,0 +1,11 @@
+{ "about": "A university app's deadlines as a list (his reference, 5 November 2026): a date heading, then cards of Due time / CODE: title (weight)",
+  "kind": "assignments", "now": "2026-11-05T12:00:00", "W": 660, "H": 830,
+  "lines": [["November", 30, 20, 176, 38], ["Fri, 20 Nov", 30, 107, 118, 24], ["15 Days", 553, 107, 66, 20],
+            ["Due 8.55pm", 42, 175, 116, 22], ["BTW1042: Individual Research Assignment", 70, 214, 522, 28], ["(25%)", 70, 254, 72, 28],
+            ["Due 11.55pm", 42, 341, 128, 22], ["MKW1120: Assignment 1: Individual Poster", 70, 380, 516, 28], ["(30%)", 70, 420, 72, 28],
+            ["Due 11.55pm", 42, 507, 128, 22], ["ETW1001: Assignment 1 [15%]", 70, 546, 370, 28],
+            ["Due 11.55pm", 42, 633, 128, 22], ["MGW1010: Assessment 1: Individual", 70, 672, 438, 28], ["Reflections Essay (Management Around Me)", 70, 712, 538, 28]],
+  "expect": [{ "cls": "BTW1042", "title": "Individual Research Assignment", "due": "2026-11-20", "at": "20:55", "weight": 25 },
+             { "cls": "MKW1120", "title": "Assignment 1: Individual Poster", "due": "2026-11-20", "at": "23:55", "weight": 30 },
+             { "cls": "ETW1001", "title": "Assignment 1", "due": "2026-11-20", "at": "23:55", "weight": 15 },
+             { "cls": "MGW1010", "title": "Assessment 1: Individual Reflections Essay (Management Around Me)", "due": "2026-11-20", "at": "23:55" }] }

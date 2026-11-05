@@ -75,7 +75,7 @@ app.whenReady().then(async () => {
     width: 1440, height: 900, show: false, useContentSize: true, backgroundColor: "#0e1012",
     webPreferences: { offscreen: shots ? { deviceScaleFactor: 2 } : { useSharedTexture: true, deviceScaleFactor: 2 }, preload: path.join(__dirname, "preload.cjs"),
                       contextIsolation: false, sandbox: false, nodeIntegration: false, spellcheck: false, backgroundThrottling: false,
-                      additionalArguments: [...(flag("light") ? ["--flow-light"] : []), ...(flag("fx-rates") ? ["--flow-fx-rates"] : []), ...(flag("cold") ? ["--flow-gfx-cold"] : []), ...(flag("no-rest") ? ["--flow-no-rest"] : []), ...(flag("backup") ? ["--flow-backup"] : []), ...(flag("backup-fails") ? ["--flow-backup", "--flow-backup-fails"] : [])] },
+                      additionalArguments: [...(flag("light") ? ["--flow-light"] : []), ...(flag("files") ? ["--flow-files"] : []), ...(flag("fx-rates") ? ["--flow-fx-rates"] : []), ...(flag("cold") ? ["--flow-gfx-cold"] : []), ...(flag("no-rest") ? ["--flow-no-rest"] : []), ...(flag("backup") ? ["--flow-backup"] : []), ...(flag("backup-fails") ? ["--flow-backup", "--flow-backup-fails"] : [])] },
   });
   const wc = win.webContents;
   wc.setFrameRate(120);

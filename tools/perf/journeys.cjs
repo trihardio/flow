@@ -4730,9 +4730,128 @@ const bins = async (c) => {
   await scan("HEALTH SHOPPING");
   await look("shop", ".hl-shp-head", ".hl-tag");
   await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
-  await c.js(`document.querySelector('[aria-label="Classes and events"]').click()`); await c.sleep(900); away(); await c.sleep(300);
+  await c.js(`document.querySelector('[aria-label="My classes"]').click()`); await c.sleep(900); away(); await c.sleep(300);
   await scan("CLASS LIST");
   await look("class", ".hl-ca-row", ".hl-ca-ed");
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// The day-to-day pass (4 November 2026, his words: "change them to be more user friendly, easy to use on a day to day
+// basis"; `--shots --fresh --profile=daily`): finance's month with spending and no income (the Left tile grey, not red),
+// the trading month's Log pill (there, and it opens the quick log), Health Home's quick actions (Sleep opens last night's
+// time, Weigh in puts the cursor in the weight box, Timetable asks for a picture: the file box is caught, never opened),
+// and ⌘P's Health logs
+const daily = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), d0 = new Date(), today = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}`;
+  const fin = { spending: { [today]: [{ id: "a", amount: 45000, desc: "lunch", cat: "food" }] }, incomes: {}, limits: {}, currency: "IDR", goals: [], debts: [], plans: [] };
+  const hl = { profile: { cm: 175, kg: 82, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, todos: [{ id: "t1", text: "Read chapter 4", from: today, rep: "daily", done: {}, skip: {} }],
+    classes: [{ id: "c1", name: "BTW1042: Tutorial 10", room: "MA 93", dow: (d0.getDay() + 6) % 7, from: "10:00", to: "12:00", tint: 1 }] };
+  const again = async () => { await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1500); };
+  const cmdP = () => { c.wc.sendInputEvent({ type: "keyDown", keyCode: "P", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "char", keyCode: "p", modifiers: ["control"] }); c.wc.sendInputEvent({ type: "keyUp", keyCode: "P", modifiers: ["control"] }); };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-dev', '1'); localStorage.setItem('pnl-calendar-idr', ${JSON.stringify(JSON.stringify(fin))}); localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(hl))}); location.reload(); true`);
+  await c.sleep(SPLASH_MS + 1000);
+  // finance: the month with spending and no income
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  // Home: one Log (the header's); Today's Add expense a quiet link; the Shortcuts start with Worth it?
+  c.log("FIN HOME", await c.js(`JSON.stringify({ quiet: [...document.querySelectorAll('.dg-cell .wd-btn')].map((b) => b.className + ': ' + b.innerText.replace(/\\s+/g, ' ')), acts: [...document.querySelectorAll('.wd-act')].map((b) => b.getAttribute('aria-label')) })`));
+  if (c.shots) await c.shot("daily-f-home");
+  await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
+  await c.press(".ycell", d0.getMonth()); await c.sleep(3600);
+  c.log("LEFT TILE", await c.js(`(() => { const t = document.querySelector('.hero-tiles .hero-tile'); return t ? JSON.stringify({ tc: t.style.getPropertyValue('--tc'), val: t.querySelector('.ht-val').innerText, sub: t.querySelector('.ht-sub').innerText }) : 'none'; })()`));
+  if (c.shots) await c.shot("daily-f-hero", { x: 100, y: 0, width: 1340, height: 420 });
+  await again();
+  // crypto: the month's Log pill
+  await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(5000);
+  await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
+  await c.press(".ycell", d0.getMonth()); await c.sleep(3600);
+  c.log("TRADE MONTH PILL", await c.js(`(() => { const b = [...document.querySelectorAll('.log-pill')].find((e) => e.offsetWidth); return b ? b.innerText.replace(/\\s+/g, ' ') : 'none'; })()`));
+  if (c.shots) await c.shot("daily-c-head", { x: 100, y: 0, width: 1340, height: 160 });
+  const dlg0 = await c.js(`document.querySelectorAll('[role=dialog]').length`);
+  await c.js(`[...document.querySelectorAll('.log-pill')].find((e) => e.offsetWidth)?.click(); 0`); await c.sleep(900);
+  c.log("PILL OPENS", JSON.stringify({ before: dlg0, after: await c.js(`document.querySelectorAll('[role=dialog]').length`), focus: await c.js(`document.activeElement && (document.activeElement.placeholder || document.activeElement.className)`) }));
+  c.key("Escape"); await c.sleep(600);
+  await again();
+  // Health: Home's quick actions, and ⌘P
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.js(`(() => { const o = HTMLInputElement.prototype.click; HTMLInputElement.prototype.click = function () { if (this.type === 'file') { window.__fileAsk = this.className || 'file'; return; } return o.call(this); }; })(); 0`);
+  c.log("ACTS", await c.js(`JSON.stringify([...document.querySelectorAll('.wd-act')].map((b) => b.getAttribute('aria-label')))`));
+  const act = async (name) => { await c.js(`window.scrollTo({ top: 0, behavior: 'instant' }); 0`); await c.sleep(400);
+    const r = await c.js(`(() => { const b = [...document.querySelectorAll('.wd-act')].find((e) => e.getAttribute('aria-label') === ${JSON.stringify(name)}); if (!b) return 'no button'; b.click(); return 'pressed'; })()`);
+    await c.sleep(1500); return r; };
+  const home = async () => { await c.js(`document.querySelector('.snav-root .sd-home, [aria-label="Home"]')?.click(); 0`); await c.sleep(1800); };
+  c.log("SLEEP", await act("Sleep"), await c.js(`JSON.stringify({ open: !!document.querySelector('.hl-slp .hl-tf.open'), pane: document.querySelectorAll('[role=dialog]').length })`));
+  if (c.shots) await c.shot("daily-h-sleep");
+  c.key("Escape"); await c.sleep(600);
+  await home();
+  c.log("WEIGH", await act("Weigh in"), await c.js(`JSON.stringify({ focus: document.activeElement && document.activeElement.getAttribute('aria-label'), card: !!document.activeElement?.closest('[data-card="body"]') })`));
+  await home();
+  c.log("TIMETABLE", await act("Timetable"), await c.js(`window.__fileAsk || 'no file box asked for'`));
+  await home();
+  cmdP(); await c.sleep(700);
+  await c.js(`(() => { const i = document.querySelector('.cmd-in input'); if (!i) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'sleep'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(400);
+  c.log("CMD 'sleep'", await c.js(`JSON.stringify([...document.querySelectorAll('.cmd-it')].map((b) => b.innerText.replace(/\\s+/g, ' ')).slice(0, 4))`));
+  c.key("Escape"); await c.sleep(500);
+  // Home's rings carry the day's score
+  await c.js(`window.scrollTo({ top: 0, behavior: 'instant' }); 0`); await c.sleep(600);
+  c.log("RINGS SCORE", await c.js(`JSON.stringify([...document.querySelectorAll('.wd-hrings')].map((e) => ({ fig: e.querySelector('.wd-hrn') ? e.querySelector('.wd-hrn').innerText.replace(/\\s+/g, '') : 'none', tip: e.title, w: Math.round(e.getBoundingClientRect().width) })))`));
+  if (c.shots) await c.shot("daily-h-home");
+  // the day page: the daily cards first, and the to-do box logging the day
+  await c.js(`document.querySelector('[aria-label="Today"], .snav-root [data-id="today"]')?.click(); 0`); await c.hlDay(); await c.sleep(800);
+  c.log("CARD ORDER", await c.js(`JSON.stringify([...document.querySelectorAll('.flow-card[data-card]')].map((e) => e.dataset.card).slice(0, 4))`));
+  const typeIn = async (t) => {
+    await c.js(`(() => { const i = document.querySelector('[data-card="to-do"] .hl-add-t'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(t)}); i.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(200);
+    await c.js(`document.querySelector('[data-card="to-do"] .hl-add-t').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); 0`); await c.sleep(700);
+    return c.js(`(() => { const v = JSON.parse(localStorage.getItem('flow-health')); return JSON.stringify({ steps: v.steps[${JSON.stringify(today)}] || 0, kg: v.weights[${JSON.stringify(today)}] || 0, sleep: v.sleep[${JSON.stringify(today)}] || null, todos: v.todos.length, note: document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || '' }); })()`);
+  };
+  for (const t of ["8500 steps", "72.5 kg", "slept 23:30-7", "buy milk"]) c.log("TYPED " + t, await typeIn(t));
+  await c.js(`document.querySelector('.undo-note.on .un-b')?.click(); 0`); await c.sleep(600);
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// The due line off a screenshot (5 November 2026, his words: "for the assignment ai, input an image ai that recognizes text
+// from screenshot and put the button on the right side of the input text ai box"; `--shots --fresh --profile=dueshot`): an
+// assignment opened, the picture button found at the right end of the due box, then a picture of a due line drawn in the
+// page and pasted into the box: the Mac's own text reading reads it and the due date, time and weight are put in. No file
+// box is opened (the paste stands for the button's pick)
+const dueshot = async (c) => {
+  // the Mac's reading can't run in a hidden window here (osascript from it fails: error "read"), so the lines it gives for his
+  // reference pictures (tools/ocr/fixtures, as drawn copies of them were read for real by tools/ocr/test.mjs) stand in for it
+  const fx = (n) => { const f = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "../ocr/fixtures", n), "utf8"));
+    return f.lines.map(([t, x, y, w, h]) => ({ t, c: 1, x: x / f.W, y: y / f.H, w: w / f.W, h: h / f.H })); };
+  const p2 = (n) => String(n).padStart(2, "0"), t = new Date(), plus = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+  const data = { classes: [{ id: "c1", name: "MKW1120: Tutorial 20", room: "MA 95", dow: 1, from: "12:00", to: "14:00", tint: 1 }, { id: "c2", name: "BTW1042: Tutorial 10", room: "MA 93", dow: 0, from: "14:00", to: "16:00", tint: 2 }],
+    clsLib: [{ name: "MKW1120: Tutorial 20", room: "MA 95", tint: 1 }, { name: "BTW1042: Tutorial 10", room: "MA 93", tint: 2 }],
+    asg: [{ id: "a1", title: "Assignment 1: Individual Poster", sub: "", cls: "MKW1120: Tutorial 20", kind: "assignment", due: plus(3), at: "12:00", about: "", done: false, items: [] }] };
+  const saved = () => c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).asg.map((a) => [a.title, a.cls, a.due, a.at, a.weight ?? null, a.kind]))`);
+  const pic = `(async () => { const cv = document.createElement('canvas'); cv.width = 40; cv.height = 40; const blob = await new Promise((ok) => cv.toBlob(ok, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'shot.png', { type: 'image/png' })); return dt; })()`;
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  c.log("STAND-IN", await c.js(`(() => { const real = window.flowHealth; Object.defineProperty(window, 'flowHealth', { configurable: true, value: { ...real, ocr: async () => ({ W: 1, H: 1, lines: window.__ocrLines || [] }) } }); return 'set'; })()`));
+  // 1 the card: a screenshot of his deadlines dropped on it, the sheet, Add
+  await c.js(`document.querySelector('[data-card="assignments"]')?.scrollIntoView({ block: 'start', behavior: 'instant' }); 0`); await c.sleep(1400);
+  c.log("CARD BUTTON", await c.js(`(() => { const b = document.querySelector('.hl-as-shot-all'); return b ? b.getAttribute('aria-label') : 'missing'; })()`));
+  await c.js(`window.__ocrLines = ${JSON.stringify(fx("asg-deadlines-list.json"))}; 0`);
+  await c.js(`(async () => { const dt = await ${pic}; document.querySelector('.hl-as').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return 'dropped'; })()`); await c.sleep(1200);
+  c.log("SHEET", await c.js(`(() => { const s = document.querySelector('.hl-asc'); if (!s) return 'no sheet: ' + (document.querySelector('.hl-as-found')?.innerText || ''); return JSON.stringify({ head: s.querySelector('.hl-scan-head b').innerText,
+    rows: [...s.querySelectorAll('.hl-asc-row')].map((r) => [r.querySelector('.hl-asc-t').value, r.querySelector('.hl-asc-c').value, r.querySelector('.hl-asc-d').value, r.querySelector('.hl-tf')?.innerText.trim(), r.querySelector('.hl-asc-w input').value, r.classList.contains('off') ? 'off' : 'on']) }); })()`));
+  if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-asc').getBoundingClientRect(); return { x: Math.floor(b.left), y: Math.floor(b.top), width: Math.ceil(b.width), height: Math.ceil(b.height) }; })()`); await c.shot("dueshot-1-sheet", r); }
+  await c.js(`document.querySelector('.hl-asc .hl-save')?.click(); 0`); await c.sleep(900);
+  c.log("ADDED", await saved(), await c.js(`document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || 'no undo'`));
+  // 2 the assignment's own due box: the same screenshot pasted, the one that is this assignment taken (title and class)
+  await c.js(`document.querySelector('.hl-as-row .hl-as-go')?.click(); 0`); await c.sleep(1200);
+  c.log("OPEN", await c.js(`document.querySelector('.hl-as-pop')?.getAttribute('aria-label') || 'not open'`));
+  c.log("DUE BUTTON", await c.js(`(() => { const b = document.querySelector('.hl-as-pop .hl-as-shot'), i = document.querySelector('.hl-as-pop .hl-as-due'), l = i && i.closest('label'); if (!b || !i) return 'missing';
+    const rb = b.getBoundingClientRect(), ri = i.getBoundingClientRect(), rl = l.getBoundingClientRect(); return JSON.stringify({ rightOfBox: rb.left >= ri.right - 1, fromLabelEnd: Math.round(rl.right - rb.right) }); })()`));
+  if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-as-pop .hl-as-read').getBoundingClientRect(); return { x: Math.floor(b.left) - 6, y: Math.floor(b.top) - 6, width: Math.ceil(b.width) + 12, height: Math.ceil(b.height) + 12 }; })()`); await c.shot("dueshot-2-box", r); }
+  await c.js(`(async () => { const dt = await ${pic}; const i = document.querySelector('.hl-as-pop .hl-as-due'); i.focus(); i.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return 'pasted'; })()`); await c.sleep(1500);
+  c.log("DUE READ", await c.js(`document.querySelector('.hl-as-pop .hl-nt-say')?.innerText || 'no word'`), await c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).asg.find((a) => a.id === 'a1'))`));
   c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
 // A tour for a design pass (4 November 2026; `--shots --fresh --profile=uitour`): test data on finance, crypto and Health, and
@@ -4741,7 +4860,8 @@ const bins = async (c) => {
 const uitour = async (c) => {
   const only = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7);
   const flask = async () => { await c.press('button[aria-label="Add test data"]'); await c.sleep(2600); };
-  const home = async () => { await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'center', behavior: 'instant' })`); await c.sleep(400); await c.press(".foot-logo"); await c.sleep(4600); };
+  // between sides the page again (the foot's logo leads to the wallets, not the selections: 4 November 2026)
+  const home = async () => { await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1500); };
   const top = async () => { await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(900); };
   const view = async (name, sel) => { const ok = await c.js(`(() => { const e = ${sel}; if (!e) return false; e.scrollIntoView({ block: 'start', behavior: 'instant' }); return true; })()`); await c.sleep(1800); if (ok && c.shots) await c.shot(name); c.log("VIEW", name, ok);
     if (ok) { const r = await c.js(HUNT); if (r !== '{"bad":[],"cut":[]}') c.log("FOUND", name, r); } };
@@ -4757,7 +4877,7 @@ const uitour = async (c) => {
     await c.press(".big-card"); await c.sleep(6500);
     await flask(); await top(); if (c.shots) await c.shot("f-home");
     await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000); if (c.shots) await c.shot("f-year");
-    await c.press(".ycell", new Date().getMonth()); await c.sleep(3600); if (c.shots) await c.shot("f-month");
+    await c.press(".ycell", Math.max(0, new Date().getMonth() - 1)); await c.sleep(3600); if (c.shots) await c.shot("f-month");
     await cards("f");
     await home();
   }
@@ -4765,7 +4885,7 @@ const uitour = async (c) => {
     await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(5000);
     await flask(); await top(); if (c.shots) await c.shot("c-home");
     await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
-    await c.press(".ycell", new Date().getMonth()); await c.sleep(3600); if (c.shots) await c.shot("c-month");
+    await c.press(".ycell", Math.max(0, new Date().getMonth() - 1)); await c.sleep(3600); if (c.shots) await c.shot("c-month");
     await cards("c");
     await home();
   }
@@ -4797,9 +4917,8 @@ const hlkind = async (c) => {
   const saved = () => c.js(`(() => { const v = JSON.parse(localStorage.getItem('flow-health') || 'null'); if (!v) return 'nothing saved';
     return JSON.stringify({ mine: v.mine, lib: v.clsLib.map((q) => q.name), cls: [...new Set(v.classes.map((q) => q.name))], asg: v.asg.map((a) => a.cls), steps: v.profile.steps, stepsIn: v.profile.stepsIn || 0 }); })()`);
   const list = () => c.js(`(() => { const p = document.querySelector('.hl-ca'); if (!p) return 'no list';
-    return JSON.stringify({ head: p.querySelector('.hl-nt-when')?.innerText, rows: [...p.querySelectorAll('.hl-ca-row')].map((r) => [r.querySelector('b').innerText, r.querySelector('.hl-ca-kind button.on')?.innerText, r.querySelector('small').innerText]) }); })()`);
-  const kind = (name, to) => c.js(`(() => { const r = [...document.querySelectorAll('.hl-ca-row')].find((e) => e.querySelector('b').innerText === ${JSON.stringify(name)}); if (!r) return 'no row';
-    const b = [...r.querySelectorAll('.hl-ca-kind button')].find((e) => e.innerText === ${JSON.stringify(to)}); b.click(); return 'pressed'; })()`);
+    return JSON.stringify({ head: p.querySelector('.hl-nt-when')?.innerText, rows: [...p.querySelectorAll('.hl-ca-row')].map((r) => (r.classList.contains('ev') ? 'event: ' : '') + r.querySelector('b').innerText) }); })()`);
+  const find = (t) => c.js(`(() => { const i = document.querySelector('.hl-ca-find input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(t)}); i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })()`);
   await c.sleep(SPLASH_MS);
   const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
   if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
@@ -4811,24 +4930,28 @@ const hlkind = async (c) => {
   c.log("LOADED", await saved());
   await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1400);
   c.log("BAR", await c.js(`JSON.stringify([...document.querySelectorAll('[data-card="week"] .hl-scan-bar .hl-ibtn')].map((e) => e.getAttribute('aria-label')))`));
-  await c.js(`document.querySelector('[aria-label="Classes and events"]').click()`); await c.sleep(900);
-  c.log("LIST", await list());
+  // My classes (5 November 2026): only classes listed; the search finds an event and adds it; the bin takes one out (Undo)
+  await c.js(`document.querySelector('[aria-label="My classes"]').click()`); await c.sleep(900);
+  c.log("LIST", await list(), await c.js(`document.activeElement?.getAttribute('aria-label')`));
   if (c.shots) await c.shot("kind-1-list");
-  c.log("MKW → Event", await kind("MKW1120: Tutorial 20", "Event")); await c.sleep(700);
-  c.log("GOLF → Class", await kind("Golf Hangout", "Class")); await c.sleep(700);
-  c.log("AFTER SWITCHES", await list(), await saved());
-  if (c.shots) await c.shot("kind-2-switched");
+  c.log("FIND golf", await find("golf")); await c.sleep(400); c.log("FOUND", await list());
+  if (c.shots) await c.shot("kind-2-search");
+  await c.js(`document.querySelector('.hl-ca-row.ev .hl-ca-add')?.click(); 0`); await c.sleep(700);
+  c.log("GOLF ADDED", await list(), await saved());
+  c.log("FIND new", await find("Futsal Club")); await c.sleep(400);
+  c.log("NEW OFFER", await c.js(`document.querySelector('.hl-ca-new')?.innerText || 'none'`));
+  await c.js(`document.querySelector('.hl-ca-find input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); 0`); await c.sleep(700);
+  c.log("NEW ADDED", await list(), await saved());
   // the pencil on BTW1042: renamed, its room changed, Enter
   await c.js(`[...document.querySelectorAll('.hl-ca-row')].find((e) => /BTW1042/.test(e.innerText)).querySelector('.hl-ca-ed').click()`); await c.sleep(500);
   c.log("EDITOR", await c.js(`JSON.stringify({ open: !!document.querySelector('.hl-ca .hl-lib-edit'), also: !!document.querySelector('.hl-ca .hl-lib-also') })`));
-  if (c.shots) await c.shot("kind-3-edit");
   await c.js(`(() => { const [a, b] = document.querySelectorAll('.hl-ca .hl-lib-edit input.jr-in'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     set.call(a, 'BTW1042 Business Stats'); a.dispatchEvent(new Event('input', { bubbles: true })); set.call(b, 'B2.14'); b.dispatchEvent(new Event('input', { bubbles: true })); })()`); await c.sleep(300);
   await c.js(`document.querySelector('.hl-ca .hl-lib-edit input.jr-in').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`); await c.sleep(700);
   c.log("RENAMED", await list(), await saved());
-  // golf in the bin: gone, Undo offered
-  await c.js(`[...document.querySelectorAll('.hl-ca-row')].find((e) => /Golf/.test(e.innerText)).querySelector('.hl-ca-x').click()`); await c.sleep(700);
-  c.log("BINNED", await list(), await saved(), await c.js(`document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || 'no undo'`));
+  // MKW out of the classes: gone from the list, still on the week; Undo brings it back
+  await c.js(`[...document.querySelectorAll('.hl-ca-row')].find((e) => /MKW1120/.test(e.innerText))?.querySelector('.hl-ca-x').click(); 0`); await c.sleep(700);
+  c.log("MKW OUT", await list(), await saved(), await c.js(`document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || 'no undo'`));
   await c.js(`document.querySelector('.undo-note.on .un-b')?.click()`); await c.sleep(700);
   c.log("UNDONE", await list());
   await c.key("Escape"); await c.sleep(700);
@@ -5609,5 +5732,51 @@ const hlturn = async (c) => {
   c.log("LABEL", await c.js(`JSON.stringify({ w: Math.round(document.querySelector('.hl-day-btn').getBoundingClientRect().width), spans: [...document.querySelectorAll('.hl-day-btn > span')].map((e) => Math.round(e.getBoundingClientRect().width)) })`));
   c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
-module.exports = { bins, fewer, hlturn, uitour, hlkind, hldue, hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// In and out of a lesson's folder, and Show in folder (5 November 2026; `--fresh --files --profile=hlfolder`): made-up Health
+// data, a class with two lessons and kept files. Its notes opened from its block; Week 1 pressed, back with the arrow, Week 2
+// pressed, back with Esc. Per move, every second frame for 380ms: the pop-up's height, and the scale and opacity of its head.
+// Then Show in folder on the class's file and on a lesson's file box: what the page asked for (only written down, --files)
+const hlfolder = async (c) => {
+  const js = (code) => c.js(code);
+  const now = Date.now();
+  const data = { profile: { cm: 175, kg: 82, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 },
+    classes: [{ id: "c1", name: "BTW1042", room: "MA 93", dow: 0, from: "09:00", to: "11:00", tint: 1 }],
+    clsNotes: { btw1042: { about: "Business statistics", items: [{ id: "i1", t: "Syllabus.pdf", file: "/Users/test/Documents/Uni/BTW/Syllabus.pdf", about: "", at: now }],
+      lessons: [{ id: "l1", t: "Week 1", about: "Intro", at: now, items: [{ id: "f1", t: "Week 1.pptx", file: "/Users/test/Documents/Uni/BTW/Week 1.pptx", about: "Slides", at: now },
+                                                                    { id: "f2", t: "Reading", url: "https://example.com/r.pdf", about: "", at: now }] },
+                { id: "l2", t: "Week 2", about: "", at: now, items: [] }] } } };
+  await c.sleep(SPLASH_MS);
+  const fresh = await js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); true`);
+  await js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await js(`document.querySelector(".hl-week")?.scrollIntoView({ block: "start", behavior: "instant" })`); await c.sleep(900);
+  await js(`(() => { const b = document.querySelector(".hl-cls"); b.focus(); b.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })); })()`);
+  await c.sleep(900);
+  c.log("OPEN", await js(`JSON.stringify({ pop: !!document.querySelector(".hl-nt"), tiles: document.querySelectorAll(".hl-ls-tile").length, rv: document.querySelectorAll(".hl-nt-rv").length })`));
+  // act: what to do, inside the page; every second frame: [the pop-up's height, its head's scale, its head's opacity]
+  const move = (act) => js(`new Promise((done) => {
+    const p = document.querySelector(".hl-nt"), read = () => { const h = p.firstElementChild, m = new DOMMatrix(getComputedStyle(h).transform);
+      return [Math.round(p.getBoundingClientRect().height), +m.a.toFixed(3), +(+getComputedStyle(h).opacity).toFixed(2)]; };
+    const out = [read()], t0 = performance.now();
+    ${act};
+    let i = 0;
+    const step = () => { if (i++ % 2 === 0) out.push(read()); if (performance.now() - t0 < 380) requestAnimationFrame(step); else done(JSON.stringify({ in: !!document.querySelector(".hl-ls-title"), f: out })); };
+    requestAnimationFrame(step);
+  })`);
+  c.log("COLUMNS", "popHeight headScale headOpacity");
+  c.log("INTO WEEK 1", await move(`document.querySelectorAll(".hl-ls-tile")[0].click()`)); await c.sleep(600);
+  c.log("LESSON", await js(`JSON.stringify({ boxes: document.querySelectorAll(".hl-lf").length, rv: document.querySelectorAll(".hl-lf-rv").length })`));
+  await js(`document.querySelector(".hl-lf-rv").click()`); await c.sleep(300);
+  c.log("BACK (arrow)", await move(`document.querySelector(".hl-ls-back").click()`)); await c.sleep(600);
+  await js(`document.querySelector(".hl-nt-it .hl-nt-rv").click()`); await c.sleep(300);
+  c.log("INTO WEEK 2", await move(`document.querySelectorAll(".hl-ls-tile")[1].click()`)); await c.sleep(600);
+  c.log("BACK (Esc)", await move(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`)); await c.sleep(600);
+  c.log("ASKED", await js(`JSON.stringify(window.__opened)`));
+  c.log("ERRORS", await js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+module.exports = { hlfolder, dueshot, daily, bins, fewer, hlturn, uitour, hlkind, hldue, hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

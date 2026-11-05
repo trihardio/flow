@@ -207,6 +207,21 @@ const noteOpen = async (target) => {
   const err = await shell.openPath(target);
   return err ? { error: "open" } : { ok: true, ...(moved ? { moved } : {}) };
 };
+/* "Show in folder" (5 November 2026, his words: "make a 'show in folder' button (one symbol button) and when pressed it opens
+   finder and goes straight directly to the file directory in the finder"): Finder opens on the folder a kept file is in,
+   with the file picked. Nothing is opened or run, so any kind of file may be shown; one that was moved is looked for by
+   name as noteOpen does. { ok, moved? } / { gone } / { error } */
+const noteReveal = async (target) => {
+  if (typeof target !== "string" || target.length > 2000 || !target.startsWith("/") || target.includes("\0")) return { error: "bad" };
+  let moved = null;
+  try { await fs.promises.stat(target); } catch (e) {
+    moved = await fileFind(target);
+    if (!moved) return { gone: true };
+    target = moved;
+  }
+  shell.showItemInFolder(target);
+  return { ok: true, ...(moved ? { moved } : {}) };
+};
 /* A deadline's heads-up (29 October 2026: "when due date is near it will give a warning/heads up to me"): the Mac's own
    notification, made by this process; nothing is asked of the internet. Pressed, it brings the window forward and tells
    the page which assignment it was about. Each is kept until it is closed, or its press would be lost with it */
@@ -391,14 +406,18 @@ const ocrRead = async (bytes, ext) => {
 const DATA_DIR = path.join(app.getPath("appData"), "flow");
 const OLD_DATA_DIR = path.join(app.getPath("appData"), "trace");
 const hasData = (dir) => fs.existsSync(path.join(dir, "Local Storage"));
+// (only on his Mac, the one Trace ever ran on: on anybody else's a folder called "trace" is some other app's, and must never be
+// taken for Flow's; a new install there starts empty, at the login. 5 November 2026: "make sure when a new user downloads my
+// repo, it deletes my save and makes a brand new save and account")
+const OLD_OURS = fs.existsSync(OWN_DIR);
 try {
-  if (hasData(OLD_DATA_DIR) && !hasData(DATA_DIR)) {
+  if (OLD_OURS && hasData(OLD_DATA_DIR) && !hasData(DATA_DIR)) {
     // a new folder with nothing saved in it yet is set aside (never deleted) to make room for the real one
     if (fs.existsSync(DATA_DIR)) fs.renameSync(DATA_DIR, `${DATA_DIR}-empty-${Date.now()}`);
     fs.renameSync(OLD_DATA_DIR, DATA_DIR);
   }
 } catch (e) { /* left where it was: used from there below */ }
-app.setPath("userData", hasData(OLD_DATA_DIR) && !hasData(DATA_DIR) ? OLD_DATA_DIR : DATA_DIR);
+app.setPath("userData", OLD_OURS && hasData(OLD_DATA_DIR) && !hasData(DATA_DIR) ? OLD_DATA_DIR : DATA_DIR);
 app.setName("Flow");
 
 /* ---------- first launch: is the system's cache of graphics programs empty? ----------
@@ -802,6 +821,7 @@ app.whenReady().then(() => {
   ipcMain.handle("health:phone", () => phoneRead());
   ipcMain.handle("health:ocr", (e, bytes, ext) => ocrRead(bytes, ext));
   ipcMain.handle("health:open", (e, target) => noteOpen(target));
+  ipcMain.handle("health:reveal", (e, target) => noteReveal(target));
   ipcMain.handle("health:notify", (e, title, body, id) => dueNotify(title, body, id));
   ipcMain.handle("health:due-ai", (e, text) => dueAI(text));
   ipcMain.handle("gfx:settle", () => aiReady);

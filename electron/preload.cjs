@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld("flowHealth", {
   // a class's notes: a link opened in his browser, or a kept file in its own app (noteOpen in main.cjs: { ok } / { gone } / { error });
   // where a file dropped or picked lives on the disk ("" when it has no place there)
   open: (target) => ipcRenderer.invoke("health:open", target),
+  // a kept file shown in Finder: its folder opened with it picked (noteReveal in main.cjs: { ok } / { gone } / { error })
+  reveal: (target) => ipcRenderer.invoke("health:reveal", target),
   // a deadline's heads-up, as the Mac's own notification (made by main.cjs; nothing goes to the internet); and, when one is
   // pressed, the assignment it was about (onDue gives back how to stop listening)
   notify: (title, body, id) => ipcRenderer.invoke("health:notify", title, body, id),

@@ -4232,7 +4232,7 @@ const SIDE_PARTS = { cal: ".cal-wrap", weekly: '[data-card="weekly expenses"]', 
                      gym: '[data-card="gym"]', board: '[data-card="vision board"]', asg: '[data-card="assignments"]', shop: '[data-card="shopping"]',
                      subs: '[data-card="subscriptions"]' };
 const SIDE_SPY = { finance: ["cal", "weekly", "flow", "goals", "debts", "subs"], crypto: ["cal", "an", "perf", "names"], idx: ["cal", "an", "perf", "names", "kinds"], fx: ["cal", "an", "perf", "names"],
-                   health: ["todo", "shop", "week", "asg", "activity", "body", "diet", "gym", "board"] };
+                   health: ["todo", "activity", "shop", "week", "asg", "body", "diet", "gym", "board"] };
 // the sidebar's props are written out afresh on every render of its panel: they are compared by what they hold, so the
 // sidebar redraws only when a row, the button on top or the crocodile's words really change
 const sameFlat = (a, b) => {
@@ -10367,7 +10367,7 @@ const DG_W = {
   fplan:   { fin: true, name: "Time plan", icon: "schedule", hue: "#a9d4ff", sizes: ["s", "m", "l"], desc: "Type your plan as one line and see when you will be done, or arrive." },
   // Health (25 October 2026)
   hscore:  { hl: true, name: "Day score", icon: "speed", hue: "#5ee3a9", sizes: ["s", "m", "l"], desc: "Your day out of 100: your steps, moving and to-dos, with the last seven days." },
-  hrings:  { hl: true, name: "Rings", icon: "track_changes", hue: "#ff8a4c", sizes: ["s", "m", "l"], desc: "Steps, move and to-dos as Apple's three rings, with the last seven days." },
+  hrings:  { hl: true, name: "Rings", icon: "track_changes", hue: "#ff8a4c", sizes: ["s", "m", "l"], desc: "Steps, move and to-dos as Apple's three rings, the day's score in the middle, with the last seven days." },
   hsteps:  { hl: true, name: "Steps", icon: "directions_walk", hue: "#2fd08a", sizes: ["s", "m", "l"], desc: "Today's steps against your goal, and the last two weeks." },
   hheat:   { hl: true, name: "Steps year", icon: "calendar_view_month", hue: "#8fe2b6", sizes: ["m", "l", "xl"], desc: "Every day as a square, greener the nearer it came to your step goal." },
   hnext:   { hl: true, name: "Up next", icon: "event_upcoming", hue: "#8ec8f8", sizes: ["s", "m", "l"], desc: "The class on now or coming next, how long until it, and the rest of today." },
@@ -10446,20 +10446,20 @@ const DG_PRESETS = {
   // Health (25 October 2026): each row fills the board's 12 columns
   health: [
     { id: "overview", name: "Overview", icon: "dashboard", desc: "What is next, your score and your to-dos first, then a year of steps, the gym and your body, the rest stacked.",
-      items: [["hnext", "m"], ["hscore", "m"], [["hrings", "hsteps"], "m"], ["htodo", "l"], ["hheat", "xl"], [["hgym", "hweight"], "m"], [["hfuel", "hbmi"], "m"], ["hawards", "m"],
-              [["hacts", "hplan"], "m"], ["hvision", "m"], ["hstreak", "m"]] },
+      items: [["hnext", "m"], ["hacts", "m"], [["hrings", "hsteps"], "m"], ["htodo", "l"], ["hheat", "xl"], [["hgym", "hweight"], "m"], [["hfuel", "hbmi"], "m"], ["hawards", "m"],
+              [["hplan", "hshop"], "m"], ["hvision", "m"], ["hstreak", "m"]] },
     { id: "student", name: "Student", icon: "school", desc: "Classes and to-dos up top with the time plan, then the day's score, the rings and your steps, the rest stacked.",
-      items: [["hnext", "l"], ["htodo", "l"], ["hplan", "l"], ["hscore", "m"], [["hrings", "hsteps"], "m"], ["hacts", "m"], ["hvision", "m"], [["hfuel", "hstreak"], "m"], [["hgym", "hweight"], "m"]] },
+      items: [["hnext", "l"], ["htodo", "l"], ["hplan", "l"], ["hshop", "m"], [["hrings", "hsteps"], "m"], ["hacts", "m"], ["hvision", "m"], [["hfuel", "hstreak"], "m"], [["hgym", "hweight"], "m"]] },
     { id: "morning", name: "Morning", icon: "wb_sunny", desc: "The day ahead: up next, to-dos, the score, what to eat, the rings and a card to keep you going.",
-      items: [["hnext", "m"], ["htodo", "m"], ["hscore", "s"], ["hfuel", "s"], ["hrings", "l"], ["hsteps", "l"], ["hvision", "l"], [["hacts", "hplan"], "m"], ["hweight", "m"], [["hstreak", "hbmi"], "m"]] },
+      items: [["hnext", "m"], ["htodo", "m"], ["hacts", "s"], ["hfuel", "s"], ["hrings", "l"], ["hsteps", "l"], ["hvision", "l"], [["hplan", "hshop"], "m"], ["hweight", "m"], [["hstreak", "hbmi"], "m"]] },
     { id: "athlete", name: "Athlete", icon: "fitness_center", desc: "Training first: the gym week, a year of steps, your steps and the streak, awards, weight and fuel.",
-      items: [["hgym", "l"], ["hheat", "xl"], ["hsteps", "m"], [["hweight", "hbmi"], "m"], ["hstreak", "s"], ["hrings", "s"], ["hawards", "m"], ["hfuel", "m"], ["hscore", "m"]] },
+      items: [["hgym", "l"], ["hheat", "xl"], ["hsteps", "m"], [["hweight", "hbmi"], "m"], ["hstreak", "s"], ["hrings", "s"], ["hawards", "m"], ["hfuel", "m"], ["hacts", "m"]] },
     { id: "stacks", name: "Smart stacks", icon: "layers", stacked: true, desc: "Every widget in six boxes. Swipe a box up or down: your plans, your day, tools, the long view, your training and body, and your fuel.",
-      items: [[["hnext", "htodo"], "m"], [["hscore", "hrings", "hsteps"], "m"], [["hacts", "hplan"], "s"], [["hfuel", "hbmi", "hstreak"], "s"], ["hheat", "xl"], [["hgym", "hweight", "hawards", "hvision"], "l"]] },
+      items: [[["hnext", "htodo"], "m"], [["hrings", "hscore", "hsteps"], "m"], [["hacts", "hplan"], "s"], [["hfuel", "hbmi", "hstreak"], "s"], ["hheat", "xl"], [["hgym", "hweight", "hawards", "hvision"], "l"]] },
     { id: "onerow", name: "One row", icon: "view_week", stacked: true, desc: "Nine widgets in a single row of three boxes: your plans, your day, your training. Swipe each one.",
-      items: [[["hnext", "htodo", "hplan"], "m"], [["hscore", "hrings", "hsteps"], "m"], [["hgym", "hweight", "hawards"], "m"]] },
+      items: [[["hnext", "htodo", "hplan"], "m"], [["hrings", "hscore", "hsteps"], "m"], [["hgym", "hweight", "hawards"], "m"]] },
     { id: "minimal", name: "Minimal", icon: "crop_square", desc: "Just what is next, your to-dos, the score and a year of steps, with the rings and steps in one stack.",
-      items: [["hnext", "m"], ["htodo", "m"], ["hscore", "m"], ["hheat", "xl"], [["hrings", "hsteps"], "l"]] },
+      items: [["hnext", "m"], ["htodo", "m"], ["hacts", "m"], ["hheat", "xl"], [["hrings", "hsteps"], "l"]] },
   ],
 };
 const DG_ALT = { sides: ["today", "bal", "streak"], prices: ["bal", "year", "names"] };
@@ -11546,11 +11546,12 @@ const DG_ACTS = {
   trade: [["quick", "add", "Log trade", "#8fe2b6", "Log a trade to today (⌘N)"], ["calc", "calculate", "Calculator", "#8ec8f8", "Open the calculator"],
           ["year", "calendar_month", "Calendar", "#c5ea8a", "The yearly panel"], ["wrap", "auto_awesome", "Wrapped", "#f0d88a", "This month's wrapped"],
           ["fx", "currency_exchange", "Exchange", "#f6a5c0", "The money exchanger (⌘E)"]],
-  finance: [["quick", "add", "Log", "#8fe2b6", "Log an expense or an income to today (⌘N)"], ["bill", "group", "Split bill", "#8ec8f8", "Work out what each person pays"],
+  finance: [["worth", "balance", "Worth it?", "#8fe2b6", "Check a purchase before you make it (⌘B)"], ["bill", "group", "Split bill", "#8ec8f8", "Work out what each person pays"],
             ["year", "calendar_month", "Calendar", "#c5ea8a", "The yearly panel"], ["wrap", "auto_awesome", "Wrapped", "#f0d88a", "This month's wrapped"],
             ["fx", "currency_exchange", "Exchange", "#f6a5c0", "The money exchanger (⌘E)"]],
   health: [["addtodo", "add_task", "To-do", "#4fb3ff", "Add a to-do to today (⌘N)"], ["steps", "directions_walk", "Steps", "#2fd08a", "Type today's steps"],
-           ["gym", "fitness_center", "Workout", "#ffa497", "Log a gym session"], ["weigh", "monitor_weight", "Weigh in", "#c3a8ff", "Log today's weight"],
+           ["sleep", "bedtime", "Sleep", "#b7a4e6", "Log last night's sleep"], ["weigh", "monitor_weight", "Weigh in", "#c3a8ff", "Log today's weight"],
+           ["gym", "fitness_center", "Workout", "#ffa497", "Log a gym session"],
            ["scan", "document_scanner", "Timetable", "#f0d88a", "Read your timetable off a screenshot or a photo"]],
 };
 /* The buttons fill the whole widget (23 October 2026, his picture of the five in a row with room above and below them:
@@ -11612,7 +11613,8 @@ const DgFToday = ({ c, r, info, x }) => {
       {on.sub2 && <div className="wd-sub"><span>{list.length ? <><b>{f.abs(spent)}</b> of {f.abs(lim)}</> : "A no-spend day"}</span></div>}
     </>
   );
-  const add = <button className="wd-btn" onClick={() => api.current.go("quick")}><span className="msym" aria-hidden="true">add</span>Add expense</button>;
+  // a quiet link, not a second Log button: the header's "+ Log ⌘N" is Home's one (4 November 2026, he chose "one Log")
+  const add = <button className="wd-btn q" onClick={() => api.current.go("quick")}><span className="msym" aria-hidden="true">add</span>Add expense</button>;
   const expRows = (n) => list.slice(-n).reverse().map((it) => {
     const ct = finCatOf(it, x.cat);
     return (
@@ -11655,7 +11657,7 @@ const DgFMonth = ({ c, r, info, x }) => {
   const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", DGH.sub], ["stats", r.w >= 240 ? DGH.stats : 0], ["bars", DGH.bars]]);
   const head = <DgHead info={{ ...info, name: r.w >= 230 ? `${MONTHS_FULL[today.m]} ${today.y}` : MONTHS_FULL[today.m] }} go="Open the month" onGo={r.w < 210 ? null : () => api.current.go("month", { y: today.y, m: today.m })} />;
   // nothing logged this month yet: what the widget is for and the way to start, not a board of zeros (23 October 2026, the declutter pass)
-  if (!s.green && !s.red && !inc) return <>{head}<DgEmpty icon={info.icon} text={`Nothing logged in ${MONTHS_FULL[today.m]} yet`} sub={r.w >= 200 && r.h >= 150 ? "Log what you spend; each day is then measured against your daily limit." : null}>{r.h >= 150 && <button className="wd-btn" onClick={() => api.current.go("quick")}><span className="msym" aria-hidden="true">add</span>Log</button>}</DgEmpty></>;
+  if (!s.green && !s.red && !inc) return <>{head}<DgEmpty icon={info.icon} text={`Nothing logged in ${MONTHS_FULL[today.m]} yet`} sub={r.w >= 200 && r.h >= 150 ? "Log what you spend; each day is then measured against your daily limit." : null}>{r.h >= 150 && <button className="wd-btn q" onClick={() => api.current.go("quick")}><span className="msym" aria-hidden="true">add</span>Log</button>}</DgEmpty></>;
   return (
     <>
       {head}
@@ -12695,13 +12697,22 @@ const DgHRings = ({ r, info, x }) => {
   const size = Math.round(Math.max(56, Math.min(190, room, row ? r.w * 0.44 : r.w)));
   const lines = [["Steps", d.steps, p.steps, ""], ["Move", Math.round(d.move), p.move, " kcal"], ["To-dos", d.done, d.todos.length, ""]];
   const legN = Math.floor((Math.min(room, size + 24) + 7) / 27);
+  // the day's score in the rings' middle (4 November 2026, he chose "merge score": Day score beside Rings showed the same
+  // figures twice), as big as the hole lets it be (the inner ring leaves 31% of the size), else in the tip; its word heads
+  // the legend when there is a line for it
+  const hue = hlScoreHue(now.score), hole = size * 0.31, fig = hole >= 76 ? 24 : hole >= 50 ? 16 : 0;
   return (
     <>
       <DgHead info={info} go="Open today" onGo={r.w < 210 ? null : () => api.current.go("day")} />
       <div className={`wd-winb${row ? " row" : ""}`}>
-        <div className="wd-hrings" style={{ width: size, height: size }}><HlRings vals={now.v} size={size} /></div>
+        <div className="wd-hrings" style={{ width: size, height: size }} title={`Day score ${now.score} of 100: ${hlScoreSay(now.score).toLowerCase()}`}>
+          <HlRings vals={now.v} size={size} />
+          {fig > 0 ? <span className="wd-hrn"><span className="wd-px" style={{ fontSize: fig, color: hue }}><PxFig text={String(now.score)} /></span></span>
+            : hole >= 28 && <span className="wd-hrn"><b className="wd-hrn-t" style={{ fontSize: Math.round(hole * 0.38), color: hue }}><Num v={now.score} /></b></span>}
+        </div>
         {row && (
           <div className="wd-leg">
+            {legN >= 4 && <span className="wd-legw" style={{ color: hue }}>{hlScoreSay(now.score)}</span>}
             {lines.slice(0, legN).map(([k, v, g, u], i) => <span key={k}><i style={{ background: HL_TINT[i][0] }} />{k}<b>{hlFmt(v)}<em> / {hlFmt(g)}{u}</em></b></span>)}
           </div>
         )}
@@ -16360,6 +16371,11 @@ function TradeTracker({ market, onHome, onApp, apps, onUsers, onReset, onRestore
               })}
             </h1>
             <div style={S.navBox}>
+              {/* a visible way into the quick log here too, as on the year page and finance's month page (4 November 2026,
+                  the day-to-day pass: the month page was the one screen of a trading side without it) */}
+              <button className="log-pill" title={kbTx("Log a trade to today (⌘N)")} onClick={() => setQuickOpen(true)}>
+                <span className="msym">add</span>Log<kbd><Kb id="quick" /></kbd>
+              </button>
               {/* the arrows are always on show (7 October 2026: he asked for that; they used to wait for the pointer) */}
               <span className="month-nav">
                 <button className="nav-arrow" disabled={!monthAfter(year, month, -1)} title="Previous month (←)" onClick={() => nav(-1)}>‹</button>
@@ -17255,6 +17271,32 @@ const HlMini = ({ vals }) => (
    picks, for as many days as he says or with no end; each day's tick is its own. Taken off one day, it stays on the
    others. The box keeps what is typed to itself (memo, the page's ref), so typing redraws nothing behind it ---------- */
 const HL_REPS = [["once", "Once"], ["daily", "Every day"], ["weekdays", "Weekdays"], ["days", "Days"]];
+/* The to-do box also logs the day (4 November 2026, he chose "Health ⌘N understands logs"): a line that is only a log is
+   logged on the day on screen instead of becoming a to-do. "8500 steps" · "8.5k steps" · "8,500 langkah"; "72kg" · "72.5 kg";
+   "slept 23:30-7" · "tidur 11-6:30" · "slept 11pm to 7am" (the night before the day). A bedtime with no am / pm from 6 to 11
+   is the evening, 12 is midnight; anything else stays a to-do. null when the line is not a log */
+const hlQuickLog = (raw) => {
+  const t = String(raw).trim().toLowerCase().replace(/\s+/g, " ");
+  let m = t.match(/^(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?) ?(k)? ?(?:steps?|langkah)$/);
+  if (m) {
+    const n = m[2] ? parseFloat(m[1].replace(",", ".")) * 1000 : Number(m[1].replace(/[.,](?=\d{3}(\D|$))/g, "").replace(",", "."));
+    return n >= 1 && n <= 200000 ? { steps: Math.round(n) } : null;
+  }
+  m = t.match(/^(\d{2,3}(?:[.,]\d{1,2})?) ?(?:kg|kilos?)$/);
+  if (m) { const v = Number(m[1].replace(",", ".")); return v >= 25 && v <= 400 ? { kg: v } : null; }
+  m = t.match(/^(?:slept|sleep|tidur) (\d{1,2})(?:[:.](\d{2}))? ?(am|pm)? ?(?:-|–|—|to|until|sampai) ?(\d{1,2})(?:[:.](\d{2}))? ?(am|pm)?$/);
+  if (!m) return null;
+  const hh = (h, mm, ap, bed) => {
+    h = +h; mm = +(mm || 0);
+    if (h > 23 || mm > 59 || (ap && (h < 1 || h > 12))) return null;
+    if (ap) h = (h % 12) + (ap === "pm" ? 12 : 0);
+    else if (bed && h >= 6 && h <= 11) h += 12;
+    else if (bed && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  };
+  const bed = hh(m[1], m[2], m[3], true), wake = hh(m[4], m[5], m[6], false);
+  return bed && wake && bed !== wake ? { bed, wake } : null;
+};
 const HlTodos = memo(({ todos, day, today, api }) => {
   const [text, setText] = useState("");
   const [rep, setRep] = useState("once");
@@ -17267,6 +17309,8 @@ const HlTodos = memo(({ todos, day, today, api }) => {
   const add = () => {
     const t = text.trim();
     if (!t) { nudge(box.current); return; }
+    const log = day <= today && hlQuickLog(t);
+    if (log) { api.current.quickLog(day, log); setText(""); return; }
     if (rep === "days" && !dows.length) return;
     api.current.add({ text: t, rep, dows: rep === "days" ? dows : [], len: rep === "once" ? 0 : Math.min(3650, Number(len) || 0) });
     setText("");
@@ -17311,7 +17355,8 @@ const HlTodos = memo(({ todos, day, today, api }) => {
         })}
       </div>
       <div className="hl-add">
-        <input ref={box} className="jr-in hl-add-t" placeholder={`Add a to-do for ${day === today ? "today" : hlNice(day)}…`} value={text} maxLength={200}
+        <input ref={box} className="jr-in hl-add-t" placeholder={`Add a to-do for ${day === today ? "today" : hlNice(day)}…${day <= today ? "  or log: 8500 steps · 72kg · slept 23:30-7" : ""}`} value={text} maxLength={200}
+               title="A to-do, or a log of the day: 8500 steps · 72kg · slept 23:30-7" 
                onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
         <SlideSeg cls="hl-rep" value={rep} onPick={setRep} options={HL_REPS} />
         {rep === "days" && (
@@ -17903,7 +17948,7 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
      still exists"): the week's right-click menu, a class's, and the command bar (⌘P) */
   const weekActs = () => [
     { id: "hl-add", icon: "add", text: "Add a class or an event", run: () => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" }) },
-    { id: "hl-all", icon: "school", text: "Classes and events", tip: "See them all, change one, or say which are classes", run: () => { setForm(null); setAll(true); } },
+    { id: "hl-all", icon: "school", text: "My classes", tip: "Your classes: find, add, change or take one out", run: () => { setForm(null); setAll(true); } },
     HL_OCR_OK && { id: "hl-scan", icon: "add_photo_alternate", text: "Read a timetable off a picture", tip: "Or drop or paste a picture on the week", off: !!(scan && scan.busy), run: () => fileIn.current?.click() },
     classes.length > 0 && { id: "hl-clear", icon: "delete", text: "Clear the timetable", key: "⌘⌫", tip: "Everything off the week, with Undo", danger: true, run: () => { setForm(null); api.current.clearCls(); } },
   ].filter(Boolean);
@@ -17942,13 +17987,13 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
         <span className="hl-wk-sub">{shortDay(dates[0])} – {shortDay(dates[6])}</span>
         {scan && scan.err && <span key={scan.err} className="hl-scan-say">{scan.err}</span>}
         <span className="hl-bar-sp" />
-        <button className={`hl-ibtn${all ? " on" : ""}`} title="Your classes and events: see them all, change one, or say which are classes" aria-label="Classes and events"
+        <button className={`hl-ibtn${all ? " on" : ""}`} title="My classes: find, add, change or take one out" aria-label="My classes"
                 onClick={() => { setForm(null); setAll(true); }}><span className="msym" aria-hidden="true">school</span></button>
         <button className="hl-ibtn" title="Add a class or an event" aria-label="Add a class or an event" onClick={() => open({ ...hlNewCls(wk === thisWk ? hlDow(today) : 0, "08:00"), rep: "week" })}><span className="msym" aria-hidden="true">add</span></button>
         {/* the picture reader and the bin are in the week's right-click menu and the command bar since 4 November 2026 (fewer
             buttons); a picture dropped or pasted on the week is read as before. While one is read, the bar says so */}
         {scan && scan.busy && <span className="hl-ibtn hl-scan-btn" aria-live="polite" title="Reading the picture…"><span className="msym" aria-hidden="true">autorenew</span></span>}
-        {HL_OCR_OK && <input ref={fileIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />}
+        {HL_OCR_OK && <input ref={fileIn} className="hl-scan-in" type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { scanFile(e.target.files?.[0]); e.target.value = ""; }} />}
       </div>
       {scan && scan.found && (
         <HlScanSheet found={scan.found} week={scan.week} onCancel={() => setScan(null)}
@@ -18137,80 +18182,105 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
   );
 });
 
-/* ---------- health: every class and event on the week, in one list (4 November 2026, his words: "the user will be confused
-   because all the events put in automatically becomes a class. make option if i want to make it become a class or not,
-   and make a ui for the user to see and edit all of the classes"). Opened from the week's bar (the cap). Each name on the
-   timetable or in his quick list once: its colour, when it is on, its room, what is kept about it; a switch Class / Event
-   (a class is in My classes and assignments can be tied to it; an event only stands on the week); the pencil changes its
-   name, room and colour on every block of it, in the quick list, its notes and the assignments tied to it; the bin takes
-   it off the week, with Undo. The rows keep their order while it is open, so a switch pressed sends none to the other end */
+/* ---------- health: my classes (5 November 2026, his words: "this list is all of the events including classes i have for
+   the whole timetable, if and when i fill it up overtime, its going to stack and clutter. i want to just have a ui where i
+   can select my classes, add/remove, and a search option (so if its an event it doesnt get into the list)"). Opened from
+   the week's bar (the cap). Only his classes are listed: their colour, when they are on, the room, what is kept about them;
+   the pencil changes a name, room and colour on every block of it, in the quick list, its notes and the assignments tied to
+   it; the bin (sliding in on hover) takes it out of his classes, not off the week, with Undo. The search at the top finds
+   his classes and, under them, the names on the week that are not classes yet, each with Add; nothing found, it keeps the
+   typed name as a new class. Enter adds the one found. An event shows only when searched for (it was 4 November: every
+   class and event in one list, a switch on each) */
 const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
   useClock12();
   const [ed, setEd] = useState(null);             // the one being changed: { from (its name as it stands), name, room, tint, col, also }
-  const edNow = useRef(null);
+  const [q, setQ] = useState("");
+  const edNow = useRef(null), qBox = useRef(null);
   edNow.current = ed;
-  // (Esc while one is being changed only stops that)
+  // (Esc while one is being changed only stops that; with something typed, it empties the search first)
   const sh = useSheet(onClose, (e) => {
-    if (e.key !== "Escape" || !edNow.current) return false;
-    e.preventDefault(); e.stopImmediatePropagation(); setEd(null);
-    return true;
+    if (e.key !== "Escape") return false;
+    if (edNow.current) { e.preventDefault(); e.stopImmediatePropagation(); setEd(null); return true; }
+    if (qBox.current && qBox.current.value) { e.preventDefault(); e.stopImmediatePropagation(); setQ(""); return true; }
+    return false;
   });
+  useEffect(() => { const t = setTimeout(() => qBox.current?.focus({ preventScroll: true }), 60); return () => clearTimeout(t); }, []);
   const names = hlAsgNames(classes, lib), clsK = new Set(hlMineList(names, mine).map((c) => hlNoteKey(c.name)));
-  // the order as it was opened: classes, then events, each by name; one new since (or renamed) goes last
-  const order = useRef(null);
-  if (!order.current) order.current = [...names].sort((p, q) => clsK.has(hlNoteKey(q.name)) - clsK.has(hlNoteKey(p.name)) || p.name.localeCompare(q.name)).map((c) => hlNoteKey(c.name));
-  const at = (c) => { const i = order.current.indexOf(hlNoteKey(c.name)); return i < 0 ? 1e6 : i; };
-  const rows = [...names].sort((p, q) => at(p) - at(q));
-  const nCls = names.filter((c) => clsK.has(hlNoteKey(c.name))).length, nEv = names.length - nCls;
+  const isCls = (c) => clsK.has(hlNoteKey(c.name));
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = (c) => words.every((w) => `${c.name} ${c.room || ""}`.toLowerCase().includes(w));
+  const byName = (p, o) => p.name.localeCompare(o.name);
+  const mineRows = names.filter(isCls).filter(hit).sort(byName);
+  const evRows = words.length ? names.filter((c) => !isCls(c) && classes.some((b) => hlNoteKey(b.name) === hlNoteKey(c.name))).filter(hit).sort(byName).slice(0, 12) : [];
+  const nCls = names.filter(isCls).length;
+  const typed = q.trim(), fresh = typed.length >= 2 && !names.some((c) => hlNoteKey(c.name) === hlNoteKey(typed));
   // when it is on the week, in a few words: every week's days first, then single dates; three, then how many more
   const when = (k) => {
-    const bl = classes.filter((c) => hlNoteKey(c.name) === k).sort((p, q) => (p.once || "").localeCompare(q.once || "") || p.dow - q.dow || (p.from < q.from ? -1 : 1));
-    if (!bl.length) return "Not on the week";
+    const bl = classes.filter((c) => hlNoteKey(c.name) === k).sort((p, o) => (p.once || "").localeCompare(o.once || "") || p.dow - o.dow || (p.from < o.from ? -1 : 1));
+    if (!bl.length) return "Not on the week yet";
     const say = bl.map((c) => `${c.once ? hlNice(c.once) : `Every ${DOW_FULL[c.dow]}`} ${clk(c.from)}`);
     return say.length > 3 ? `${say.slice(0, 3).join(" · ")} · +${say.length - 3}` : say.join(" · ");
   };
+  const add = (name) => { api.current.clsKind(name, true); setQ(""); qBox.current?.focus({ preventScroll: true }); };
+  const addNew = () => { api.current.libAdd({ name: typed }); setQ(""); qBox.current?.focus({ preventScroll: true }); };
+  const out = (name) => { api.current.clsKind(name, false); offerUndo(`${name} (it stays on the week)`, () => api.current.clsKind(name, true), "Took out of my classes:"); };
+  const enter = () => { if (evRows.length === 1 && !mineRows.length) add(evRows[0].name); else if (fresh && !evRows.length && !mineRows.length) addNew(); else nudge(qBox.current); };
   const stop = (e) => e.stopPropagation();
+  const sub = (c, k) => { const kept = notes[k], na = asg.filter((a) => hlNoteKey(a.cls) === k).length;
+    return `${when(k)}${c.room ? ` · ${c.room}` : ""}${kept ? ` · ${hlKeptSay(kept)}` : ""}${na ? ` · ${na} ${na === 1 ? "assignment" : "assignments"}` : ""}`; };
   return createPortal(
     <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 10vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
          onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
-      <div role="dialog" aria-modal="true" aria-label="Classes and events" className="glass hl-nt hl-ca" style={{ ...sh.pop, "--c": HL_CLS[0] }} onClick={stop}>
+      <div role="dialog" aria-modal="true" aria-label="My classes" className="glass hl-nt hl-ca" style={{ ...sh.pop, "--c": HL_CLS[0] }} onClick={stop}>
         <div className="fx-head">
           <div className="hl-nt-hd">
-            <div className="hl-nt-name">Classes and events</div>
-            <div className="hl-nt-when">{nCls} {nCls === 1 ? "class" : "classes"} · {nEv} {nEv === 1 ? "event" : "events"}</div>
+            <div className="hl-nt-name">My classes</div>
+            <div className="hl-nt-when"><Num v={nCls} /> {nCls === 1 ? "class" : "classes"} · assignments and notes are kept for these</div>
           </div>
           <span className="hl-nt-tools"><button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={sh.shut}>✕</button></span>
         </div>
+        <label className="hl-ca-find">
+          <span className="msym" aria-hidden="true">search</span>
+          <input ref={qBox} value={q} maxLength={80} spellCheck={false} placeholder="Find a class, or add one from your week…" aria-label="Find or add a class"
+                 onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); enter(); } }} />
+        </label>
         <div className="hl-nt-body">
-          <small className="hl-ca-say">A class is kept in My classes, and assignments can be tied to it. An event only stands on the week.</small>
-          {!rows.length && <div className="hl-ca-none">Nothing on your timetable yet. Press an empty hour on the week to add a class or an event.</div>}
-          {rows.map((c) => {
-            const k = hlNoteKey(c.name), kept = notes[k], na = asg.filter((a) => hlNoteKey(a.cls) === k).length;
+          {!nCls && !words.length && <div className="hl-ca-none">No classes yet. Search above for one on your week, or type a new one.</div>}
+          {words.length > 0 && mineRows.length > 0 && <div className="hl-ca-grp">Your classes</div>}
+          {mineRows.map((c) => {
+            const k = hlNoteKey(c.name);
             if (ed && ed.from === c.name) return (
               <HlLibEdit key={k} ed={ed} set={(p) => setEd((e) => ({ ...e, ...p }))} cols={cols} n={0}
                          taken={names.some((o) => hlNoteKey(o.name) !== k && hlNoteKey(o.name) === hlNoteKey(ed.name))}
                          onCancel={() => setEd(null)}
-                         onSave={() => { const kn = hlNoteKey(ed.name); order.current = order.current.map((q) => (q === k ? kn : q)); api.current.libSet(c.name, ed, true); setEd(null); }} />
+                         onSave={() => { api.current.libSet(c.name, ed, true); setEd(null); }} />
             );
             return (
               <div key={k} className="hl-ca-row" style={{ "--c": hlClsCol(c) }}>
                 <i className="hl-ca-dot" />
-                <span className="hl-ca-txt">
-                  <b>{c.name}</b>
-                  <small>{when(k)}{c.room ? ` · ${c.room}` : ""}{kept ? ` · ${hlKeptSay(kept)}` : ""}{na ? ` · ${na} ${na === 1 ? "assignment" : "assignments"}` : ""}</small>
-                </span>
-                <SlideSeg cls="hl-ca-kind" value={clsK.has(k) ? "cls" : "ev"} onPick={(v) => api.current.clsKind(c.name, v === "cls")}
-                          options={[["cls", "Class", "One of your classes: kept in My classes, and assignments can be tied to it"], ["ev", "Event", "Not a class: it only stands on the week"]]} />
+                <span className="hl-ca-txt"><b>{c.name}</b><small>{sub(c, k)}</small></span>
                 <button className="hl-lib-ed hl-ca-ed" title={`Change ${c.name}: its name, room and colour, everywhere`} aria-label={`Change ${c.name}`}
                         onClick={() => setEd({ from: c.name, name: c.name, room: c.room || "", tint: c.tint || 0, col: c.col, also: true })}>
                   <span className="msym" aria-hidden="true">edit</span>
                 </button>
-                <button className="trash-btn bin-sm hl-ca-x" title={`Take ${c.name} off the week (Undo is offered)`} aria-label={`Take ${c.name} off the week`} onClick={() => api.current.clsDrop(c.name)}>
+                <button className="trash-btn bin-sm hl-ca-x" title={`Take ${c.name} out of my classes (it stays on the week)`} aria-label={`Take ${c.name} out of my classes`} onClick={() => out(c.name)}>
                   <TrashIcon />
                 </button>
               </div>
             );
           })}
+          {evRows.length > 0 && <div className="hl-ca-grp">On your week, not a class</div>}
+          {evRows.map((c) => (
+            <div key={hlNoteKey(c.name)} className="hl-ca-row ev" style={{ "--c": hlClsCol(c) }}>
+              <i className="hl-ca-dot" />
+              <span className="hl-ca-txt"><b>{c.name}</b><small>{when(hlNoteKey(c.name))}{c.room ? ` · ${c.room}` : ""}</small></span>
+              <button className="bk-btn hl-ca-add" onClick={() => add(c.name)} title={`Make ${c.name} one of my classes`}><span className="msym" aria-hidden="true">add</span>Add</button>
+            </div>
+          ))}
+          {fresh && !evRows.length && !mineRows.length && (
+            <button className="hl-lib-add hl-ca-new" onClick={addNew}><span className="msym" aria-hidden="true">add</span>Add “{typed}” as a class</button>
+          )}
+          {words.length > 0 && !fresh && !mineRows.length && !evRows.length && <div className="hl-ca-none">Nothing called “{typed}”.</div>}
         </div>
       </div>
     </div>, document.body);
@@ -18268,7 +18338,24 @@ const hlNoteParse = (s) => {
    and i can individually insert a description for each of the file"). Its name (Week 1 until he types another), its date
    when it was made from a block, its words, then what is kept in it as file boxes, each with its own words. What is typed
    is kept as each box is left and as the lesson closes; Esc goes back to the class */
-const HlLesItem = ({ it, nkey, lid, api, onOpen }) => {
+/* "Show in folder" (5 November 2026, his words: "make a 'show in folder' button (one symbol button) and when pressed it opens
+   finder and goes straight directly to the file directory in the finder"): on every kept file (a class's, a lesson's, an
+   assignment's), Finder opens on the folder it is in with it picked (noteReveal in main.cjs). A file that was moved is looked
+   for, as a press on its box does, and its new place kept */
+const HL_REVEAL_OK = HL_FILE_OK && !!window.flowHealth.reveal;
+const hlReveal = async (it, tell, api) => {
+  let r = null;
+  try { r = await window.flowHealth.reveal(it.file); } catch (e) { r = null; }
+  if (r && r.moved && api) { api.current.fileMoved(it.file, r.moved); tell(`${it.t || "That file"} was moved: found it in ${hlWhere(r.moved)}`); }
+  else if (r && r.gone) tell(`${it.t || "That file"} isn't there any more: it was moved or deleted`);
+  else if (!r || !r.ok) tell("That file can't be shown in Finder");
+};
+const HlReveal = ({ it, on, cls = "hl-nt-rv" }) => (HL_REVEAL_OK && it.file ? (
+  <button className={cls} aria-label={`Show ${it.t || "it"} in its folder`} title="Show in folder: Finder opens where it is, with it picked" onClick={() => on(it)}>
+    <span className="msym" aria-hidden="true">folder_open</span>
+  </button>
+) : null);
+const HlLesItem = ({ it, nkey, lid, api, onOpen, onReveal }) => {
   const [about, setAbout] = useState(it.about || "");
   const now = useRef(about), was = useRef(it.about || "");
   now.current = about; was.current = it.about || "";
@@ -18283,6 +18370,7 @@ const HlLesItem = ({ it, nkey, lid, api, onOpen }) => {
       </button>
       <textarea className="hl-lf-about" value={about} maxLength={4000} rows={3} spellCheck={false} placeholder="Add a description" aria-label={`About ${it.t || "this"}`}
                 onChange={(e) => setAbout(e.target.value)} onBlur={save} />
+      <HlReveal it={it} on={onReveal} cls="hl-nt-rv hl-lf-rv" />
       <button className="trash-btn bin-sm hl-lf-x" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.lesItemDel(nkey, lid, it.id)}>
         <TrashIcon />
       </button>
@@ -18393,7 +18481,7 @@ const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
     </div>
   );
 };
-const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, onClose }) => {
+const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, onReveal, say, onBack, onClose }) => {
   const [title, setTitle] = useState(lesson.t || "");
   const about = useRef({ text: lesson.about || "", html: lesson.aboutH || "" });
   const now = useRef({ title }), was = useRef(lesson);
@@ -18439,7 +18527,7 @@ const HlLesson = ({ cls, nkey, lesson, idx, api, lineBox, onOpen, say, onBack, o
           </div>
         ) : (
           <div className="hl-ls-files">
-            {items.map((it) => <HlLesItem key={it.id} it={it} nkey={nkey} lid={lesson.id} api={api} onOpen={onOpen} />)}
+            {items.map((it) => <HlLesItem key={it.id} it={it} nkey={nkey} lid={lesson.id} api={api} onOpen={onOpen} onReveal={onReveal} />)}
           </div>
         )}
       </div>
@@ -18457,6 +18545,38 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
   const [les, setLes] = useState(null);
   const lesson = les ? lessons.find((q) => q.id === les) || null : null, lesNow = useRef(null);
   lesNow.current = lesson;
+  /* in and out of a lesson's folder (5 November 2026, his words: "add animations for going in/out of folders in each
+     event/classes on the timetable"): the lesson grows out of its folder's tile, and going back the class settles from a
+     little larger onto that tile, while the pop-up glides from its old height to its new one. Taken as the press lands
+     (goLes), played once the other side is laid out, before it is drawn; a press meanwhile starts from where it is */
+  const pop = useRef(null), turn = useRef(null), turnA = useRef([]);
+  const goLes = (id, from) => {
+    const p = pop.current, was = lesNow.current;
+    if (p && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      const pr = p.getBoundingClientRect(), t = from && from.getBoundingClientRect();
+      turn.current = { h: pr.height, into: !!id, tile: id || (was && was.id), at: t ? [t.left + t.width / 2 - pr.left, t.top + t.height / 2 - pr.top] : null };
+    }
+    setLine(""); setLes(id);
+  };
+  useLayoutEffect(() => {
+    const tr = turn.current, p = pop.current;
+    turn.current = null;
+    if (!tr || !p) return;
+    for (const a of turnA.current) a.cancel();
+    turnA.current = [];
+    const pr = p.getBoundingClientRect();
+    let at = tr.at;
+    const tile = !tr.into && tr.tile && p.querySelector(`[data-les="${tr.tile}"]`);
+    if (tile) { const r = tile.getBoundingClientRect(); at = [r.left + r.width / 2 - pr.left, r.top + r.height / 2 - pr.top]; }
+    if (!at) at = [pr.width / 2, 60];
+    const go = (el, kf, ms) => turnA.current.push(el.animate(kf, { duration: ms, easing: "cubic-bezier(0.22,1,0.36,1)" }));
+    if (Math.abs(pr.height - tr.h) > 1) go(p, [{ height: `${tr.h}px` }, { height: `${pr.height}px` }], 320);
+    for (const c of p.children) {
+      if (c.classList.contains("hl-nt-drop")) continue;
+      const o = `${at[0] - c.offsetLeft}px ${at[1] - c.offsetTop}px`;
+      go(c, [{ transformOrigin: o, transform: `scale(${tr.into ? 0.88 : 1.07})`, opacity: 0, offset: 0 }, { transformOrigin: o, offset: 1 }], 300);
+    }
+  }, [les]);
   const [about, setAbout] = useState(n.about);
   const aboutH = useRef(n.aboutH || "");
   const [line, setLine] = useState("");
@@ -18470,7 +18590,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
   const sh = useSheet(onClose, (e) => {
     const t = e.target, tag = (t && t.tagName || "").toLowerCase(), typing = tag === "input" || tag === "textarea";
     // Esc inside a lesson goes back to the class (what was typed is kept as the lesson's boxes go), not out of the pop-up
-    if (e.key === "Escape" && lesNow.current) { e.stopImmediatePropagation(); e.preventDefault(); if (typing) t.blur(); setLes(null); return true; }
+    if (e.key === "Escape" && lesNow.current) { e.stopImmediatePropagation(); e.preventDefault(); if (typing) t.blur(); goLes(null); return true; }
     // (the days behind don't step while it is open)
     if (!typing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.stopPropagation(); return true; }
     return false;
@@ -18493,9 +18613,9 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
     if (!n0 && files.length) tell("That can't be kept here: drop a file from Finder");
   };
   // a new lesson: the next "Week n", on this block's date when it has none yet; opened at once
-  const newLesson = () => {
+  const newLesson = (from) => {
     const id = api.current.lessonAdd(key, { t: hlLesName(lessons), ...(k && !lessons.some((q) => q.k === k) ? { k } : {}) });
-    setLine(""); setLes(id);
+    goLes(id, from);
   };
   const lineBox = (ph) => (
     <label className="tp-line hl-nt-add">
@@ -18521,6 +18641,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
     if (r && r.gone) tell(`${it.t || "That file"} isn't there any more: it was moved or deleted`);
     else if (!r || !r.ok) tell(it.file ? "That file can't be opened from here" : "That link can't be opened");
   };
+  const reveal = (it) => hlReveal(it, tell, api);
   const items = n.items, starred = items.filter((q) => q.star).sort((p, q) => q.at - p.at), rest = items.filter((q) => !q.star).sort((p, q) => (q.k || "").localeCompare(p.k || "") || q.at - p.at);
   const day = (x) => { const d = hlDate(x); return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`; };
   const night = hlClsEnd(cls) > 1440;
@@ -18533,6 +18654,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
           <span className="hl-nt-tx"><b>{it.t || hlNoteName(it.url || "")}</b>{(hlNoteSub(it) || it.k) && <small>{[hlNoteSub(it), it.k ? day(it.k) : ""].filter(Boolean).join(" · ")}</small>}</span>
           {go && <span className="msym hl-nt-out" aria-hidden="true">{it.file ? "open_in_new" : "north_east"}</span>}
         </button>
+        <HlReveal it={it} on={reveal} />
         <button className={`hl-nt-star${it.star ? " on" : ""}`} aria-pressed={!!it.star} aria-label={it.star ? "Not important" : "Important: keep it at the top"}
                 title={it.star ? "Not important" : "Important: keep it at the top"} onClick={() => api.current.noteSet(key, it.id, { star: it.star ? 0 : 1 })}>
           <span className="msym" aria-hidden="true">star</span>
@@ -18547,7 +18669,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
   return createPortal(
     <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 10vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
          onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
-      <div role="dialog" aria-modal="true" aria-label={`${cls.name}: notes`} className={`glass hl-nt${over ? " over" : ""}`} style={{ ...sh.pop, "--c": hlClsCol(cls) }} onClick={stop}
+      <div ref={pop} role="dialog" aria-modal="true" aria-label={`${cls.name}: notes`} className={`glass hl-nt${over ? " over" : ""}`} style={{ ...sh.pop, "--c": hlClsCol(cls) }} onClick={stop}
            onDragOver={(e) => { e.stopPropagation(); const ty = [...e.dataTransfer.types]; if (ty.includes("Files") || ty.includes("text/uri-list")) { e.preventDefault(); if (!over) setOver(true); } }}
            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(false); }}
            onDrop={(e) => {
@@ -18559,8 +18681,8 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
              if (it) keep(it);
            }}>
         {lesson ? (
-          <HlLesson key={lesson.id} cls={cls} nkey={key} lesson={lesson} idx={lessons.indexOf(lesson)} api={api} lineBox={lineBox} onOpen={open} say={say}
-                    onBack={() => { setLine(""); setLes(null); }} onClose={sh.shut} />
+          <HlLesson key={lesson.id} cls={cls} nkey={key} lesson={lesson} idx={lessons.indexOf(lesson)} api={api} lineBox={lineBox} onOpen={open} onReveal={reveal} say={say}
+                    onBack={() => goLes(null)} onClose={sh.shut} />
         ) : (<>
         <div className="fx-head">
           <div className="hl-nt-hd">
@@ -18583,14 +18705,14 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
           <div className="hl-nt-grp hl-ls-grp"><span className="msym" aria-hidden="true">folder</span>Lessons</div>
           <div className="hl-ls-grid">
             {lessons.map((l, i) => (
-              <button key={l.id} className={`hl-ls-tile${k && l.k === k ? " now" : ""}`} onClick={() => { setLine(""); setLes(l.id); }}
+              <button key={l.id} data-les={l.id} className={`hl-ls-tile${k && l.k === k ? " now" : ""}`} onClick={(e) => goLes(l.id, e.currentTarget)}
                       title={`Open ${l.t || `Week ${i + 1}`}`}>
                 <span className="msym" aria-hidden="true">folder</span>
                 <b>{l.t || `Week ${i + 1}`}</b>
                 <small>{[l.k ? day(l.k) : "", l.items.length ? `${l.items.length} ${l.items.length === 1 ? "item" : "items"}` : "Empty"].filter(Boolean).join(" · ")}</small>
               </button>
             ))}
-            <button className="hl-ls-tile new" onClick={newLesson} title="A folder for one lesson: its words, files and links">
+            <button className="hl-ls-tile new" onClick={(e) => newLesson(e.currentTarget)} title="A folder for one lesson: its words, files and links">
               <span className="msym" aria-hidden="true">create_new_folder</span>
               <b>New lesson</b>
               <small>{k && !lessons.some((q) => q.k === k) ? `${hlLesName(lessons)} · ${day(k)}` : hlLesName(lessons)}</small>
@@ -18755,6 +18877,95 @@ const hlWeek1 = (asg) => {
 };
 // what was read, in a line ("Fri 20 Nov 2026 · 23:55 · Week 4 · Submit on Moodle · 30%")
 const hlAsgSay = (r) => [r.due && `${hlNice(r.due)} ${r.due.slice(0, 4)}`, r.at && clk(r.at), r.wk != null && `Week ${r.wk}`, r.how, r.weight != null && `${r.weight}%`].filter(Boolean).join(" · ");
+/* Several assignments off one screenshot (5 November 2026, his words: "train the AI with these images that i will use in the
+   future … the new auto assignment AI"; his references: a university app's deadlines as a list, a course page's assessment
+   structure as a table). In: the Mac's reading of the picture, lines with where they stand (x, y, w, h: shares of the
+   picture). Out: [{ title, cls, due, at, weight, kind }] (cls: the course code a title starts with, "BTW1042"). Two shapes:
+   - a list: a date heading ("Fri, 20 Nov"), then for each one a time line ("Due 8.55pm") and its title under it, up to the
+     next time or heading (a time after its title is that title's);
+   - a table: titles down the left, each with its date and time beside it on the right; a group's row ("1. Written" · 70%)
+     gives its weighting to an assessment alone in it, and its kind (Presentation, Exam, Quiz, Project).
+   Column headings, a month or "next week" on its own and the page's big title are left out. A weight written in the title,
+   "(25%)" or "[15%]", is taken out of it. Tested on his pictures: tools/ocr/fixtures (npm run test-ocr) */
+const HL_ASG_HEADS = /^(assessments?( structure| tasks?)?|weighting|weight(ing)?|due( dates?)?|title|name|deadlines?|upcoming|status|marks?|grades?|description|type|tasks?|next week|this week|today|tomorrow|overdue|\d+ days?)$/i;
+const hlAsgReadMany = (raw, now = new Date()) => {
+  const L = (Array.isArray(raw) ? raw : []).filter((o) => o && typeof o.t === "string" && o.t.trim())
+    .map((o) => ({ t: o.t.trim().replace(/\s+/g, " "), x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0.02 }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  if (!L.length) return [];
+  const hs = L.map((o) => o.h).sort((a, b) => a - b), mh = hs[hs.length >> 1] || 0.02;
+  const strip = new RegExp(`\\b(${HL_WD_RE}|${HL_MON_RE}|due|at|by|on|am|pm|before|until|sampai|jam|pukul)\\b`, "gi");
+  const rd = (t) => hlAsgRead(t, now);
+  // a line that is only a date or a time (the words left once those are taken out: none, or one or two letters)
+  const dated = (o) => { if (o.r === undefined) { const r = rd(o.t), rest = o.t.replace(strip, "").replace(/[\d\s.,:;()\[\]\-–—\/]+/g, ""); o.r = (r.due || r.at) && rest.length <= 2 ? r : null; } return o.r; };
+  const pct = (o) => { const m = /^[(\[]?\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*[)\]]?$/.exec(o.t); return m ? Number(m[1].replace(",", ".")) : null; };
+  const head = (o) => HL_ASG_HEADS.test(o.t.replace(/[:.]$/, "")) || new RegExp(`^(${HL_MON_RE})( \\d{4})?$`, "i").test(o.t) || (o.h > mh * 1.45 && o.y < 0.2);
+  const clean = (it) => {
+    let t = it.text.join(" ").replace(/\s+/g, " ").replace(/^[|│¦┃▌]+\s*/, "").trim(), weight = it.weight, cls = "";   // (a card's coloured bar is read as "|")
+    const w = /\s*[(\[]\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*[)\]]\s*/.exec(t);
+    if (w) { if (weight == null) weight = Number(w[1].replace(",", ".")); t = (t.slice(0, w.index) + " " + t.slice(w.index + w[0].length)).trim(); }
+    const c = /^([A-Z]{2,5})\s?(\d{3,4}[A-Z]?)\s*[:\-–—]\s*/.exec(t);
+    if (c) { cls = c[1] + c[2]; t = t.slice(c[0].length); }
+    t = t.replace(/^[\s\-–—:•·]+|[\s\-–—:•·,]+$/g, "");
+    const g = `${it.group || ""} ${t}`;
+    const kind = /present/i.test(g) ? "talk" : /\bexam/i.test(g) ? "exam" : /\bquiz/i.test(g) ? "quiz" : /\bproject/i.test(g) ? "project" : "";
+    return { title: t.slice(0, 120), ...(cls ? { cls } : {}), due: it.due, ...(it.at ? { at: it.at } : {}), ...(weight != null && weight > 0 && weight <= 100 ? { weight } : {}), ...(kind ? { kind } : {}) };
+  };
+  const texts = L.filter((o) => !dated(o) && pct(o) == null && !head(o));
+  const dates = L.filter((o) => dated(o));
+  const x0 = Math.min(...texts.map((o) => o.x), 1);
+  const right = dates.filter((o) => o.x > x0 + 0.25);
+  const out = [];
+  if (right.length && right.length >= dates.length / 2) {
+    // a table: each date on the right (with the time under it) is one assessment; the title lines on the left go to the date
+    // nearest them. A row with a % and no date beside it is a group ("1. Written" · 70%): its weighting goes to an assessment
+    // alone in it, its name says its kind. (Read off the Mac's reading of a drawn copy: titles two rows apart, set by gaps
+    // alone, ran together, and a group's row stuck to the next title)
+    const rx = Math.min(...right.map((d) => d.x)), anchors = [];
+    for (const o of right) {
+      const a = anchors[anchors.length - 1];
+      // (a line with a date starts the next; a time alone joins the date above it)
+      if (a && !dated(o).due && o.y - a.bot < Math.max(o.h, mh) * 1.5 && Math.abs(o.x - a.x) < 0.06) { a.ls.push(o); a.bot = o.y + o.h; } else anchors.push({ x: o.x, top: o.y, bot: o.y + o.h, ls: [o] });
+    }
+    anchors.forEach((a) => { a.cy = (a.top + a.bot) / 2; a.items = []; });
+    const pcts = L.filter((o) => pct(o) != null), cy = (o) => o.y + o.h / 2;
+    const rowPct = (o) => { const q = pcts.find((p) => Math.abs(cy(p) - cy(o)) < Math.max(o.h, mh) * 0.6); return q ? pct(q) : null; };
+    const overlaps = (o) => anchors.some((a) => cy(o) >= a.top - mh * 0.6 && cy(o) <= a.bot + mh * 0.6);
+    const groups = [], lineTo = [];
+    for (const o of texts.filter((q) => q.x < rx - 0.02)) {
+      if (rowPct(o) != null && !overlaps(o)) { groups.push({ y: o.y, name: o.t, weight: rowPct(o), items: [] }); continue; }
+      const a = anchors.reduce((b, q) => (Math.abs(q.cy - cy(o)) < Math.abs(b.cy - cy(o)) ? q : b));
+      if (Math.abs(a.cy - cy(o)) > (a.bot - a.top) / 2 + mh * 4) continue;
+      a.items.push(o); lineTo.push(o);
+    }
+    for (const a of anchors) {
+      if (!a.items.length) continue;
+      const r = rd(a.ls.map((o) => o.t).join(" "));
+      if (!r.due) continue;
+      const first = a.items[0], group = groups.filter((g) => g.y < first.y).pop();
+      const w = a.items.map(rowPct).find((v) => v != null) ?? a.ls.map(rowPct).find((v) => v != null);
+      const it = { text: a.items.map((o) => o.t), due: r.due, at: r.at, weight: w ?? undefined, group: group && group.name };
+      out.push(it); if (group) group.items.push(it);
+    }
+    for (const g of groups) if (g.items.length === 1 && g.weight != null && g.items[0].weight == null) g.items[0].weight = g.weight;
+  } else {
+    // a list: date headings, time lines, the titles under them
+    let day = null, cur = null, lastY = 0;
+    for (const o of L) {
+      const r = dated(o), w = pct(o);
+      if (r) {
+        if (r.at && cur && !cur.at && cur.text.length) { cur.at = r.at; if (r.due) cur.due = r.due; continue; }
+        if (r.due && !r.at) { day = r.due; cur = null; continue; }
+        cur = { text: [], due: r.due || day, at: r.at }; out.push(cur); lastY = o.y + o.h; continue;
+      }
+      if (w != null) { if (cur) cur.weight = w; continue; }
+      if (head(o)) continue;
+      if (cur && (!cur.text.length || o.y - lastY < Math.max(o.h, mh) * 1.2)) { cur.text.push(o.t); lastY = o.y + o.h; continue; }
+      if (day) { cur = { text: [o.t], due: day, at: null }; out.push(cur); lastY = o.y + o.h; }
+    }
+  }
+  return out.filter((it) => it.due && it.text.join("").trim()).map(clean).filter((it) => it.title);
+};
 const hlWtNum = (s) => { const n = parseFloat(String(s).replace(",", ".")); return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n * 10) / 10 : null; };
 const hlWkNum = (s) => { const n = parseInt(s, 10); return n >= 0 && n <= 60 ? n : null; };
 // end of the due-line reader
@@ -18801,6 +19012,8 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
   const [due, setDue] = useState(""), [pickCls, setPickCls] = useState(false), [line, setLine] = useState(""), [say, setSay] = useState(""), [over, setOver] = useState(false), [view, setView] = useState(null);
   const txt = useRef(null), aRef = useRef(a), sayT = useRef(0), fileIn = useRef(null), picIn = useRef(null), gone = useRef(false), shut = useRef(false), viewRef = useRef(null), read = useRef(false), aiN = useRef(0);
   const [aiBusy, setAiBusy] = useState(false);
+  const [ocrBusy, setOcrBusy] = useState(false);   // a screenshot of the due line being read
+  const dueShot = useRef(null);
   txt.current = { title, sub, about, wk, wt, how }; aRef.current = a; viewRef.current = view;
   const keep = () => {
     const t = txt.current, o = aRef.current, p = {};
@@ -18860,6 +19073,39 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
   };
   // the due line: pasted, or typed then Enter (or the arrow, or leaving it with something read)
   const goDue = (text, base) => { setDue(""); readText(text, base, () => setDue((v) => v || text)); };
+  // the due line read off a screenshot (5 November 2026, his words: "input an image ai that recognizes text from screenshot
+  // and put the button on the right side of the input text ai box"): the Mac's own text reading, offline, as the timetable's
+  // picture is read; of its lines, those that look like a due line (a date, a time, a week, a %, due / submit), else all of
+  // them, then read as a pasted line is (the Mac's AI where there is one)
+  const readShot = async (f) => {
+    if (!f || !HL_OCR_OK || ocrBusy) return;
+    if (!/^image\//.test(f.type || "") && !/\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || "")) { tell("That isn't a picture"); return; }
+    setOcrBusy(true);
+    let res = null;
+    try { res = await window.flowHealth.ocr(new Uint8Array(await f.arrayBuffer()), (f.name || "").split(".").pop() || (f.type || "").split("/")[1] || "png"); } catch (e) { res = null; }
+    setOcrBusy(false);
+    if (!res || res.error || !Array.isArray(res.lines)) { tell("The picture couldn't be read"); return; }
+    const lines = res.lines.map((o) => (o && typeof o.t === "string" ? o.t.trim() : "")).filter(Boolean);
+    if (!lines.length) { tell("No words found in that picture"); return; }
+    // (since the assignment reader, 5 November 2026: a picture of several, the one whose title and class are this one's)
+    const many = hlAsgReadMany(res.lines, new Date());
+    if (many.length) {
+      const words = (t) => new Set(String(t || "").toLowerCase().match(/[a-z0-9]{3,}/g) || []), mine = words(`${a.title} ${a.sub || ""}`);
+      const code = (a.cls || "").toLowerCase().replace(/[\s:_-]+/g, "");
+      const score = (q) => [...words(q.title)].filter((w) => mine.has(w)).length * 2 + (q.cls && code.startsWith(q.cls.toLowerCase()) ? 3 : 0);
+      const best = many.reduce((b, q) => (score(q) > score(b) ? q : b), many[0]);
+      if (many.length === 1 || score(best) > 0) {
+        api.current.asgSet(a.id, { due: best.due, ...(best.at ? { at: best.at } : {}), ...(best.weight != null ? { weight: best.weight } : {}), ...(!a.title.trim() ? { title: best.title } : {}) });
+        tell(`Read off the screenshot: ${hlAsgSay(best)}${many.length > 1 ? ` (${best.title}, of ${many.length} in it)` : ""}`);
+        return;
+      }
+      tell(`${many.length} assignments in that picture: add them all with the card's screenshot button`);
+      return;
+    }
+    const dueish = /\b(due|deadline|submit|submission|week|weight|worth|closes?)\b|%|\b\d{1,2}[:.]\d{2}\b|\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i;
+    const keep = lines.filter((l) => dueish.test(l)), text = (keep.length ? keep : lines).join(" · ").slice(0, 400);
+    goDue(text, hlAsgRead(text, new Date(), { week1 }));
+  };
   // a picture is kept in the app (it survives the file being moved); any other file is kept by where it is on his Mac
   const addFiles = async (files) => {
     let n0 = 0;
@@ -18873,6 +19119,7 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
   // a picture pasted while it is open is kept with it (before the week's own paste, which would read it as a timetable)
   useEffect(() => {
     const paste = (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains("hl-as-due")) return;     // (the due box reads it: readShot)
       const fs = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => /^image\//.test(f.type));
       if (!fs.length) return;
       e.preventDefault(); e.stopImmediatePropagation();
@@ -18923,12 +19170,16 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
         </div>
         <div className="hl-as-body">
         <div className="hl-as-smart">
-          <label className="tp-line hl-as-read">
+          <label className="tp-line hl-as-read"
+                 onDragOver={(e) => { if (HL_OCR_OK && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); e.stopPropagation(); } }}
+                 onDrop={(e) => { const img = HL_OCR_OK && [...(e.dataTransfer.files || [])].find((q) => /^image\//.test(q.type)); if (!img) return; e.preventDefault(); e.stopPropagation(); setOver(false); readShot(img); }}>
             <span className="msym" aria-hidden="true">auto_awesome</span>
-            <input value={due} placeholder="Paste the due line: Week 4, Friday, 20 November 2026, at 23.55 (Submit on Moodle)" spellCheck={false} autoComplete="off"
+            <input className="hl-as-due" value={due} placeholder={`Paste the due line${HL_OCR_OK ? " or a screenshot of it" : ""}: Week 4, Friday, 20 November 2026, at 23.55`} spellCheck={false} autoComplete="off"
                    aria-label={`Paste the due date or the weightage: the date, time, week and weight are read for you${HL_DUE_AI ? " by the Mac's own AI" : ""}`}
                    onChange={(e) => setDue(e.target.value)}
                    onPaste={(e) => {
+                     const img = HL_OCR_OK && [...(e.clipboardData.files || [])].find((q) => /^image\//.test(q.type));
+                     if (img) { e.preventDefault(); readShot(img); return; }
                      const t = e.clipboardData.getData("text"), base = t ? hlAsgRead(t, new Date(), { week1 }) : {};
                      if (!t || (!HL_DUE_AI && !hlAsgSay(base))) return;
                      e.preventDefault(); goDue(t, base);
@@ -18936,7 +19187,15 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
                    onBlur={() => { if (rdSay) goDue(due, rd); }}
                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (rd && (rdSay || HL_DUE_AI)) goDue(due, rd); } }} />
             {(rdSay || (HL_DUE_AI && due.trim())) && <button className="hl-nt-plus" onClick={() => goDue(due, rd)} aria-label="Read it"><span className="msym" aria-hidden="true">arrow_upward</span></button>}
+            {HL_OCR_OK && (
+              <button type="button" className="hl-nt-plus hl-as-shot" disabled={ocrBusy} onClick={(e) => { e.preventDefault(); dueShot.current?.click(); }}
+                      aria-label="Read the due line off a screenshot" title="Read it off a screenshot: pick one, or paste (⌘V) or drop it on this box">
+                <span className="msym" aria-hidden="true">add_photo_alternate</span>
+              </button>
+            )}
           </label>
+          {HL_OCR_OK && <input ref={dueShot} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { readShot(e.target.files?.[0]); e.target.value = ""; }} />}
+          {ocrBusy && <div className="hl-as-found ai" aria-live="polite"><span className="msym" aria-hidden="true">document_scanner</span><span>Reading the screenshot…</span></div>}
           {aiBusy && !due.trim() && (
             <div className="hl-as-found ai" aria-live="polite"><span className="msym" aria-hidden="true">auto_awesome</span><span>The Mac's AI is reading it…</span></div>
           )}
@@ -19052,6 +19311,7 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
                   <span className="hl-nt-tx"><b>{it.t || hlNoteName(it.url || "")}</b>{hlNoteSub(it) && <small>{hlNoteSub(it)}</small>}</span>
                   {go && <span className="msym hl-nt-out" aria-hidden="true">{it.file ? "open_in_new" : "north_east"}</span>}
                 </button>
+                <HlReveal it={it} on={(x) => hlReveal(x, tell, api)} />
                 <button className="trash-btn bin-sm" aria-label={`Delete ${it.t || "this"}`} title="Delete (Undo is offered)" onClick={() => api.current.asgItemDel(a.id, it.id)}>
                   <TrashIcon />
                 </button>
@@ -19074,12 +19334,93 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
     </div>,
     document.body);
 };
+/* Assignments read off a screenshot (5 November 2026, his words: "the new auto assignment AI", with his app's deadlines and
+   a course page's assessment table as the pictures it must read; hlAsgReadMany), checked before they go in: a row each with
+   a tick, its title, its class (matched by the code it starts with: "BTW1042" finds "BTW1042: Tutorial 10"), due date and
+   time, and weight. One already on the card (the same title, for the same class) comes unticked, its date whatever it is */
+const hlAsgCodeOf = (cls, names) => { if (!cls) return ""; const k = cls.toLowerCase(); const m = names.find((n) => n.name.toLowerCase().replace(/[\s:_-]+/g, "").startsWith(k)); return m ? m.name : ""; };
+const HlAsgScanSheet = ({ found, names, asg, onAdd, onCancel }) => {
+  const key = (t, c) => `${t.trim().toLowerCase()}|${String(c || "").toLowerCase().replace(/[\s:_-]+/g, "").slice(0, 7)}`;
+  const have = new Set(asg.map((a) => key(a.title, a.cls)));
+  const [rows, setRows] = useState(() => found.map((r, i) => { const cls = hlAsgCodeOf(r.cls, names) || (r.cls || "");
+    return { key: i, title: r.title, cls, due: r.due, at: r.at || "23:59", weight: r.weight != null ? String(r.weight) : "", kind: r.kind || "assignment", on: !have.has(key(r.title, cls)), had: have.has(key(r.title, cls)) }; }));
+  const set = (i, p) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const ok = (r) => r.on && r.title.trim() && hlDayOk(r.due) && hlTimeOk(r.at);
+  const n = rows.filter(ok).length;
+  const opts = [...new Set([...names.map((q) => q.name), ...rows.map((r) => r.cls).filter(Boolean)])];
+  return (
+    <div className="hl-sheet hl-scan hl-asc">
+      <div className="hl-scan-head">
+        <span className="msym" aria-hidden="true">document_scanner</span>
+        <b>{found.length === 1 ? "1 assignment found" : `${found.length} assignments found`} in the picture</b>
+        <small>Check them before they go in: the words and dates were read off the picture.</small>
+      </div>
+      <div className="hl-scan-rows">
+        {rows.map((r, i) => (
+          <div key={r.key} className={`hl-scan-row hl-asc-row${r.on ? "" : " off"}`} style={{ "--i": Math.min(i, 12) }}>
+            <button className={`hl-scan-tick${r.on ? " on" : ""}`} onClick={() => set(i, { on: !r.on })} aria-label={r.on ? "Leave this one out" : "Put this one in"}>
+              <svg viewBox="0 0 24 24"><path d="M6 12.5 L10.2 16.5 L18 8" /></svg>
+            </button>
+            <input className="jr-in hl-asc-t" value={r.title} maxLength={120} placeholder="Title" onChange={(e) => set(i, { title: e.target.value })} aria-label="Title"
+                   title={r.had ? "Already on the card" : undefined} />
+            <select className="jr-in hl-asc-c" value={r.cls} onChange={(e) => set(i, { cls: e.target.value })} aria-label="Class">
+              <option value="">No class</option>
+              {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <input className="jr-in hl-asc-d" type="date" value={r.due} onChange={(e) => set(i, { due: e.target.value })} aria-label="Due date" />
+            <TimeField cls="hl-scan-t" value={r.at} onChange={(v) => set(i, { at: v })} label="Due time" />
+            <span className="hl-num u hl-asc-w"><input className="pc-in" inputMode="decimal" value={r.weight} placeholder="–" onChange={(e) => set(i, { weight: numIn(ungrp(e), 1) })} aria-label="Weight" /><i>%</i></span>
+          </div>
+        ))}
+      </div>
+      <span className="hl-form-go">
+        <button className="bk-btn" onClick={onCancel}>Cancel</button>
+        <button className="hl-save" disabled={!n} onClick={() => onAdd(rows.filter(ok))}>{n === 1 ? "Add 1 assignment" : `Add ${n} assignments`}</button>
+      </span>
+    </div>
+  );
+};
+// a picture read for assignments (the card's button, a paste or a drop on it): what the Mac's reading gives, or why not
+const hlReadShotFile = async (f) => {
+  if (!f || !HL_OCR_OK) return { err: "Pictures are read on a Mac only" };
+  if (!/^image\//.test(f.type || "") && !/\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || "")) return { err: "That isn't a picture" };
+  let res = null;
+  try { res = await window.flowHealth.ocr(new Uint8Array(await f.arrayBuffer()), (f.name || "").split(".").pop() || (f.type || "").split("/")[1] || "png"); } catch (e) { res = null; }
+  if (!res || res.error || !Array.isArray(res.lines)) return { err: "The picture couldn't be read" };
+  if (!res.lines.length) return { err: "No words found in that picture" };
+  return { lines: res.lines };
+};
 // the card: what is overdue, then what is coming up, soonest first; what is done folded away under them
 const HlAsgList = memo(({ asg, classes, lib, api }) => {
   useClock12();
   const [now, setNow] = useState(Date.now);
   const [showDone, setShowDone] = useState(false);
+  const [scan, setScan] = useState(null);           // { busy } · { err } · { found } (assignments read off a screenshot)
+  const shotIn = useRef(null), over = useRef(false), scanT = useRef(0);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(t); }, []);
+  const readFile = async (f) => {
+    if (!f) return;
+    setScan({ busy: true });
+    const r = await hlReadShotFile(f);
+    if (r.err) { setScan({ err: r.err }); return; }
+    const found = hlAsgReadMany(r.lines, new Date());
+    setScan(found.length ? { found } : { err: "No assignments with a due date found in it" });
+  };
+  useEffect(() => { if (!scan || !scan.err) return; clearTimeout(scanT.current); scanT.current = setTimeout(() => setScan(null), 4200); return () => clearTimeout(scanT.current); }, [scan]);
+  // a screenshot pasted while the pointer is on the card (as the week takes a timetable's)
+  useEffect(() => {
+    if (!HL_OCR_OK) return;
+    const paste = (e) => {
+      if (!over.current) return;
+      const t = e.target, tag = (t && t.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const f = [...(e.clipboardData ? e.clipboardData.files : [])].find((q) => /^image\//.test(q.type));
+      if (f) { e.preventDefault(); readFile(f); }
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, []);
+  useCmds(() => (HL_OCR_OK ? [{ id: "hl-asg-shot", icon: "document_scanner", text: "Read assignments off a screenshot", tip: "Your deadlines or a course's assessment table", run: () => shotIn.current?.click() }] : []));
   const rows = asg.map((a) => ({ a, ms: hlDueMs(a) }));
   const open = rows.filter((r) => !r.a.done).sort((p, q) => p.ms - q.ms), done = rows.filter((r) => r.a.done).sort((p, q) => q.ms - p.ms);
   const late = open.filter((r) => r.ms < now), next = open.filter((r) => r.ms >= now);
@@ -19111,11 +19452,26 @@ const HlAsgList = memo(({ asg, classes, lib, api }) => {
     );
   };
   return (
-    <div className="hl-as">
+    <div className="hl-as" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
+         onDragOver={(e) => { if (HL_OCR_OK && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
+         onDrop={(e) => { const f = HL_OCR_OK && [...(e.dataTransfer.files || [])].find((q) => /^image\//.test(q.type)); if (!f) return; e.preventDefault(); readFile(f); }}>
       <div className="hl-as-bar">
         <span className="hl-as-count">{open.length ? `${open.length} to hand in${late.length ? ` · ${late.length} overdue` : ""}` : asg.length ? "All handed in" : ""}</span>
+        {HL_OCR_OK && (
+          <button className="hl-ibtn hl-as-shot-all" disabled={!!(scan && scan.busy)} onClick={() => shotIn.current?.click()}
+                  aria-label="Read assignments off a screenshot" title="Read assignments off a screenshot: your deadlines, or a course's assessment table (or paste or drop one on this card)">
+            <span className="msym" aria-hidden="true">{scan && scan.busy ? "hourglass_top" : "document_scanner"}</span>
+          </button>
+        )}
         <button className="hl-as-add" onClick={() => api.current.asgOpen(api.current.asgNew())}><span className="msym" aria-hidden="true">add</span>Add</button>
       </div>
+      {HL_OCR_OK && <input ref={shotIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { readFile(e.target.files?.[0]); e.target.value = ""; }} />}
+      {scan && scan.busy && <div className="hl-as-found ai" aria-live="polite"><span className="msym" aria-hidden="true">document_scanner</span><span>Reading the screenshot…</span></div>}
+      {scan && scan.err && <div className="hl-as-found" role="status"><span className="msym" aria-hidden="true">info</span><span>{scan.err}</span></div>}
+      {scan && scan.found && (
+        <HlAsgScanSheet found={scan.found} names={hlAsgNames(classes, lib)} asg={asg} onCancel={() => setScan(null)}
+                        onAdd={(list) => { api.current.asgAddMany(list); setScan(null); }} />
+      )}
       {!asg.length && (
         <div className="hl-nt-none">
           <span className="msym" aria-hidden="true">assignment</span>
@@ -19259,13 +19615,15 @@ const HL_METAW = /^(?:[a-z]{2}-\d{2}[_ ]?)?(?:on|off)-?$|^(?:on|off)?-?campus\w?
 const HL_ROOMIN = /class\s?_?room|lecture\s?(?:hall|theat)|seminar\s?room|tutorial\s?room|\btheatre\b/i;
 const hlOcrCode = (s) => { const m = /^([a-z]{2,5}\s?\d{3,4}[a-z]?)_[a-z0-9_]+$/i.exec(String(s).trim()); return m ? m[1] : s; };
 const hlOcrRoom = (s) => String(s).replace(/_+/g, " ").replace(/[^a-z0-9)]+$/i, "").replace(/\s{2,}/g, " ").trim();
+// (a day heading with its date, "Mon, 9 Nov" or "Tuesday 10 November", is a day: its month is left out with the day's name,
+// 5 November 2026, his university app's week as a list; it was text, and the list's classes had no day to go under)
 const hlOcrLine = (o) => {
   const t = String(o.t || "").replace(/\s+/g, " ").trim(), day = hlOcrDay(t);
   // an hour's row of a sheet, written "8-9" or "12-1" (only as the whole text: the hours, an hour or two apart)
   const hr = t.replace(/[–—−~]/g, "-").match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
   const times = hr && +hr[1] <= 24 && +hr[2] <= 24 && [1, 2, 3].includes((+hr[2] - +hr[1] + 24) % 12)
     ? [+hr[1], +hr[2]].map((h, i) => ({ min: (h >= 1 && h <= 6 ? h + 12 : h % 24) * 60, at: i })) : hlOcrTimes(t);
-  const rest = hr && times.length === 2 ? "" : t.replace(HL_TIME_RE, " ").replace(/(^|[^\d:./])\d{3,4}\s*-\s*\d{3,4}(?![\d:./])/g, (m, a) => (times.some((x) => x.loose) ? `${a} ` : m)).replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined ? " " : w))
+  const rest = hr && times.length === 2 ? "" : t.replace(HL_TIME_RE, " ").replace(/(^|[^\d:./])\d{3,4}\s*-\s*\d{3,4}(?![\d:./])/g, (m, a) => (times.some((x) => x.loose) ? `${a} ` : m)).replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ").replace(/[a-z']+/gi, (w) => (HL_DAYW[w.toLowerCase().replace(/[’`´]/g, "'")] !== undefined || (day >= 0 && HL_MON[w.toLowerCase()] !== undefined) ? " " : w))
     .replace(/^[\s\-–,·|:/()]+|[\s\-–,·|:/()]+$/g, "").replace(/\s{2,}/g, " ");
   const letters = (rest.match(/[a-z]/gi) || []).length;
   const kind = HL_METAW.test(t) ? "meta" : rest && (HL_ROOMW.test(rest) || HL_ROOMIN.test(rest)) ? "room" : letters < 2 ? (times.length ? "time" : day >= 0 ? "day" : "junk")
@@ -20300,7 +20658,8 @@ const HlDiet = memo(({ h, kg, day, today, api }) => {
           <span>in</span>
           <HlNumLive value={months} onChange={setMonths} ph="3" unit="months" label="Months" onEnter={setGoal} />
           <span className="hl-goal-by">which is <b>{hlLong(by)}</b></span>
-          <button className="hl-save" disabled={!ready || !(tv >= 25 && tv <= 400)} onClick={setGoal}>Set goal</button>
+          <button className="hl-save" disabled={!ready || !(tv >= 25 && tv <= 400)} onClick={setGoal}
+                  title={!ready ? "Type your height and weight under Body first" : !(tv >= 25 && tv <= 400) ? "Type the weight you want to reach" : ""}>Set goal</button>
         </div>
       </div>
     );
@@ -20685,7 +21044,9 @@ const HL_ACT_BTNS = [{ id: "addtodo", icon: "add_task", text: "Add to-do", key: 
    row's id, its words, its symbol]. The order is kept in HL_PREFS_KEY (`order`): the account's own, in no backup; a card added
    later stands last. HlArrange is the pane under the button: a row per card, dragged up or down (the grip also takes the up
    and down arrows), the page and the menu following at once */
-const HL_CARDS = [["to-do", "todo", "To-do", "checklist"], ["shopping", "shop", "Shopping", "shopping_cart"], ["week", "week", "Week", "calendar_view_week"], ["assignments", "asg", "Assignments", "assignment"], ["activity", "activity", "Activity", "directions_walk"],
+// The day's logs first since 4 November 2026 (he chose "Health: daily cards first"): To-do, then Activity (steps, sleep),
+// then the planning cards. An order saved as the old default exactly was never arranged by hand, and takes this one
+const HL_CARDS = [["to-do", "todo", "To-do", "checklist"], ["activity", "activity", "Activity", "directions_walk"], ["shopping", "shop", "Shopping", "shopping_cart"], ["week", "week", "Week", "calendar_view_week"], ["assignments", "asg", "Assignments", "assignment"],
                   ["body", "body", "Body", "monitor_weight"], ["diet", "diet", "Diet goal", "restaurant"], ["gym", "gym", "Gym", "fitness_center"], ["vision board", "board", "Vision board", "dashboard"]];
 const HL_CARD_NAMES = HL_CARDS.map((c) => c[0]);
 // a side's cards in a saved order: names it doesn't know dropped, a card added later standing last (every side, 29 October
@@ -20696,7 +21057,8 @@ const cardOrder = (list, cards) => {
   for (const n of names) if (!seen.has(n)) out.push(n);
   return out;
 };
-const hlCleanOrder = (list) => cardOrder(list, HL_CARDS);
+const HL_OLD_ORDER = "to-do,shopping,week,assignments,activity,body,diet,gym,vision board";
+const hlCleanOrder = (list) => cardOrder(Array.isArray(list) && list.join() === HL_OLD_ORDER ? null : list, HL_CARDS);
 // the pane, on every side: `cards` as HL_CARDS ([card name, the menu row's id, its words, its symbol])
 const CardArrange = ({ cards, order, solo, onOrder, onClose }) => {
   const [held, setHeld] = useState(null);
@@ -21138,6 +21500,15 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     },
     // assignments (29 October 2026): a new one is due a week from today at 23:59 until he says otherwise; asgOpen opens one
     // (from the card, the week's line, the heads-up or the Mac's notification)
+    // several read off a screenshot (HlAsgScanSheet), with Undo
+    asgAddMany: (list) => {
+      const add = list.map((r) => ({ id: uid(), title: r.title.trim().slice(0, 120), sub: "", cls: r.cls || "", kind: HL_ASG_KINDS.some((q) => q[0] === r.kind) ? r.kind : "assignment",
+        due: r.due, at: hlTimeOk(r.at) ? r.at : "23:59", about: "", items: [], ...(hlWtNum(r.weight) != null ? { weight: hlWtNum(r.weight) } : {}) }));
+      if (!add.length) return;
+      up((x) => ({ ...x, asg: [...x.asg, ...add] }));
+      const ids = new Set(add.map((a) => a.id));
+      offerUndo(add.length === 1 ? add[0].title : `${add.length} assignments`, () => up((x) => ({ ...x, asg: x.asg.filter((a) => !ids.has(a.id)) })), "Added");
+    },
     asgNew: () => { const id = uid(); up((x) => ({ ...x, asg: [...x.asg, { id, title: "", sub: "", cls: "", kind: "assignment", due: hlAddDays(today, 7), at: "23:59", about: "", items: [] }] })); return id; },
     asgSet: (id, p) => up((x) => ({ ...x, asg: x.asg.map((a) => (a.id === id ? { ...a, ...p } : a)) })),
     asgDrop: (id) => up((x) => ({ ...x, asg: x.asg.filter((a) => a.id !== id) })),
@@ -21266,6 +21637,28 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       return { ...x, profile: q, tests: { ...x.tests, profile: 0 } };
     }),
     weigh: (v) => api.current.weighOn(today, v),
+    // a log typed in the to-do box (hlQuickLog), with Undo: what the day had before comes back
+    quickLog: (k, q) => {
+      const x = hRef.current, day = k === today ? "today" : hlNice(k);
+      if (q.steps) {
+        const was = x.steps[k];
+        api.current.setSteps(k, q.steps);
+        offerUndo(`${hlFmt(q.steps)} steps for ${day}`, () => api.current.setSteps(k, was || 0), "Logged");
+      } else if (q.kg) {
+        const was = x.weights[k], typed = x.typedKg[k];
+        api.current.weighOn(k, q.kg);
+        offerUndo(`${hlKg(q.kg)} kg for ${day}`, () => up((y) => {
+          const weights = { ...y.weights }, typedKg = { ...y.typedKg };
+          if (was) weights[k] = was; else delete weights[k];
+          if (typed) typedKg[k] = 1; else delete typedKg[k];
+          return { ...y, weights, typedKg };
+        }), "Logged");
+      } else if (q.bed) {
+        const was = x.sleep[k];
+        api.current.setSleep(k, { bed: q.bed, wake: q.wake });
+        offerUndo(`sleep ${q.bed}–${q.wake}, the night before ${day}`, () => up((y) => { const sleep = { ...y.sleep }; if (was) sleep[k] = was; else delete sleep[k]; return { ...y, sleep }; }), "Logged");
+      }
+    },
     weighOn: (k, v) => up((x) => {
       if (k > today) return x;
       const tw = { ...x.tests.weights };
@@ -21353,13 +21746,27 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       // a part of the day page, from Home: the day page first, then the part once it is there
       if (view !== "day") { setDay(today); showDay(); setTimeout(() => sideApi.current.go(id), 90); return; }
       const page = warm.page || document;
-      const part = id === "addtodo" ? "todo" : id === "steps" ? "activity" : id;
-      page.querySelector(SIDE_PARTS[part])?.scrollIntoView({ block: "start" });
-      if (id === "addtodo") setTimeout(() => page.querySelector(".hl-add-t")?.focus({ preventScroll: true }), 120);
-      if (id === "steps") setTimeout(() => page.querySelector(".hl-steps-in input")?.focus({ preventScroll: true }), 120);
+      const part = id === "addtodo" ? "todo" : id === "steps" || id === "sleep" ? "activity" : id === "weigh" ? "body" : id;
+      if (id === "sleep") page.querySelector(".hl-slp")?.scrollIntoView({ block: "center" });
+      else page.querySelector(SIDE_PARTS[part])?.scrollIntoView({ block: "start" });
+      // the box asked for, once its card has come in (a card is hidden until it is scrolled to, and nothing hidden takes
+      // the focus): every 60ms, for up to 1.5s. Sleep and weight since 4 November 2026 (the day-to-day pass: they were a
+      // scroll and a search away): last night's "went to sleep" opened ready to type, the weight's box ready for the figure
+      const when = (sel, fn, n = 0) => { const el = page.querySelector(sel); if (el && el.closest(".flow-card.shown")) fn(el); else if (n < 25) setTimeout(() => when(sel, fn, n + 1), 60); };
+      if (id === "addtodo") when('[data-card="to-do"] .hl-add-t', (el) => el.focus({ preventScroll: true }));
+      if (id === "steps") when(".hl-steps-in input", (el) => el.focus({ preventScroll: true }));
+      // (its pane shuts on any scroll, so it opens once the page has stood still for 180ms after the jump)
+      const still = (fn) => { const on = () => { clearTimeout(t); t = setTimeout(go, 180); }, go = () => { window.removeEventListener("scroll", on, true); fn(); };
+        let t = setTimeout(go, 180); window.addEventListener("scroll", on, true); };
+      if (id === "sleep") when(".hl-slp .hl-slp-times .hl-tf", (el) => still(() => el.click()));
+      if (id === "weigh") when('[data-card="body"] input[aria-label="Weight"]', (el) => el.focus({ preventScroll: true }));
     },
   };
 
+  // the day's logs in ⌘P from anywhere on Health (4 November 2026, the day-to-day pass); to-do and steps are the sidebar's
+  useCmds(() => [{ id: "hl-sleep", icon: "bedtime", text: "Log last night's sleep", tip: "When you went to sleep and woke", run: () => sideApi.current.go("sleep") },
+                 { id: "hl-weigh", icon: "monitor_weight", text: "Weigh in", tip: "Today's weight", run: () => sideApi.current.go("weigh") },
+                 { id: "hl-gym", icon: "fitness_center", text: "Log a workout", tip: "A gym session", run: () => sideApi.current.go("gym") }]);
   // Home's layout, and what its widgets ask for: a to-do ticked for today, the time plan, a day opened, a part of today's page
   const hdashNow = useMemo(() => hdash || dgDefault("health", HL_M), [hdash]);
   const dashApi = useRef(null), hdashLive = useRef(null);         // hdashLive: the layout as Home last saved it
@@ -21373,11 +21780,11 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       if (to === "shoptick") { up((x) => ({ ...x, shop: hlShopTick(x.shop, at) })); return; }
       if (to === "plan") { setTpOpen(true); return; }
       if (to === "day") { setDay(at || today); showDay(); window.scrollTo({ top: 0 }); return; }
-      const part = { addtodo: "addtodo", steps: "steps", gym: "gym", weigh: "body", body: "body", diet: "diet", board: "board", week: "week", scan: "week", todo: "todo", activity: "activity", shop: "shop" }[to];
+      const part = { addtodo: "addtodo", steps: "steps", sleep: "sleep", gym: "gym", weigh: "weigh", body: "body", diet: "diet", board: "board", week: "week", scan: "week", todo: "todo", activity: "activity", shop: "shop" }[to];
       if (!part) return;
       setDay(today); showDay();
       // (the timetable's picture: its button pressed once the week is there, still within the press that asked for it)
-      setTimeout(() => { sideApi.current.go(part); if (to === "scan") document.querySelector(".hl-scan-btn")?.click(); }, 90);
+      setTimeout(() => { sideApi.current.go(part); if (to === "scan") document.querySelector(".hl-scan-in")?.click(); }, 90);
     },
   };
   const hlCtx = useHlDashCtx({ h, todayKey: today, api: dashApi, loaded });
@@ -29201,7 +29608,7 @@ export default function PnlCalendar() {
         @keyframes flowWipe { from { transform: scaleX(0); } }
         .flow-rib { animation: flowRibIn ${Math.round(FLOW_RIB_MS * 0.45)}ms ease-out backwards; }
         @keyframes flowRibIn { from { opacity: 0; } }
-        .flow-bar { transform-box: fill-box; transform-origin: center center; animation: flowBarIn .36s cubic-bezier(0.34,1.45,0.64,1) backwards; }
+        .flow-bar { transform-box: fill-box; transform-origin: center center; animation: flowBarIn .36s cubic-bezier(0.22,1,0.36,1) backwards; }
         @keyframes flowBarIn { from { opacity: 0; transform: scaleY(0.15); } }
         .flow-tag { animation: flowTagIn .38s cubic-bezier(0.22,1,0.36,1) backwards; }
         .flow-tag.src { animation-delay: ${FLOW_START_MS + 120}ms; }
@@ -29682,10 +30089,10 @@ export default function PnlCalendar() {
           opacity: 1; transform: none; pointer-events: auto;
           transition: opacity .22s ease .08s, transform .38s var(--ease) .04s, background .18s ease, border-color .18s ease, color .18s ease; }
         .entry-row > :is(.note-btn, .span-btn, .parts-btn, .side-chip, .bin-sh), .hl-todo > .hl-tags, .hl-ca-row > :is(.hl-ca-kind, .hl-ca-ed),
-        .hl-nt-it > .hl-nt-star, .hl-shp-head > :is(.hl-tag, .bk-btn) {
+        .hl-nt-it > :is(.hl-nt-star, .hl-nt-rv), .hl-shp-head > :is(.hl-tag, .bk-btn), .hl-lf > .hl-lf-rv {
           translate: var(--bs) 0;
           transition: translate .34s var(--ease) .05s, background .18s ease, background-color .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease, transform .22s var(--ease); }
-        :is(.entry-row, .hl-todo, .hl-ca-row, .hl-nt-it, .hl-shp-head):is(:hover, :focus-within) > :is(.note-btn, .span-btn, .parts-btn, .side-chip, .bin-sh, .hl-tags, .hl-ca-kind, .hl-ca-ed, .hl-nt-star, .hl-tag, .bk-btn),
+        :is(.entry-row, .hl-todo, .hl-ca-row, .hl-nt-it, .hl-shp-head):is(:hover, :focus-within) > :is(.note-btn, .span-btn, .parts-btn, .side-chip, .bin-sh, .hl-tags, .hl-ca-kind, .hl-ca-ed, .hl-nt-star, .hl-nt-rv, .hl-tag, .bk-btn),
         .entry-row:has(.cat-pop) > .bin-sh {
           translate: none; transition: translate .36s var(--ease), background .18s ease, background-color .18s ease, border-color .18s ease, color .18s ease, opacity .18s ease, transform .22s var(--ease); }
         .plus-btn span { display: inline-block; transition: transform .18s ease; }
@@ -30462,6 +30869,9 @@ export default function PnlCalendar() {
         .dg-cell .wd-btn { color: color-mix(in srgb, var(--wc) 70%, var(--c-ink-hi)); background: color-mix(in srgb, var(--wc) 15%, transparent);
                            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wc) 26%, transparent); transition: background-color .16s ease; }
         .dg-cell .wd-btn:hover { background: color-mix(in srgb, var(--wc) 25%, transparent); }
+        /* a quiet one: a link in the widget's colour, for a way in that the header already has (Today's Add expense) */
+        .dg-cell .wd-btn.q { padding: 0 8px; background: none; color: color-mix(in srgb, var(--wc) 78%, var(--c-ink-hi)); }
+        .dg-cell .wd-btn.q:hover { background: color-mix(in srgb, var(--wc) 12%, transparent); }
         .wd-end { margin-top: auto; display: flex; }
         .wd-balin { display: flex; align-items: center; gap: 8px; flex: none; }
         .wd-balin input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.25);
@@ -31100,6 +31510,8 @@ export default function PnlCalendar() {
         .wd-leg b em { font-style: normal; font-weight: 500; color: var(--c-mute-hi); }
         .wd-hrings { position: relative; flex: none; display: grid; place-items: center; }
         .wd-hrings .hl-rings { width: 100%; height: 100%; }
+        .wd-hrn { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+        .wd-hrn-t { font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1; }
         .wd-hweek { flex: none; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; height: 58px; }
         .wd-hwd { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; padding: 2px 0; border: 0; border-radius: 10px;
                   background: none; cursor: pointer; font: inherit; color: var(--c-mute); transition: background-color .2s ease; }
@@ -31506,15 +31918,31 @@ export default function PnlCalendar() {
         .hl-form .hl-kind button { padding: 0 12px; font-size: 12.5px; }
         .hl-ca { width: min(620px, calc(100vw - 48px)); }
         .hl-ca .hl-nt-body { gap: 2px; }
-        .hl-ca-say { padding: 0 4px 8px; font-size: 12px; line-height: 1.4; color: #8e969e; }
         .hl-ca-none { padding: 18px 4px; font-size: 13px; color: #8e969e; }
+        .hl-ca-find { display: flex; align-items: center; gap: 8px; margin: 0 4px 10px; padding: 0 12px; height: 40px; border-radius: 12px;
+                      background: rgba(0,0,0,0.22); border: 1px solid rgba(255,255,255,0.08); transition: border-color .16s ease, background-color .16s ease; }
+        .hl-ca-find:focus-within { border-color: rgba(255,255,255,0.3); background: rgba(24,27,31,0.62); }
+        .hl-ca-find .msym { font-size: 18px; color: #8e969e; }
+        .hl-ca-find input { flex: 1; min-width: 0; border: 0; outline: none; background: none; font: inherit; font-size: 14px; color: var(--c-ink-hi); }
+        .hl-ca-find input::placeholder { color: #6f777f; }
+        .hl-ca-grp { padding: 8px 4px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #8a9299; }
+        .hl-ca-row.ev .hl-ca-dot { opacity: 0.55; }
+        .hl-ca-add { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+        .hl-ca-add .msym { font-size: 15px; }
+        .hl-ca-new { margin-top: 4px; }
+        .hl-as-shot-all { margin-left: auto; }
+        .hl-as-shot-all + .hl-as-add { margin-left: 6px; }
+        /* (over the timetable sheet's own row of day, times, name and room) */
+        .hl-scan-row.hl-asc-row { display: grid; grid-template-columns: auto minmax(200px, 2.2fr) minmax(130px, 1fr) 150px 112px 84px; align-items: center; gap: 8px; }
+        .hl-asc-row > * { min-width: 0; }
+        .hl-asc-row .hl-asc-t, .hl-asc-row .hl-asc-c, .hl-asc-row .hl-asc-d, .hl-asc-row .hl-scan-t { width: 100%; }
+        .hl-asc-row .hl-asc-w { width: 84px; }
         .hl-ca-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 4px 6px 10px; border-radius: 12px; transition: background-color .16s ease; }
         .hl-ca-row:hover { background: rgba(255,255,255,0.05); }
         .hl-ca-dot { width: 10px; height: 10px; flex: none; border-radius: 3px; background: var(--c); }
         .hl-ca-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
         .hl-ca-txt b { font-size: 13.5px; font-weight: 600; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hl-ca-txt small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-        .hl-ca-kind { flex: none; }
         .hl-ca .hl-ca-ed { width: 30px; height: 30px; opacity: 0.6; }
         .hl-ca .hl-ca-ed .msym { font-size: 17px; }
         .hl-ca-row:hover .hl-ca-ed, .hl-ca-ed:focus-visible { opacity: 1; }
@@ -31555,9 +31983,10 @@ export default function PnlCalendar() {
         .hl-nt-tx small { font-size: 11.5px; color: #8e969e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hl-nt-out { margin-left: auto; flex: none; font-size: 16px; color: #8e969e; opacity: 0; transition: opacity .16s ease; }
         .hl-nt-go:hover .hl-nt-out, .hl-nt-go:focus-visible .hl-nt-out { opacity: 1; }
-        .hl-nt-star, .hl-nt-x { flex: none; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer; color: #6f777f;
+        .hl-nt-star, .hl-nt-x, .hl-nt-rv { flex: none; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: none; display: grid; place-items: center; cursor: pointer; color: #6f777f;
                                 transition: color .16s ease, background-color .16s ease, opacity .16s ease; }
-        .hl-nt-star .msym, .hl-nt-x .msym { font-size: 18px; }
+        .hl-nt-star .msym, .hl-nt-x .msym, .hl-nt-rv .msym { font-size: 18px; }
+        .hl-nt-rv:hover { color: var(--c-ink-hi); background: rgba(255,255,255,0.08); }
         .hl-nt-star:hover { color: #f0d88a; background: rgba(240,216,138,0.10); }
         .hl-nt-star.on { color: #f0d88a; }
         .hl-nt-star.on .msym { font-variation-settings: 'FILL' 1; }
@@ -31612,6 +32041,10 @@ export default function PnlCalendar() {
         .hl-lf-about:hover { background: rgba(255,255,255,0.055); }
         .hl-lf-about:focus { background: rgba(24,27,31,0.62); border-color: rgba(255,255,255,0.4); }
         .hl-lf-x { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; }
+        /* show in folder on a file box: in the bin's place at rest, a bin's width to the left with the pointer on the box */
+        .hl-lf > .hl-lf-rv { --bs: 0px; position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; }
+        .hl-lf:is(:hover, :focus-within) > .hl-lf-rv { translate: -30px 0; transition: translate .36s var(--ease), background .18s ease, color .18s ease, transform .22s var(--ease); }
+        .hl-lf:has(> .hl-lf-rv) .hl-lf-box { padding-right: 60px; }
         .hl-nt .fx-foot { flex: none; }
         .hl-nt-say { color: #f0d88a; animation: fadeIn .3s ease backwards; }
         .hl-nt-drop { position: absolute; inset: 10px; z-index: 5; border-radius: 22px; border: 2px dashed color-mix(in srgb, var(--c) 70%, #ffffff); background: rgba(10,12,14,0.6);
@@ -31921,7 +32354,7 @@ export default function PnlCalendar() {
         .hl-bars-key { position: relative; flex: none; width: 52px; }
         .hl-goal-key { position: absolute; right: 0; transform: translateY(50%); display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2;
                        color: #9cf0c8; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
-        .hl-goal-key small { font-size: 9.5px; opacity: 0.8; }
+        .hl-goal-key small { font-size: 10.5px; opacity: 0.9; }
         .hl-goal-key b { font-size: 10.5px; font-weight: 600; }
         .hl-goal-key.diet { color: #ffcf7a; }
         .hl-goal-line { position: absolute; left: 56px; right: 0; height: 0; border-top: 1px dashed rgba(156,240,200,0.45); pointer-events: none; z-index: 1; }
@@ -32863,10 +33296,11 @@ export default function PnlCalendar() {
               </div>
             </div>
             <div className="hero-tiles">
-              <div className="hero-tile" style={{ "--tc": remainColor(remaining) }}>
+              {/* with no income logged the tile is grey, not a red alarm (4 November 2026, the day-to-day pass) */}
+              <div className="hero-tile" style={{ "--tc": totalIncome > 0 ? remainColor(remaining) : "#8e969e" }}>
                 <span className="ht-cap">Left</span>
-                <span className="ht-val" style={{ color: remainColor(remaining) }}><CountNum value={remaining} duration={560} render={fmtLive} /></span>
-                <span className="ht-sub">of {fmt(totalIncome)} income</span>
+                <span className="ht-val" style={{ color: totalIncome > 0 ? remainColor(remaining) : "#aab1b8" }}><CountNum value={remaining} duration={560} render={fmtLive} /></span>
+                <span className="ht-sub">{totalIncome > 0 ? `of ${fmt(totalIncome)} income` : "no income logged yet"}</span>
               </div>
               <div className="hero-tile" style={{ "--tc": "#ff5d6c" }}>
                 <span className="ht-cap">Spent</span>

@@ -16,6 +16,14 @@ window.flowHealth = { phone: () => Promise.resolve(window.__phone || null),
   // an assignment's due details: what a journey has put in window.__dueAI (text => the Mac's model's answer, taken beforehand
   // from electron/due-ai), else none
   dueAI: (t) => Promise.resolve(window.__dueAI ? window.__dueAI(t) : { error: "none" }) };
+// --files (5 November 2026): kept files can be shown (their boxes, Show in folder), but nothing is opened and Finder never
+// comes up: each open and reveal is only written down in window.__opened (a file box would come up on his screen: never
+// press the paperclip in a run with this)
+if (process.argv.includes("--flow-files")) {
+  window.__opened = [];
+  Object.assign(window.flowHealth, { where: () => "", open: (to) => { window.__opened.push(["open", to]); return Promise.resolve({ ok: true }); },
+    reveal: (to) => { window.__opened.push(["reveal", to]); return Promise.resolve({ ok: true }); } });
+}
 const P = (window.__perf = { frames: [], marks: [], warmed: [] });
 // layout shifts (23 October 2026, the jumps hunt): every time something on the page moved because something else
 // changed its size, with what moved, from where to where (a slide drawn by transform is not one)

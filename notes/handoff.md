@@ -46,6 +46,3 @@ He chose "whole app, in passes", keep the look ([[notes/navigation-settings]] "F
 4. The finance month header and footer (Log, ⇄, currency, chart, wrapped): what ⌘P now covers.
 5. Commands from more screens (`useCmds`): finance month (chart, wrapped, export / import), trading (calculator, deposits), Health cards (log steps on a day, sleep, gym).
 Never cut what he designed by hand without asking: Home's toolbar and its morph, the Shortcuts widget, the stage, the pixel titles.
-
-## Release 1.1.0: the GitHub upload (4 November 2026)
-- Built into `release/`, code pushed to `main`. The release `v1.1.0` with `Flow-Mac.dmg` and `Flow-Windows-Setup.exe` needs his GitHub login (auto mode won't read it): see [[notes/installer]] "Release 1.1.0". Take this off once the release page has the files.
