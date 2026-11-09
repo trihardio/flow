@@ -1,6 +1,7 @@
 # Design backlog: the rework, the critique's list, Superdesign
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/style]] · [[notes/style-passes]] · [[notes/year-month-panels]] · [[notes/light-mode]]
 
 ## Design rework, in progress (7 October 2026)
 He passed on a design review of the finance side (three pictures: findings by severity, visual hierarchy, consistency, accessibility) and asked for the whole design to be reworked from it, the critical findings first. His credits may run out part-way, so the work goes one finding at a time, each left built and working, and **this list is where to pick it up**. Update it after every finding.

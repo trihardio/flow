@@ -1,6 +1,9 @@
 # Accounts
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. The rule that every read and write of entries goes through `store` ("Whose entries are whose") is kept there, under Architecture notes.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/navigation-settings]] · [[notes/data-export-undo]] · [[notes/dev-test-data]] · [[notes/stage]] · Code: [[notes/code-map#Accounts]]
+
+The rule that every read and write of entries goes through `store` ("Whose entries are whose") is kept there, under Architecture notes.
 
 - **Accounts** (7 October 2026, all at his request; `USER`, `USERS_KEY`, `store` / `rawStore`, `AccountGate`, `Avatar`, `accApi`, `gate`, `.acc-*`):
   - **The login** (his word): the very first launch of an app with nothing saved stops, after the opening and before the selections panel, at a glass card: profile picture, first name, last name, Continue. No password. It makes the first account, saves it, and goes on to the selections panel.

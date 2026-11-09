@@ -1,6 +1,8 @@
 # The installer (DMG)
 
-One area of Flow: what `npm run dmg` makes. Back to [[HOME]] · the rules that hold everywhere: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/shell]] · [[notes/warmup-first-launch]] · [[notes/stage]]
+
+One area of Flow: what `npm run dmg` makes. The rules that hold everywhere: [[CLAUDE]].
 
 ## Its window: a swamp at sunset (30 October 2026)
 His words: "make custom pixel art background on the dmg distribution file on mac. following the crocodile theme i want you to make a detailed swamp with a croc somewhere surrounded by trees (the forest) and a sort of sunset, though not covering the flow logo or the applications file logo. be super creative about this, look for reference images, use advanced photography skills (focus points etc)".
@@ -34,3 +36,10 @@ His words: "make sure when a new user downloads my repo, it deletes my save and 
 - **Nothing of his is in the repo or the installers.** His entries live only in this Mac's `~/Library/Application Support/flow` (Windows: `%APPDATA%\flow`), which git never sees and electron-builder never packs (the app is `dist/`, `electron/`, `package.json` and the model). `public/warm-seed.json` is made of test data (no name, no class of his in it).
 - **On another computer the first launch has no accounts and nothing saved**, so it opens on the login: a new account, empty sides. The only path that names an account "Rassam Mawardi" by itself needs entries saved before accounts existed (his Mac before 11 October 2026); a new install has none.
 - **The one gap, closed**: the shell moved any folder called `trace` in Application Support into Flow's place (the rename of 2 October 2026). On somebody else's computer that would be another app's folder, taken as Flow's data. The move now happens only on his Mac (`OLD_OURS` in `main.cjs`: the project folder is there).
+
+## Release 1.2.0 (5 November 2026)
+- Published as v1.2.0 with `Flow-Mac.dmg` (352 MB) and `Flow-Windows-Setup.exe` (336 MB); both README buttons answer (`releases/latest/download/…`). Commit `a0ba633`. New: Show in folder, lesson folders animated, assignments from a screenshot, My classes; fixed: a new install never takes another app's `trace` folder.
+
+## 1.2.1, built for his folder (6 November 2026)
+- His words: "upload the latest and newest version of flow onto my releases folder in my mac". 1.2.0 was already on GitHub (built 5 November, 18:38); what came after it (golf range sessions, the lecturer in the week's blocks, deadlines stacked, Enter saving the class form, drag and drop on the picture readers, the forms' feet) is **1.2.1**, built into `release/` (`Flow-1.2.1-arm64.dmg`, `Flow-Setup-1.2.1.exe`) so the files GitHub serves as 1.2.0 aren't overwritten with something else. **Not on GitHub yet.**
+- `release.sh` now releases a version that is built but has no tag on GitHub as it is (with no version given), instead of skipping to the next: the next "release to github" puts 1.2.1 up.

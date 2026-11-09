@@ -1,6 +1,7 @@
 # Navigation, the footer buttons, Settings
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/accounts]] · [[notes/light-mode]] · [[notes/dashboard]] · [[notes/style]] · [[notes/time-plan]] · Code: [[notes/code-map#Navigation and settings]]
 
 - **Navigation** (7 October 2026, the review's first critical finding):
   - **The sidebar is behind three lines** (`SideNav`, module level, `memo`, drawn through a portal on `document.body`; `.snav-root`, `.snav-burger`, `.snav`, `.snav-scrim`, `.sd-in`). It stood open at the left edge at first, with the page pushed over. The same day he asked for a menu symbol that opens it, "always closed until opened", and for all of its animations to be "smooth and clear, and seamless".

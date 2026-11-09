@@ -1,6 +1,7 @@
 # Developer options and test data
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/accounts]] · [[notes/trading]] · [[notes/health]] · [[notes/dashboard]] · [[notes/warmup-first-launch]] · Code: [[notes/code-map#Test data]]
 
 - **Developer options** (`devOpt`, `setDevOpt`, `useDevOpt`, `DEV_KEY`; 13 October 2026: "make it so i am able to enable and disable developer options, which is just the add/clear test data and everything developer mode wise"): the last row of Settings on every side, On / Off. Off, every test tool is gone at once: Add / Clear test data in the footers (and with them the test-data settings), Test levels in the calculators, Reset account in the sidebar.
   - **Health followed the constant, not the switch** (29 October 2026: "fitness still has test data and everything else even when dev mode is off"): its footer's Add / Clear test data, the test message and Reset account read `SHOW_TEST_TOOLS` instead of `useDevOpt()`. `HealthApp` now has `const dev = useDevOpt()` and all three use it. The trading and finance footers' test message still reads the constant (it only shows after a press of a flask, so it never shows with the switch off).

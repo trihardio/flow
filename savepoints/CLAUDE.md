@@ -132,3 +132,10 @@ Named snapshots of `src/App.jsx`. How one is loaded and how a new one is made is
 - `before_shopping.jsx`: before Health's shopping list (the Shopping card, its Home widget; 31 October 2026).
 - `before_bins_back.jsx`: after the first fewer-buttons pass (⌘P, right-click menus, tools on hover), before every bin was put back in sight (4 November 2026).
 - `before_bin_slide.jsx`: bins always in sight, before a row's bin waited for the pointer with its neighbours sliding aside for it (4 November 2026).
+- `before_proj_simple.jsx`: before the projection was made plain (one bar for what is to come instead of eight tiles) and shown for a month that is over (7 November 2026).
+- `before_widgets_pass.jsx`: before the widgets' review (Up next crash, row names with "…", short period chips, the light under the pointer; 7 November 2026).
+- `before_glass_tint.jsx`: before the glass's tint (one cool slate for every pane, `--lg-tint`, hairline edges, the light inside the edge; 9 November 2026).
+- `before_widget_motion.jsx`: before the widgets answered a change in place (dgMorph: bars, rows and small figures run to their new state; pixel figures count; Steps and Weight small trends; 9 November 2026).
+- `before_asg_rich.jsx`: before the assignment's Notes became a RichBox and the descriptions gained highlights and bullets (9 November 2026).
+- `before_health_wrapped.jsx`: before Health's monthly wrapped (HlWrapped: the month's steps, sleep, gym, to-dos, weight, rings; opened from the Activity card's month, the sidebar and ⌘P; 9 November 2026).
+- `before_big_pass.jsx` (10 November 2026): before the pass of "check everything … fix the lag": the Edit / Done lag, Health's title flicker, the rule pop-up, the widgets' counting fixes.

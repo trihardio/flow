@@ -1,6 +1,7 @@
 # Charts
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/year-month-panels]] · [[notes/money-flow-goals]] · [[notes/weekly-plans]] · [[notes/trading]] · Code: [[notes/code-map#Charts]]
 
 - **Chart pop-up browsing:** the chart has its own period (`chartAt`, read through `cY` / `cM`), so stepping through months or years in it never moves the panel behind; closing it leaves the panel where it was.
   - **Compare** (`CmpButton`, `GhostLine`, `chartCmp`, `chartCmpData`; both sides, 4 October 2026): a borderless button at the bottom right of the pop-up puts the period before or after the chart's behind it as a ghost line: the year before / after on the yearly chart, the month before / after on the monthly one. It goes off → the one before → the one after → off ("Compare", "vs 2025", "vs Nov 2026"); a period with nothing in it isn't offered, and with neither the button is dimmed.

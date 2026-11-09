@@ -1,6 +1,8 @@
 # Worth it?
 
-One area of Flow, on the finance side. Back to [[HOME]] · the rules that hold everywhere: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/dashboard]] · [[notes/finance-day]] · [[notes/ai]] · [[notes/time-plan]] · Code: [[notes/code-map#Worth it]]
+
+One area of Flow, on the finance side. The rules that hold everywhere: [[CLAUDE]].
 
 Asked for on 24 October 2026: "is this purchase worth it … i input an item i want to buy and the price, and you tell me if its a good purchase or not. option for want/need or just decide on your own … compare the item price to others thats the same … a short detailed but easily understandable answer … a 'is this a rational purchase' score (simplified text) … good graphic design and visuals so its not all text clutter". He left the placement to me. Save point from before it: `savepoints/before_worth_it.jsx`.
 

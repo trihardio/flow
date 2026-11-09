@@ -1761,13 +1761,14 @@ const spendColor = (spent, limit) => {
    is carried by the bar rising in the tile (the liquid) and by the figure. They were solid dark tiles (#26292c, edges
    #33373b) with twice the wash. One place for all four calendars (finance and trading, days and months). */
 const TILE = {
-  empty: ld("rgba(255,255,255,calc(0.03 * var(--lg-k)))", "rgba(239,242,245,calc(0.5 * var(--lg-k)))"), emptyLine: ld("rgba(255,255,255,0.075)", "rgba(255,255,255,0.55)"),
+  empty: ld("rgba(206,224,255,calc(0.034 * var(--lg-k)))", "rgba(239,242,245,calc(0.5 * var(--lg-k)))"), emptyLine: ld("rgba(255,255,255,0.075)", "rgba(255,255,255,0.55)"),
   up: ld("rgba(61,220,151,calc(0.06 * var(--lg-k)))", "rgba(214,237,223,calc(0.62 * var(--lg-k)))"), upLine: ld("rgba(61,220,151,0.26)", "rgba(16,150,98,0.36)"),
   down: ld("rgba(255,93,108,calc(0.075 * var(--lg-k)))", "rgba(246,219,222,calc(0.64 * var(--lg-k)))"), downLine: ld("rgba(255,93,108,0.32)", "rgba(210,56,76,0.38)"),
-  flat: ld("rgba(255,255,255,calc(0.045 * var(--lg-k)))", "rgba(239,242,245,calc(0.58 * var(--lg-k)))"), flatLine: ld("rgba(255,255,255,0.12)", "rgba(100,112,128,0.36)"),
+  flat: ld("rgba(206,224,255,calc(0.05 * var(--lg-k)))", "rgba(239,242,245,calc(0.58 * var(--lg-k)))"), flatLine: ld("rgba(255,255,255,0.12)", "rgba(100,112,128,0.36)"),
 };      // (light look, 20 October 2026: the panes' tone instead of white, the washes a shade deeper; it was white at 0.62 /
         // 0.72, rgba(222,247,235,0.74) and rgba(255,230,233,0.76), edges of 0.92)      // the second of each pair is the light look's (see "Light mode"): white glass, the wash mixed into it; its fill
-        // follows the liquid glass slider (--lg-k, see GLASS_KEY); since 23 October 2026 the dark look's fills do too
+        // follows the liquid glass slider (--lg-k, see GLASS_KEY); since 23 October 2026 the dark look's fills do too.
+        // 9 November 2026: the dark look's neutral fills are a cool white (206,224,255), as the panes' --lg-tint; white at 0.03 / 0.045 until then
 // (spendTint and spendBorder, a finance day tile's wash and edge by its spending, went on 13 October 2026: every
 // finance day tile is the same neutral glass now, see "Calmer day tiles")
 const remainColor = (remaining) => {
@@ -1841,7 +1842,8 @@ const Num = ({ v, f = (n) => Math.round(n || 0).toLocaleString("en-US"), live = 
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [v]);
-  return <span ref={el}>{f(v)}</span>;
+  // (data-nc: a widget's own count, dgMorph, leaves it alone)
+  return <span ref={el} data-nc="">{f(v)}</span>;
 };
 
 /* Rolling digit for the year label */
@@ -3246,13 +3248,18 @@ const PartLines = memo(({ api, id, start, cur, isMYR, auto }) => {
    where every other pair is one apart, and the empty last column pushed the whole figure half a pixel off the middle.
    Each "1" and "-" is pulled back by its empty column, and the last column is left out of the width, so what is centred
    is the ink. Not for a figure that counts: its width would change with its digits. */
-const PxFig = ({ text }) => {
+// a pixel figure that counts to its new value, as DgFig's does (9 November 2026, the widgets' motion); live: how it is
+// written on the way, at one precision (a weight)
+// (while it counts every digit keeps its whole width, `even`: the pull of each "1" made the figure's width change, and it
+// moved sideways, with every frame. The pulls come in once, as it lands; 10 November 2026)
+const PxCount = ({ v, f = (n) => String(Math.round(n)), live }) => <CountNum value={v} duration={560} render={(n, busy) => <PxFig text={(busy && live ? live : f)(n)} even={busy} />} />;
+const PxFig = ({ text, even }) => {
   const t = String(text);
   if (!/^[-\d]+$/.test(t)) return t;
   return (
     // (the page-wide rule gives every element Inter, so each piece has to take the face of what it stands in)
     <span style={{ display: "inline-block", marginRight: "-0.125em", fontFamily: "inherit" }}>
-      {[...t].map((ch, i) => (ch === "1" || ch === "-" ? <span key={i} style={{ marginLeft: "-0.125em", fontFamily: "inherit" }}>{ch}</span> : ch))}
+      {even ? t : [...t].map((ch, i) => (ch === "1" || ch === "-" ? <span key={i} style={{ marginLeft: "-0.125em", fontFamily: "inherit" }}>{ch}</span> : ch))}
     </span>
   );
 };
@@ -6016,13 +6023,20 @@ const ruleFrom = (fam, pcts, map, limit = true, amount = 0) => {
            map: { ...F.map, ...(map || {}) }, limit, ...(amount > 0 ? { amount: Math.min(Math.round(amount), 1e13) } : {}) };
 };
 // a rule as saved: anything that doesn't add up is no rule (an empty or a broken one never sets a limit)
+/* The rule for every month starts in a month (`since`, YYYY-MM): before it a month keeps the limit he typed (6 November 2026,
+   his words: "i see you have applied the spending rule to all of the months … for example september my daily limit was 150k
+   though the spending rule was applied and it messed everything up"). A rule saved before then has none: it starts with
+   the rule itself, October 2026 (15 October 2026: no month before could have had one). A month's own rule (ruleByMonth)
+   stands as before, whenever it is */
+const RULE_FIRST = "2026-10";
 const cleanRule = (r) => {
   if (!r || typeof r !== "object" || !RULE_FAMS[r.fam] || !Array.isArray(r.parts)) return null;
   const F = RULE_FAMS[r.fam], pcts = F.parts.map(([k]) => { const p = r.parts.find((x) => x && x.k === k); return p && Number.isFinite(+p.pct) ? Math.max(0, Math.min(100, Math.round(+p.pct))) : NaN; });
   if (pcts.some((v) => !Number.isFinite(v)) || pcts.reduce((a, b) => a + b, 0) !== 100) return null;
   const spendKeys = F.parts.filter(([, , kind]) => kind === "spend").map(([k]) => k);
   const map = Object.fromEntries(Object.entries(F.map).map(([c, k]) => [c, r.map && spendKeys.includes(r.map[c]) ? r.map[c] : k]));
-  return ruleFrom(r.fam, pcts, map, r.limit !== false, Number.isFinite(+r.amount) && +r.amount > 0 ? +r.amount : 0);
+  const out = ruleFrom(r.fam, pcts, map, r.limit !== false, Number.isFinite(+r.amount) && +r.amount > 0 ? +r.amount : 0);
+  return /^\d{4}-\d{2}$/.test(r.since || "") ? { ...out, since: r.since } : out;
 };
 // the rules of the months that have their own: a month's rule, or false for "no rule this month". One made by the test
 // data keeps its mark (test: true), so it stays out of a backup and goes with Clear test data
@@ -6579,7 +6593,10 @@ const projectMonth = ({ spending, incomes, limits, limit, y, m, d, hour = 12, ca
    five as a cone opening from today. Without an income it is the spending piling up from zero. Bills that are due sit on their
    day. Drawn at the size it is given (1 unit = 1px), like the PnL analysis charts; the pointer's day is its own
    state, so moving over it redraws nothing else. */
-const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
+/* `real` (a month that is over, 7 November 2026): the month's true running spending, day 0 to the last. The projection
+   as it stood on its day is drawn as ever (solid to that day, dashed and the cone after), faded, and what really
+   happened runs on from there as the solid line, ending on the true figure. */
+const ProjChart = ({ p, tone, hasInc, band, fmt, monthName, real }) => {
   const box = useRef(null);
   const [w, setW] = useState(0);
   const [hot, setHot] = useState(null);
@@ -6599,7 +6616,9 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
   // scale that spans only that fall. Without an income there is nothing to burn down: spending piling up from zero
   const burn = hasInc;
   const val = (v) => (burn ? p.endIncome - v : v);
-  const ticks = burn ? niceTicks(p.endIncome - Math.max(p.endSpend + band, p.endIncome * 0.05, 1), p.endIncome, 4) : niceTicks(0, Math.max(p.endSpend + band, 1), 4);
+  const most = Math.max(p.endSpend + band, real ? real[dim] * 1.12 : 0);      // (room under a true end for its words)
+  const ticks = burn ? niceTicks(p.endIncome - Math.max(most, p.endIncome * 0.05, 1), p.endIncome, 4) : niceTicks(0, Math.max(most, 1), 4);
+  const at = (i) => (real ? real[i] : path[i]);     // the line the pointer and the end follow
   const bot = ticks[0], top = ticks[ticks.length - 1];
   const tickText = (v) => (v < 0 ? `−${fmt(-v)}` : fmt(v));
   const PL = Math.max(30, Math.max(...ticks.map((v) => tickText(v).length)) * 6.5 + 15), iw = Math.max(40, w - PL - PR);
@@ -6617,7 +6636,9 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
     hiEdge.push(`${X(i)} ${Y(val(path[i] + spread))}`);
     loEdge.push(`${X(i)} ${Y(val(Math.max(path[d], path[i] - spread)))}`);
   }
-  const xEnd = X(dim), yEnd = Y(val(path[dim])), yInc = Y(val(0)), xNow = X(d);
+  const truth = real ? real.map((v, i) => [X(i), Y(val(v))]) : null;
+  if (truth) truth[0] = done[0];
+  const xEnd = X(dim), yEnd = Y(val(at(dim))), yInc = Y(val(0)), xNow = X(d);
   const bills = p.billsDue.map((b) => { const day = Math.min(dim, Math.max(b.day, d + 1)); return { ...b, x: X(day), y: Y(val(path[day])) }; });
   const pays = p.payDue.map((x) => ({ ...x, x: X(Math.min(dim, Math.max(x.day, d + 1))) }));
   const onMove = (e) => {
@@ -6649,34 +6670,37 @@ const ProjChart = ({ p, tone, hasInc, band, fmt, monthName }) => {
           <line className="axis-fade" x1={xNow} y1={PT} x2={xNow} y2={Y(bot)} stroke="#62696f" strokeWidth="1" strokeDasharray="2 4" style={{ animationDelay: "260ms" }} />
           <g className="axis-fade" style={{ animationDelay: "120ms" }} fill="#8a9299" fontSize="11">
             {xNow - PL > 64 && <text x={PL} y={H - 8}>1 {monthName}</text>}
-            {xEnd - xNow > 78 && <text x={xNow} y={H - 8} textAnchor={xNow - PL > 64 ? "middle" : "start"} fill="#c7cdd2">Today</text>}
+            {xEnd - xNow > 78 && <text x={xNow} y={H - 8} textAnchor={xNow - PL > 64 ? "middle" : "start"} fill="#c7cdd2">{real ? `${d} ${monthName}` : "Today"}</text>}
             <text x={xEnd} y={H - 8} textAnchor="end">{dim} {monthName}</text>
           </g>
           {/* what is still to come is uncovered from today towards the month's end, once the line so far is drawn */}
           {p.daysLeft > 0 && (
             <g clipPath="url(#pj-wipe)">
-              <path d={`M${hiEdge.join("L")}L${[...loEdge].reverse().join("L")}Z`} fill={tone} fillOpacity="0.10" />
-              <path d={curve(todo)} fill="none" stroke="#e8eaec" strokeOpacity="0.8" strokeWidth="2" strokeDasharray="1 6" strokeLinecap="round" />
+              <path d={`M${hiEdge.join("L")}L${[...loEdge].reverse().join("L")}Z`} fill={real ? "#e8eaec" : tone} fillOpacity={real ? 0.07 : 0.10} />
+              <path d={curve(todo)} fill="none" stroke="#e8eaec" strokeOpacity={real ? 0.45 : 0.8} strokeWidth="2" strokeDasharray="1 6" strokeLinecap="round" />
+              {real && <circle cx={xEnd} cy={Y(val(path[dim]))} r="3.5" fill="#1d2024" stroke="#8a9299" strokeWidth="1.5"><title>{`It expected ${fmt(Math.abs(burn ? val(path[dim]) : path[dim]))}${burn ? (val(path[dim]) >= 0 ? " left" : " short") : " spent"}`}</title></circle>}
               {bills.map((b) => <circle key={b.key} cx={b.x} cy={b.y} r="3.5" fill="#1d2024" stroke="#ff8d97" strokeWidth="1.5"><title>{`${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around the ${nth(b.day)}`}</title></circle>)}
             </g>
           )}
-          {d > 0 && <path className="an-line" pathLength="1" d={curve(done)} fill="none" stroke="#e8eaec" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />}
+          {d > 0 && <path className="an-line" pathLength="1" d={curve(truth || done)} fill="none" stroke="#e8eaec" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />}
           <circle className="pj-now" cx={xNow} cy={Y(val(path[d]))} r="3.5" fill="#e8eaec" />
           {/* the end: where the month should land, and on the burndown what is left there (or how far short). The words
               stand just over the line at their own left end: it only comes down from there, so they never lie on it */}
           <g className="pj-end">
             <circle cx={xEnd} cy={yEnd} r="4.5" fill={tone} stroke="#1d2024" strokeWidth="1.5" />
-            {burn && <text x={xEnd} y={Math.max(PT + 11, Y(val(path[Math.max(d, Math.floor(dim * (1 - 104 / iw)))])) - 10)} fill={tone} fontSize="11.5" fontWeight="700" textAnchor="end">{fmt(Math.abs(p.endLeft))} {p.endLeft >= 0 ? "left" : "short"}</text>}
+            {/* a month that is over: under its end instead (what is left only falls, so nothing of the line is below
+                its end), or just left of it when the end sits on the floor */}
+            {burn && <text x={real ? xEnd - (yEnd + 17 < Y(bot) - 3 ? 0 : 10) : xEnd} y={real ? (yEnd + 17 < Y(bot) - 3 ? yEnd + 17 : yEnd + 4) : Math.max(PT + 11, Y(val(at(Math.max(d, Math.floor(dim * (1 - 104 / iw)))))) - 10)} fill={tone} fontSize="11.5" fontWeight="700" textAnchor="end">{fmt(Math.abs(val(at(dim))))} {val(at(dim)) >= 0 ? "left" : "short"}</text>}
           </g>
           {hot !== null && (
             <g pointerEvents="none">
               <line x1={X(hot)} y1={PT} x2={X(hot)} y2={Y(bot)} stroke="#8a9299" strokeWidth="1" />
-              <circle cx={X(hot)} cy={Y(val(path[hot]))} r="4" fill="#e8eaec" stroke="#1d2024" strokeWidth="1.5" />
+              <circle cx={X(hot)} cy={Y(val(at(hot)))} r="4" fill="#e8eaec" stroke="#1d2024" strokeWidth="1.5" />
             </g>
           )}
         </svg>
       )}
-      {w > 0 && hot !== null && <GlassTip x={X(hot)} y={Y(val(path[hot]))} W={w} H={H} label={`${hot} ${monthName}${hot > d ? " · expected" : ""}`} value={burn ? `${val(path[hot]) < 0 ? "−" : ""}${fmt(Math.abs(val(path[hot])))} left` : fmt(path[hot])} below={Y(val(path[hot])) < 70} />}
+      {w > 0 && hot !== null && <GlassTip x={X(hot)} y={Y(val(at(hot)))} W={w} H={H} label={`${hot} ${monthName}${hot > d && !real ? " · expected" : ""}`} value={burn ? `${val(at(hot)) < 0 ? "−" : ""}${fmt(Math.abs(val(at(hot))))} left` : fmt(at(hot))} below={Y(val(at(hot))) < 70} />}
     </div>
   );
 };
@@ -7127,7 +7151,7 @@ const rulePartHues = (fam) => { let sp = 0, sv = 0; return RULE_FAMS[fam].parts.
    the daily limit it gives); whether it sets the daily limit and for which months; and, folded away, the shares and which
    part each category is, for a split of one's own. Save stays in sight at the bottom. Opened from the Money flow section,
    the line in the month's card, the daily limit box and the settings. It keeps its own draft; nothing is saved until Save */
-const RulePop = ({ rule, own, monthName, base: income, money, days, fmt, onSave, onOff, onBack, onClose }) => {
+const RulePop = ({ rule, own, monthName, fromName, base: income, money, days, fmt, onSave, onOff, onBack, onClose }) => {
   const start = rule || ruleFrom("nws", [50, 30, 20]);
   // the monthly amount to split (pocket money): optional; empty splits the month's whole income
   const [amt, setAmt] = useState(() => (start.amount > 0 ? money.show(start.amount) : ""));
@@ -7220,7 +7244,7 @@ const RulePop = ({ rule, own, monthName, base: income, money, days, fmt, onSave,
           <div className="tcfg-row"><span className="tcfg-lbl">Use it for my daily limit<span className="tcfg-note">{!limit ? "Your own daily limit stays as it is" : daily ? `Your daily limit becomes ${fmt(daily)}, worked out from this rule` : "Your daily limit is worked out from this rule"}</span></span>
             <SlideSeg value={limit ? "on" : "off"} onPick={(v) => setLimit(v === "on")} options={[["on", "On"], ["off", "Off"]]} /></div>
           <div className="tcfg-row"><span className="tcfg-lbl">Applies to<span className="tcfg-note">{own ? `${month} has a rule of its own` : "Any month can still be given its own"}</span></span>
-            <SlideSeg value={scope} onPick={setScope} options={[["all", "Every month"], ["month", `Only ${short}`]]} /></div>
+            <SlideSeg value={scope} onPick={setScope} options={[["all", fromName ? `From ${fromName} on` : "Every month"], ["month", `Only ${short}`]]} /></div>
         </div>
 
         <button className={`rp-tune${tune ? " on" : ""}`} aria-expanded={tune} onClick={() => setTune((v) => !v)}>
@@ -10837,12 +10861,14 @@ const DgHead = ({ info, children, go: say, onGo, goIcon = "arrow_outward", px })
   </div>
 ); };
 // the period (or the span) of a widget: a press moves it on to the next one, and it is kept with the widget. In a
-// narrow widget it is its word alone
+// narrow widget it is its word alone, and a short one (7 November 2026: "Month" left "Categ…" and "Long …" of the
+// small Categories and Long vs Short): 1D 1W 1M 1Y, as trading apps write them; the whole word is in its note
+const DG_PER_SM = { Today: "1D", Week: "1W", Month: "1M", Year: "1Y", "All time": "All" };
 const DgChip = ({ label, title, onClick, sm }) => {
-  const go = useSwap(label);
+  const go = useSwap(label), word = sm ? DG_PER_SM[label] || label : label;
   return (
-    <button className={`wd-chip${sm ? " sm" : ""}${go}`} title={title} onClick={onClick}>
-      <span key={label} className="wd-chipt">{label}</span><span className="msym" aria-hidden="true">unfold_more</span>
+    <button className={`wd-chip${sm ? " sm" : ""}${go}`} title={`${title} (${label})`} aria-label={`${title}: ${label}`} onClick={onClick}>
+      <span key={label} className="wd-chipt">{word}</span><span className="msym" aria-hidden="true">unfold_more</span>
     </button>
   );
 };
@@ -10871,7 +10897,7 @@ const DgCat = ({ c, icon, size = 30 }) => (
 );
 // a line over a soft fill of its colour. The SVG is stretched to its box; the dots are laid over it (stretched, they
 // would be ovals). With `tip`, pointing at it shows that day
-const DgLine = ({ vals, hue, zero, tip }) => {
+const DgLine = ({ vals, hue, zero, tip, cmp }) => {
   const gid = `dgl${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const [hi, setHi] = useState(null);
   const n = vals.length;
@@ -10884,7 +10910,7 @@ const DgLine = ({ vals, hue, zero, tip }) => {
   const at = hi === null ? n - 1 : hi;
   const move = (e) => { const r = e.currentTarget.getBoundingClientRect(); setHi(Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / Math.max(1, r.width)) * (n - 1))))); };
   return (
-    <div className="wd-chart" onPointerMove={tip ? move : undefined} onPointerLeave={tip ? () => setHi(null) : undefined}>
+    <div className={`wd-chart${cmp ? " cmp" : ""}`} onPointerMove={tip ? move : undefined} onPointerLeave={tip ? () => setHi(null) : undefined}>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={hue} stopOpacity="0.26" /><stop offset="1" stopColor={hue} stopOpacity="0" /></linearGradient>
@@ -10917,14 +10943,16 @@ const DgBars = ({ vals, labels, now, tipOf, onPick }) => {
   );
 };
 // finance: what each day spent, against the daily limit (the dashed line), in the panels' colours for it
-const DgSpendBars = ({ vals, lim, labels, now, tipOf, onPick }) => {
-  const top = Math.max(lim * 1.2, ...vals.map((v) => v || 0)) || 1;
+// (lims: each bar's own limit, for a week that runs across two months)
+const DgSpendBars = ({ vals, lim, lims, labels, now, tipOf, onPick }) => {
+  const at = (i) => (lims ? lims[i] : lim);
+  const top = Math.max((lims ? Math.max(...lims) : lim) * 1.2, ...vals.map((v) => v || 0)) || 1;
   return (
     <div className="wd-bars">
       {vals.map((v, i) => (
         <button key={i} className={`wd-bar${i === now ? " now" : ""}`} disabled={!onPick} title={tipOf ? tipOf(i) : undefined} onClick={onPick ? () => onPick(i) : undefined}>
-          <b className="wd-plot lim" style={{ "--base": `${100 - (lim / top) * 100}%` }}>
-            {v > 0 && <i className="sp" style={{ bottom: 0, height: `${(v / top) * 100}%`, background: spendColor(v, lim), "--i": i }} />}
+          <b className="wd-plot lim" style={{ "--base": `${100 - (at(i) / top) * 100}%` }}>
+            {v > 0 && <i className="sp" style={{ bottom: 0, height: `${(v / top) * 100}%`, background: spendColor(v, at(i)), "--i": i }} />}
           </b>
           {labels && <span>{labels[i]}</span>}
         </button>
@@ -10994,7 +11022,7 @@ const DgStreakBody = ({ s, word, r, side }) => {
   const on = dgPlan({ ...r, h: r.h - DGH.head - r.g }, [["flame", 34], ["sub", DGH.sub], ["best", DGH.sub]]);
   return (
     <div className="wd-streak">
-      <div className="wd-flame"><span className="wd-px big"><PxFig text={String(s.cur)} /></span><span className="msym" aria-hidden="true">local_fire_department</span></div>
+      <div className="wd-flame"><span className="wd-px big"><PxCount v={s.cur} /></span><span className="msym" aria-hidden="true">local_fire_department</span></div>
       {on.sub && <div className="wd-sub"><span>{s.cur ? `${s.cur === 1 ? "day" : "days"} ${word}` : "No run right now"}</span></div>}
       {(on.best || side) && <div className="wd-sub"><span>Best this year <b>{s.best}</b></span></div>}
     </div>
@@ -11010,7 +11038,16 @@ const DgBal = ({ c, r, info, x }) => {
     const s = (typing || "").trim();
     setTyping(null);
     if (!s) return;
-    const v = M.dp ? parseFloat(s.replace(",", ".")) : parseNum(s);
+    // with cents, the thousands may be grouped either way (7 November 2026, the widgets' review: "1,250.50" and
+    // "10,000" were saved as 1.25 and 10): with both marks the last one is the decimal point, a comma before three
+    // digits groups thousands, a lone comma before fewer is a decimal comma, several points group thousands
+    const amt = (t) => {
+      const d = t.lastIndexOf("."), k = t.lastIndexOf(",");
+      if (d >= 0 && k >= 0) return parseFloat(d > k ? t.replace(/,/g, "") : t.replace(/\./g, "").replace(",", "."));
+      if (k >= 0) return parseFloat(/^\d{1,3}(,\d{3})+$/.test(t) ? t.replace(/,/g, "") : t.replace(",", "."));
+      return parseFloat((t.match(/\./g) || []).length > 1 ? t.replace(/\./g, "") : t);
+    };
+    const v = M.dp ? amt(s) : parseNum(s);
     if (Number.isFinite(v) && v >= 0) api.current.setBalance(Math.min(v, MAX_AMOUNT));
   };
   const where = market === "crypto" ? "exchange" : "broker";
@@ -11064,7 +11101,8 @@ const DgBal = ({ c, r, info, x }) => {
 const DgPnl = ({ it, c, r, info, x }) => {
   const { trades, f, api, today } = x;
   const per = (it.o && it.o.per) || info.dper, go = useSwap(per);
-  const rg = dgRange(per, today), key = rg ? rg.join() : per;
+  // (All time has no range: its key carries the month, or what it drew stayed on the month before; 7 November 2026)
+  const rg = dgRange(per, today), key = rg ? rg.join() : `${per}${today.y}-${today.m}`;
   const t = useMemo(() => dgTally(trades, rg), [trades, key]);
   const prev = useMemo(() => { const pr = dgPrevRange(per, today); return pr ? dgTally(trades, pr).pnl : null; }, [trades, key]);
   const pxs = dgPxSize(f.money(t.pnl), r, dgBig(c, r.u));
@@ -11119,7 +11157,8 @@ const DgPnl = ({ it, c, r, info, x }) => {
 const DgWin = ({ it, r, info, x }) => {
   const { trades, f, api, today } = x;
   const per = (it.o && it.o.per) || info.dper, go = useSwap(per);
-  const rg = dgRange(per, today), key = rg ? rg.join() : per;
+  // (All time has no range: its key carries the month, or what it drew stayed on the month before; 7 November 2026)
+  const rg = dgRange(per, today), key = rg ? rg.join() : `${per}${today.y}-${today.m}`;
   const t = useMemo(() => dgTally(trades, rg), [trades, key]);
   const be = t.n - t.wins - t.losses, pf = t.loss > 0 ? t.profit / t.loss : null;
   // the ring beside its legend when there is width for both, else alone over one line; the four figures under them
@@ -11146,7 +11185,7 @@ const DgWin = ({ it, r, info, x }) => {
         <div className={`wd-winb${row ? " row" : ""}`}>
           <div className="wd-ringw" style={{ width: ring, height: ring }}>
             <DgRing t={t} />
-            <span className="wd-ringn"><span className="wd-px" style={{ fontSize: fig }}><PxFig text={String(winPct(t))} /></span><small>%</small></span>
+            <span className="wd-ringn"><span className="wd-px" style={{ fontSize: fig }}><PxCount v={winPct(t)} /></span><small>%</small></span>
           </div>
           {row ? legend(legRows) : legRows >= leg.length ? legend(legRows) : <div className="wd-sub">{t.wins}W · {t.losses}L{be ? ` · ${be}BE` : ""}</div>}
         </div>
@@ -11167,7 +11206,8 @@ const DgWin = ({ it, r, info, x }) => {
 const DgCurve = ({ it, c, r, info, x }) => {
   const { trades, deps, f, api, tn, today } = x;
   const span = (it.o && it.o.span) || info.dspan, go = useSwap(span);
-  const a = span === "ytd" ? Math.min(tn - 1, dayNo(today.y, 0, 1)) : tn - Number(span) + 1;
+  // (YTD from 1 January itself: on that day it took in 31 December too; the 0 in front keeps the line two points long)
+  const a = span === "ytd" ? dayNo(today.y, 0, 1) : tn - Number(span) + 1;
   const vals = useMemo(() => [0, ...dgSeries(trades, deps, a, tn, null)], [trades, deps, a, tn]);
   const t = useMemo(() => {
     const s = dgTally(trades, [a, tn]);
@@ -11422,7 +11462,7 @@ const DgPrices = ({ r, info, x, still }) => {
         {shown.map((s) => (
           <div key={s} className="wd-row">
             <DgAv name={s} />
-            <span className="wd-rt"><b>{s}{dot(s)}</b>{r.w >= 230 && <small>{market === "idx" ? "IDX" : "USDT perpetual"}</small>}</span>
+            <span className="wd-rt"><b className="wd-rtf">{s}{dot(s)}</b>{r.w >= 230 && <small>{market === "idx" ? "IDX" : "USDT perpetual"}</small>}</span>
             <span className="wd-rv">{q[s] ? dgPrice(q[s], market) : "—"}</span>
             {r.w >= 260 && chg(q[s])}
           </div>
@@ -11633,12 +11673,14 @@ const DgFToday = ({ c, r, info, x }) => {
       </>
     );
   }
-  const rows = dgRows(r.h - DGH.btn - r.g, DGH.rowTight);
+  // the right half is named and starts on the head's line (its one row hung loose beside the figure; 7 November 2026)
+  const rows = dgRows(r.h - DGH.btn - DGH.head - 2 * r.g, DGH.rowTight);
   return (
     <div className="wd-split2">
       <div className="wd-col"><DgHead info={info} />{fig}</div>
       <div className="wd-col">
-        <div className="wd-rows tight">
+        <div className="wd-colh">Spent today{list.length > 1 ? <b>{list.length}</b> : null}</div>
+        <div className="wd-rows">
           {expRows(rows)}
           {!list.length && <small className="wd-note">{nospend ? "Marked as a no-spend day." : "Nothing spent yet today."}</small>}
         </div>
@@ -11683,9 +11725,12 @@ const DgFWeek = ({ c, r, info, x }) => {
   const { spending, f, api, today, tn } = x;
   const rg = dgRange("w", today), lim = x.lim(today.y, today.m);
   const vals = useMemo(() => { const out = []; for (let n = rg[0]; n <= rg[1]; n++) out.push(finSpent(spending[dayIso(n)])); return out; }, [spending, rg[0]]);
+  // each day against its own month's limit, as the Weekly expenses card does (7 November 2026, the widgets' review: a
+  // week across October and November took November's for all seven days)
+  const lims = Array.from({ length: 7 }, (_, i) => { const q = dayOf(rg[0] + i); return x.lim(q.y, q.m); });
   // the week's total is all of it (as the month's is); what is "so far" counts the days up to today only
-  const gone = Math.min(7, tn - rg[0] + 1), tot = vals.reduce((a, b) => a + b, 0), budget = lim * 7;
-  const past = vals.slice(0, gone), over = past.filter((v) => v > lim).length, soFar = past.reduce((a, b) => a + b, 0);
+  const gone = Math.min(7, tn - rg[0] + 1), tot = vals.reduce((a, b) => a + b, 0), budget = lims.reduce((a, b) => a + b, 0);
+  const past = vals.slice(0, gone), over = past.filter((v, i) => v > lims[i]).length, soFar = past.reduce((a, b) => a + b, 0);
   const wide = r.w >= 330, pxs = dgPxSize(f.abs(tot), { w: wide ? r.w * 0.5 : r.w }, dgBig(c, r.u));
   const on = dgPlan(r, [["head", DGH.head], ["big", pxs + 4], ["sub", wide ? 0 : DGH.pill], ["bars", DGH.bars], ["stats", r.w >= 260 ? DGH.stats : 0]]);
   if (!tot) return <><DgHead info={info} go="Open the weekly expenses" onGo={r.w < 210 ? null : () => api.current.go("side", "weekly")} /><DgEmpty icon={info.icon} text="Nothing spent this week" sub={r.w >= 200 && r.h >= 150 ? `Your limit is ${f.abs(lim)} a day, ${f.abs(budget)} for the week.` : null} /></>;
@@ -11698,7 +11743,7 @@ const DgFWeek = ({ c, r, info, x }) => {
       <DgHead info={info} go="Open the weekly expenses" onGo={r.w < 210 ? null : () => api.current.go("side", "weekly")} />
       {wide ? <div className="wd-row2"><DgFig value={tot} render={f.absLive} px={pxs} />{sub}</div> : <><DgFig value={tot} render={f.absLive} px={pxs} />{on.sub && sub}</>}
       {on.bars && (
-        <DgSpendBars vals={vals} lim={lim} labels={DOW} now={tn - rg[0]} tipOf={(i) => `${dgDate(rg[0] + i)}: ${f.abs(vals[i])}`}
+        <DgSpendBars vals={vals} lim={lim} lims={lims} labels={DOW} now={tn - rg[0]} tipOf={(i) => `${dgDate(rg[0] + i)}: ${f.abs(vals[i])}`}
                      onPick={(i) => { const q = dayOf(rg[0] + i); api.current.go("day", { y: q.y, m: q.m, d: q.d }); }} />
       )}
       {on.stats && (
@@ -11866,10 +11911,12 @@ const DgFDebts = ({ r, info, x }) => {
   const sum = (dir) => open.filter((d) => d.dir === dir).reduce((s, d) => s + d.amount - d.paid, 0);
   const owe = sum("owe"), owed = sum("owed"), go = () => api.current.go("side", "debts");
   if (!open.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No open debts" sub={r.w >= 200 && r.h >= 150 ? "What you owe and are owed shows here." : null} /></>;
+  // the Debts section's own words, I owe / Owed to me ("Owed to you" broke over two lines in a small one); stacked in
+  // the left half of a wide one, where side by side they were squeezed (7 November 2026, the widgets' review)
   const two = (
-    <div className="wd-sides fixed">
-      <div className="wd-side" style={{ "--sc": "#ff8d97" }}><small><i />You owe</small><b style={{ color: owe ? dgTone(-1) : undefined }}>{f.abs(owe)}</b></div>
-      <div className="wd-side" style={{ "--sc": "#5ee3a9" }}><small><i />Owed to you</small><b style={{ color: owed ? dgTone(1) : undefined }}>{f.abs(owed)}</b></div>
+    <div className={`wd-sides fixed wd-debt2${r.w >= 320 ? " v" : ""}`}>
+      <div className="wd-side" style={{ "--sc": "#ff8d97" }}><small><i />I owe</small><b style={{ color: owe ? dgTone(-1) : "#8a9299" }}>{f.abs(owe)}</b></div>
+      <div className="wd-side" style={{ "--sc": "#5ee3a9" }}><small><i />Owed to me</small><b style={{ color: owed ? dgTone(1) : "#8a9299" }}>{f.abs(owed)}</b></div>
     </div>
   );
   const rowsOf = (n) => open.slice().sort((a, b) => (b.amount - b.paid) - (a.amount - a.paid)).slice(0, n).map((d) => (
@@ -11934,7 +11981,7 @@ const DgFIncome = ({ c, r, info, x }) => {
   return (
     <div className="wd-split2">
       <div className="wd-col"><DgHead info={info} />{fig}</div>
-      <div className="wd-rows tight">{incRows(Math.max(1, dgRows(r.h, DGH.rowTight)))}</div>
+      <div className="wd-col"><div className="wd-colh">Came in{list.length > 1 ? <b>{list.length}</b> : null}</div><div className="wd-rows">{incRows(Math.max(1, dgRows(r.h - DGH.head - r.g, DGH.rowTight)))}</div></div>
     </div>
   );
 };
@@ -12631,8 +12678,8 @@ const DgArc = ({ s, hue }) => {
   );
 };
 // one bar a day, from the floor, in the colour `hue(i)` says; a dashed line at the goal when there is one
-const DgHBars = ({ vals, top, goal, hue, labels, now, tipOf, onPick }) => (
-  <div className="wd-bars">
+const DgHBars = ({ vals, top, goal, hue, labels, now, tipOf, onPick, cmp }) => (
+  <div className={`wd-bars${cmp ? " cmp" : ""}`}>
     {vals.map((v, i) => (
       <button key={i} className={`wd-bar${i === now ? " now" : ""}`} disabled={!onPick} title={tipOf ? tipOf(i) : undefined} onClick={onPick ? () => onPick(i) : undefined}>
         <b className={`wd-plot${goal ? " lim" : ""}`} style={{ "--base": goal ? `${100 - Math.min(100, (goal / top) * 100)}%` : "100%" }}>
@@ -12673,7 +12720,7 @@ const DgHScore = ({ r, info, x }) => {
       <div className={`wd-winb${row ? " row" : ""}`}>
         <div className="wd-ringw" style={{ width: ring, height: ring }} title={`${now.score} of 100: ${hlScoreSay(now.score).toLowerCase()}`}>
           <DgArc s={now.score} hue={hue} />
-          <span className="wd-ringn"><span className="wd-px" style={{ fontSize: fig }}><PxFig text={String(now.score)} /></span></span>
+          <span className="wd-ringn"><span className="wd-px" style={{ fontSize: fig }}><PxCount v={now.score} /></span></span>
         </div>
         {row ? (
           <div className="wd-leg">
@@ -12707,7 +12754,7 @@ const DgHRings = ({ r, info, x }) => {
       <div className={`wd-winb${row ? " row" : ""}`}>
         <div className="wd-hrings" style={{ width: size, height: size }} title={`Day score ${now.score} of 100: ${hlScoreSay(now.score).toLowerCase()}`}>
           <HlRings vals={now.v} size={size} />
-          {fig > 0 ? <span className="wd-hrn"><span className="wd-px" style={{ fontSize: fig, color: hue }}><PxFig text={String(now.score)} /></span></span>
+          {fig > 0 ? <span className="wd-hrn"><span className="wd-px" style={{ fontSize: fig, color: hue }}><PxCount v={now.score} /></span></span>
             : hole >= 28 && <span className="wd-hrn"><b className="wd-hrn-t" style={{ fontSize: Math.round(hole * 0.38), color: hue }}><Num v={now.score} /></b></span>}
         </div>
         {row && (
@@ -12736,9 +12783,10 @@ const DgHSteps = ({ c, r, info, x }) => {
       <DgFig value={d.steps} render={(v) => hlFmt(v)} px={pxs} color={d.steps >= goal ? "#5ee3a9" : null} />
       {on.meter && <div className="wd-meter" title={`${hlFmt(d.steps)} of ${hlFmt(goal)}`}><i style={{ transform: `scaleX(${Math.min(1, d.steps / goal)})`, background: "var(--wc)" }} /></div>}
       {on.sub && <div className="wd-sub"><span><b>{Math.round((d.steps / goal) * 100)}%</b> of {hlFmt(goal)}{r.w >= 230 ? ` · ${d.km.toFixed(1)} km` : ""}</span></div>}
-      {on.bars && on.rest >= DGH.bars - 6 && (
-        <DgHBars vals={days.map((q) => q.v)} top={top} goal={goal} hue={(i) => (days[i].v >= goal ? "#2fd08a" : "rgba(47,208,138,0.42)")}
-                 labels={days.map((q) => HL_DOW1[hlDow(q.k)])} now={days.length - 1} tipOf={(i) => `${hlNice(days[i].k)}: ${hlFmt(days[i].v)} steps`}
+      {/* (9 November 2026: in a medium one the bars didn't fit and its foot stood empty: they come small there, without the days' letters) */}
+      {((on.bars && on.rest >= DGH.bars - 6) || on.rest >= 30) && (
+        <DgHBars vals={days.map((q) => q.v)} top={top} goal={goal} hue={(i) => (days[i].v >= goal ? "#2fd08a" : "rgba(47,208,138,0.42)")} cmp={!(on.bars && on.rest >= DGH.bars - 6)}
+                 labels={on.bars && on.rest >= DGH.bars - 6 ? days.map((q) => HL_DOW1[hlDow(q.k)]) : null} now={days.length - 1} tipOf={(i) => `${hlNice(days[i].k)}: ${hlFmt(days[i].v)} steps`}
                  onPick={(i) => api.current.go("day", days[i].k)} />
       )}
     </>
@@ -12798,24 +12846,32 @@ const DgHNext = ({ r, info, x }) => {
   if (!show) for (let i = 1; i <= 7 && !later; i++) { const l = of(hlAddDays(todayKey, i)); if (l.length) later = { q: l[0], i }; }
   const go = () => api.current.go("week");
   if (!h.classes.length) return <><DgHead info={info} /><DgEmpty icon="event_upcoming" text="No timetable yet" sub={r.w >= 200 && r.h >= 150 ? "Add your classes, or read them off a screenshot." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Add your timetable</button>}</DgEmpty></>;
+  // nothing today and nothing in the week to come (a lone event weeks away, classes that ended): said so. It read
+  // later.q of nothing here and took the whole window down (7 November 2026, the widgets' review)
+  if (!show && !later) return <><DgHead info={{ ...info, name: "Up next" }} go="Open the week" onGo={r.w < 210 ? null : go} /><DgEmpty icon="event_available" text="Nothing this week" sub={r.w >= 200 && r.h >= 150 ? "No classes or events in the next 7 days." : null} /></>;
   const q = show || later.q, hue = hlClsCol(q);
-  const when = cur ? `Now · until ${clk(q.to)}` : nxt ? `In ${hlDur(hlMin(q.from) - nowMin)} · ${clk(q.from)}` : `${later.i === 1 ? "Tomorrow" : HL_DOW_LONG[(dow + later.i) % 7]} · ${clk(q.from)}`;
+  // its time said once (it read "Monday · 08:00  08:00–09:40"): the span when there is room, else when it starts
+  const span = r.w >= 260 ? `${clk(q.from)}–${clk(q.to)}` : clk(q.from);
+  const when = cur ? `Now · until ${clk(q.to)}` : nxt ? `In ${hlDur(hlMin(q.from) - nowMin)} · ${span}` : `${later.i === 1 ? "Tomorrow" : HL_DOW_LONG[(dow + later.i) % 7]} · ${span}`;
   const frac = cur ? (nowMin - hlMin(q.from)) / Math.max(1, hlClsEnd(q) - hlMin(q.from)) : 0;
   const on = dgPlan(r, [["head", DGH.head], ["name", 26], ["when", DGH.sub], ["meter", cur ? 8 : 0], ["room", q.room ? DGH.sub : 0]]);
-  const rest = list.filter((o) => o !== q), n = Math.min(rest.length, dgRows(on.rest - 4, DGH.rowTight));
+  // under it: the rest of today; once today is done, what comes after it in the days ahead (a big one stood empty)
+  const ahead = [];
+  if (!show) for (let i = later.i; i <= 7 && ahead.length < 12; i++) of(hlAddDays(todayKey, i)).forEach((o) => { if (o !== q) ahead.push({ o, i }); });
+  const rest = show ? list.filter((o) => o !== q).map((o) => ({ o, i: 0 })) : ahead, n = Math.min(rest.length, dgRows(on.rest - 4, DGH.rowTight));
   return (
     <>
       <DgHead info={{ ...info, name: show ? (cur ? "Now" : "Up next") : "Done for today" }} go="Open the week" onGo={r.w < 210 ? null : go} />
       <button className="wd-next" style={{ "--nc": hue }} onClick={go}><i /><b>{q.name}</b></button>
-      {on.when && <div className="wd-sub"><span style={{ color: hue }}>{when}</span>{r.w >= 260 && <span>{clk(q.from)}–{clk(q.to)}</span>}</div>}
+      {on.when && <div className="wd-sub"><span style={{ color: hue }}>{when}</span></div>}
       {on.meter && <div className="wd-meter" title={`${Math.round(frac * 100)}% through`}><i style={{ transform: `scaleX(${frac})`, background: hue }} /></div>}
       {on.room && q.room && <div className="wd-sub"><span className="msym wd-subi" aria-hidden="true">location_on</span><span>{q.room}</span></div>}
       {n > 0 && (
         <div className="wd-rows tight">
-          {rest.slice(0, n).map((o) => (
-            <button key={o.id} className={`wd-row${hlClsEnd(o) <= nowMin ? " past" : ""}`} onClick={go}>
+          {rest.slice(0, n).map(({ o, i }) => (
+            <button key={`${o.id}-${i}`} className={`wd-row${!i && hlClsEnd(o) <= nowMin ? " past" : ""}`} onClick={go}>
               <i className="wd-cdot" style={{ background: hlClsCol(o) }} />
-              <span className="wd-rt"><b>{o.name}</b></span><span className="wd-rv">{clk(o.from)}</span>
+              <span className="wd-rt"><b>{o.name}</b></span><span className="wd-rv">{i ? `${i === 1 ? "Tomorrow" : HL_DOW_LONG[(dow + i) % 7].slice(0, 3)} ${clk(o.from)}` : clk(o.from)}</span>
             </button>
           ))}
         </div>
@@ -12894,10 +12950,13 @@ const DgHWeight = ({ c, r, info, x }) => {
   return (
     <>
       <DgHead info={info} go="Weigh in" goIcon="edit" onGo={r.w < 210 ? null : () => api.current.go("weigh")} />
-      <div className="wd-big wd-pxbig" style={{ fontSize: pxs }}><span className="wd-px" style={{ fontSize: pxs }}><PxFig text={hlKg(kg)} /></span><small className="wd-unit">kg</small></div>
+      <div className="wd-big wd-pxbig" style={{ fontSize: pxs }}><span className="wd-px" style={{ fontSize: pxs }}><PxCount v={kg} f={hlKg} live={hlKg1} /></span><small className="wd-unit">kg</small></div>
       {on.sub && <div className="wd-sub"><span style={{ color: delta ? dgTone(lose ? -delta : delta) : undefined }}><b style={{ color: "inherit" }}>{delta > 0 ? "+" : delta < 0 ? "−" : "±"}{hlKg(Math.abs(delta))} kg</b> since {dgKeyDate(pts[0])}</span></div>}
-      {on.goal && <div className="wd-sub"><span>{gone ? <b style={{ color: "#e6c877" }}>Goal reached</b> : <><b>{hlKg(Math.abs(kg - g.target))} kg</b> to {hlKg(g.target)}</>}</span>{!gone && <span style={{ color: ok ? "#5ee3a9" : "#f0d88a" }}>· {ok ? "on track" : "behind the plan"}</span>}</div>}
-      {on.chart && <DgLine vals={pts.map((k) => h.weights[k])} hue={info.hue} tip={(i) => `${dgKeyDate(pts[i])}: ${hlKg(h.weights[pts[i]])} kg`} />}
+      {on.goal && <div className="wd-sub"><span>{gone ? <b style={{ color: "#e6c877" }}>Goal reached</b> : <><b>{hlKg(Math.abs(kg - g.target))} kg</b> to {hlKg(g.target)}</>}</span>{!gone && (r.w < 230
+        // narrow: a line of its own, without the dot it began the next line with ("· behind the plan")
+        ? <span style={{ color: ok ? "#5ee3a9" : "#f0d88a", flexBasis: "100%" }}>{ok ? "On track" : "Behind the plan"}</span>
+        : <span style={{ color: ok ? "#5ee3a9" : "#f0d88a" }}>· {ok ? "on track" : "behind the plan"}</span>)}</div>}
+      {(on.chart || (pts.length > 1 && on.rest >= 30)) && <DgLine vals={pts.map((k) => h.weights[k])} hue={info.hue} cmp={!on.chart} tip={(i) => `${dgKeyDate(pts[i])}: ${hlKg(h.weights[pts[i]])} kg`} />}
     </>
   );
 };
@@ -12933,7 +12992,7 @@ const DgHBmi = ({ c, r, info, x }) => {
   return (
     <>
       <DgHead info={info} go="Open Body" onGo={r.w < 210 ? null : () => api.current.go("body")} />
-      <div className="wd-big wd-pxbig" style={{ fontSize: pxs, color: band[2] }}><span className="wd-px" style={{ fontSize: pxs }}><PxFig text={bmi.toFixed(1)} /></span></div>
+      <div className="wd-big wd-pxbig" style={{ fontSize: pxs, color: band[2] }}><span className="wd-px" style={{ fontSize: pxs }}><PxCount v={bmi} f={(n) => n.toFixed(1)} /></span></div>
       {on.sub && <div className="wd-sub"><span style={{ color: band[2] }}>{band[1]}</span>{r.w >= 230 && <span>· Asian scale</span>}</div>}
       {on.gauge && (
         <div className="wd-gauge" title="15 to 35: under 18.5 under, to 23 healthy, to 25 over, to 30 obese I, then obese II">
@@ -12963,11 +13022,13 @@ const DgHGym = ({ c, r, info, x }) => {
   const go = () => api.current.go("gym");
   if (!h.gym.length) return <><DgHead info={info} /><DgEmpty icon={info.icon} text="No workouts yet" sub={r.w >= 200 && r.h >= 150 ? "Log a session: the split, its exercises and sets." : null}>{r.h >= 140 && <button className="wd-btn" onClick={go}>Log a workout</button>}</DgEmpty></>;
   const on = dgPlan(r, [["head", DGH.head], ["big", 36], ["dots", 34], ["sub", DGH.sub], ["last", m.last ? DGH.row : 0]]);
-  const lifts = Math.min(m.best.length, dgRows(on.rest - 6, DGH.rowTight));
+  // the lifts under a name of their own (a list of names and kilos stood unexplained under the last session)
+  // (the heading is 35px tall with its line and margin, then a gap: 24 was kept for it, and the last lift was cut at the foot, 10 November 2026)
+  const lifts = Math.min(m.best.length, dgRows(on.rest - 35 - r.g, DGH.rowTight));
   return (
     <>
       <DgHead info={info} go="Log a workout" goIcon="add" onGo={r.w < 210 ? null : go} />
-      <div className="wd-flame"><span className="wd-px big"><PxFig text={String(m.n)} /></span><span className="wd-gymw">{m.n === 1 ? "session" : "sessions"} this week</span></div>
+      <div className="wd-flame"><span className="wd-px big"><PxCount v={m.n} /></span><span className="wd-gymw">{m.n === 1 ? "session" : "sessions"} this week</span></div>
       {on.dots && (
         <div className="wd-gdots">
           {m.week.map((d) => <i key={d.k} className={`${d.s.length ? "on" : ""}${d.k === todayKey ? " now" : ""}${d.k > todayKey ? " later" : ""}`} title={`${hlNice(d.k)}${d.s.length ? `: ${d.s.map((q) => q.name).join(", ")}` : ""}`}>{HL_DOW1[hlDow(d.k)]}</i>)}
@@ -12980,8 +13041,9 @@ const DgHGym = ({ c, r, info, x }) => {
           <span className="wd-rt"><b>{m.last.name || "Workout"}</b><small>{m.last.day === todayKey ? "Today" : hlNice(m.last.day)} · {hlDur(m.last.min || 0)}{hlVolume(m.last) ? ` · ${hlFmt(hlVolume(m.last))} kg lifted` : ""}</small></span>
         </button>
       )}
+      {lifts > 0 && <div className="wd-colh wd-lifts" title="The most you could lift once, worked out from your best set (Epley)">Best lifts<span>one-rep max</span></div>}
       {lifts > 0 && (
-        <div className="wd-rows tight">
+        <div className="wd-rows">
           {m.best.slice(0, lifts).map(([name, v]) => <div key={name} className="wd-row"><span className="wd-rt"><b>{name}</b></span><span className="wd-rv" title="One-rep max (Epley)">{hlKg(v)} kg</span></div>)}
         </div>
       )}
@@ -13091,10 +13153,137 @@ const DG_BODY = { bal: DgBal, pnl: DgPnl, win: DgWin, curve: DgCurve, cal: DgCal
                   xch: DgFx, fxch: DgFx, plan: DgPlan, fplan: DgPlan,
                   hscore: DgHScore, hrings: DgHRings, hsteps: DgHSteps, hheat: DgHHeat, hnext: DgHNext, htodo: DgHTodo, hshop: DgHShop, hweight: DgHWeight, hfuel: DgHFuel,
                   hbmi: DgHBmi, hgym: DgHGym, hawards: DgHAwards, hvision: DgHVision, hstreak: DgStreak, hacts: DgActs, hplan: DgPlan };
+// the widgets' light under the pointer (.wd-glow, 7 November 2026): one listener for every board, the disc moved
+// straight on the page at most once a frame, nothing through React
+if (typeof document !== "undefined") {
+  let el = null, px = 0, py = 0, raf = 0;
+  document.addEventListener("pointermove", (e) => {
+    const w = e.target && e.target.closest ? e.target.closest(".dg-board:not(.edit) .wdg") : null;
+    if (!w) return;
+    el = w; px = e.clientX; py = e.clientY;
+    if (!raf) raf = requestAnimationFrame(() => {
+      raf = 0;
+      const g = el && el.firstElementChild;
+      if (!g || g.className !== "wd-glow") return;
+      const r = el.getBoundingClientRect();
+      g.style.transform = `translate3d(${Math.round(px - r.left)}px, ${Math.round(py - r.top)}px, 0)`;
+    });
+  }, { passive: true });
+}
+/* A widget answers a change in place (9 November 2026, his words: "review every single widget and improve their ui and
+   animations"). Once React has written a widget's new state, and before it is drawn, what changed runs from how it stood
+   to how it stands, so nothing jumps when he logs, ticks, or a day turns over (dgMorph, after every render of DashWidget):
+   - a bar grows or shrinks from its old size and place (`translate` and `scale` from its top left: the day and month
+     bars, a name's bar, the stacked ones of Categories and Long vs Short, the BMI gauge's mark);
+   - a row that moved slides from its old place; a new one among those that stayed fades in;
+   - a figure among its words counts, written into React's own text as Num does (its words around it unchanged; one
+     precision for the whole count, the end's exactly). The big and pixel figures count already (DgFig, PxCount).
+   Nothing plays when the widget changed size (a resize, a board coming in, a stack's pane drawn for the first time), in
+   a preview, or in the exchanger and the time plan (their figures follow typing). With reduced motion it all lands at
+   once. Rings, dots and chips that change colour do it by transition (the styles). Only transform, opacity and text. */
+const DGM_MS = 460, DGM_EASE = "cubic-bezier(0.22,1,0.36,1)";
+const DGM_OFF = new Set(["xch", "fxch", "plan", "fplan", "hplan", "prices", "hnext"]);
+// (prices and hnext change by their own clocks, live quotes and the minute, without DashWidget drawn again: the snapshot
+// they would be counted from is minutes old, so they are left out, 10 November 2026)
+const DGM_BOX = ".wd-plot > i, .wd-rbar, .wd-sbar > i, .wd-stack > i, .wd-gauge > b";
+const DGM_SKIP = ".wd-big, .wd-px, .wd-tip, .wd-chip, input, textarea, [data-nc]";
+const DGM_NUM = /(\d+(?:[.,]\d+)*)/;
+// a figure's digits as written: its value, decimals, decimal mark and grouping mark (100.000 · 1,5 · 2,440 · 1.234,56)
+const dgmRead = (t) => {
+  const seps = t.match(/[.,]/g) || [], gs0 = t.split(/[.,]/);
+  if (!seps.length) return t.length > 1 && t[0] === "0" ? null : { v: +t, dec: 0, ds: "", gs: "" };      // (08 of a time: not a count)
+  if (gs0[0] !== "0" && gs0[0].length <= 3 && gs0.slice(1).every((g) => g.length === 3) && new Set(seps).size === 1) return { v: +gs0.join(""), dec: 0, ds: "", gs: seps[0] };
+  const ds = seps[seps.length - 1], gs = seps.length > 1 ? seps[0] : "";
+  if (gs === ds) return null;
+  const last = gs0[gs0.length - 1];
+  return { v: +`${gs0.slice(0, -1).join("")}.${last}`, dec: last.length, ds, gs };
+};
+const dgmDec = (t, m) => (t.split(m).length === 2 ? { v: +t.replace(m, "."), dec: t.length - t.indexOf(m) - 1, ds: m, gs: "" } : null);
+const dgmWrite = (x, a, b) => {
+  const dec = Math.max(a.dec, b.dec), ds = b.ds || a.ds || ".", gs = b.gs || a.gs;
+  const [i, f] = Math.max(0, x).toFixed(dec).split(".");
+  return (gs ? i.replace(/\B(?=(\d{3})+$)/g, gs) : i) + (dec ? ds + f : "");
+};
+// the words from one to the other, counted; null when they are not the same words around their figures
+const dgmPair = (s0, s1) => {
+  const p0 = s0.split(DGM_NUM), p1 = s1.split(DGM_NUM);
+  if (p0.length !== p1.length || p0.length < 3 || p0.length > 9 || p0.some((p, i) => i % 2 === 0 && p !== p1[i])) return null;
+  const n = [];
+  for (let i = 1; i < p0.length; i += 2) {
+    let a = dgmRead(p0[i]), b = dgmRead(p1[i]);
+    if (!a || !b) return null;
+    // one figure's lone mark read as a thousands mark while the other's same mark is a decimal point ($2.3461 → $2.345,
+    // whose last zero dollars drop): both are decimals. Marks that still clash are not counted (10 November 2026)
+    if (b.gs && !b.ds && a.ds === b.gs) b = dgmDec(p1[i], b.gs); else if (a.gs && !a.ds && b.ds === a.gs) a = dgmDec(p0[i], a.gs);
+    if (!a || !b || ((b.gs || a.gs) && (b.gs || a.gs) === (b.ds || a.ds))) return null;
+    n.push([a, b]);
+  }
+  return (k) => p1.map((p, i) => (i % 2 ? dgmWrite(n[(i - 1) / 2][0].v + (n[(i - 1) / 2][1].v - n[(i - 1) / 2][0].v) * k, ...n[(i - 1) / 2]) : p)).join("");
+};
+const dgmRun = new WeakMap();        // a text counting: { raf, shown, to }
+// what React last wrote in a text: while it counts, its end (unless React has written a new one over the count since)
+const dgmNow = (n) => { const r = dgmRun.get(n); return r && n.nodeValue === r.shown ? r.to : n.nodeValue; };
+const dgmCount = (node, from, to) => {
+  const run = dgmRun.get(node);
+  if (run) { cancelAnimationFrame(run.raf); from = run.shown; }
+  const say = dgmPair(from, to);
+  if (!say) { dgmRun.delete(node); return false; }
+  const me = { raf: 0, shown: from, to };
+  let t0 = null;
+  const step = (t) => {
+    if (t0 === null) t0 = t;
+    const p = Math.min(1, (t - t0) / 560);
+    me.shown = p < 1 ? say(1 - (1 - p) ** 3) : to;
+    node.nodeValue = me.shown;
+    warm.moved = t;
+    if (p < 1) me.raf = requestAnimationFrame(step); else dgmRun.delete(node);
+  };
+  node.nodeValue = say(0);
+  me.raf = requestAnimationFrame(step);
+  dgmRun.set(node, me);
+  return true;
+};
+const dgMorph = (el, was, off) => {
+  if (!el) return was;
+  const now = { w: el.offsetWidth, h: el.offsetHeight, box: new WeakMap(), row: new WeakMap(), txt: new WeakMap(), rows: 0 };
+  const boxes = [...el.querySelectorAll(DGM_BOX)], rows = [...el.querySelectorAll(".wd-row")];
+  for (const b of boxes) now.box.set(b, [b.offsetLeft, b.offsetTop, b.offsetWidth, b.offsetHeight]);
+  for (const r of rows) now.row.set(r, r.offsetTop);
+  const texts = [];
+  const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = tw.nextNode(); n; n = tw.nextNode()) if (/\d/.test(n.nodeValue) && !n.parentElement.closest(DGM_SKIP)) texts.push(n);
+  // the words React wrote are what is kept (a count shows others on the way)
+  for (const n of texts) now.txt.set(n, dgmNow(n));
+  now.rows = rows.length;
+  if (off || !was || was.w !== now.w || was.h !== now.h || matchMedia("(prefers-reduced-motion: reduce)").matches) return now;
+  let moved = false;
+  const go = (n, kf, ms = DGM_MS) => { n.animate(kf, { duration: ms, easing: DGM_EASE }); moved = true; };
+  for (const b of boxes) {
+    const o = was.box.get(b), q = now.box.get(b);
+    if (!o || !q[2] || !q[3] || (Math.abs(o[0] - q[0]) < 0.5 && Math.abs(o[1] - q[1]) < 0.5 && Math.abs(o[2] - q[2]) < 0.5 && Math.abs(o[3] - q[3]) < 0.5)) continue;
+    go(b, [{ transformOrigin: "0 0", translate: `${o[0] - q[0]}px ${o[1] - q[1]}px`, scale: `${(o[2] || q[2]) / q[2]} ${(o[3] || q[3]) / q[3]}`, offset: 0 }, { transformOrigin: "0 0", offset: 1 }]);
+  }
+  const stayed = rows.some((r) => was.row.has(r));
+  for (const r of rows) {
+    const o = was.row.get(r);
+    if (o === undefined) { if (stayed && !r.getAnimations().length) go(r, [{ opacity: 0, translate: "0 -5px", offset: 0 }], 300); continue; }
+    const dy = o - now.row.get(r);
+    if (Math.abs(dy) >= 0.5) go(r, [{ translate: `0 ${dy}px`, offset: 0 }], 380);
+  }
+  for (const n of texts) {
+    const o = was.txt.get(n), s = dgmNow(n);
+    if (o !== undefined && o !== s && dgmCount(n, o, s)) moved = true;
+  }
+  if (moved) warm.moved = performance.now() + DGM_MS;
+  return now;
+};
 const DashWidget = memo(({ it, cls, ctx, i, still, pitch, empty }) => {
   const info = dgInfo(it.id, ctx.M), Body = DG_BODY[it.id];
+  const root = useRef(null), was = useRef(null);
+  useLayoutEffect(() => { was.current = dgMorph(root.current, was.current, still || empty || DGM_OFF.has(it.id)); });
   return (
-    <div className="wdg" data-c={cls} data-w={it.id} style={{ "--wc": info.hue, "--i": i || 0 }}>
+    <div ref={root} className="wdg" data-c={cls} data-w={it.id} style={{ "--wc": info.hue, "--i": i || 0 }}>
+      <i className="wd-glow" aria-hidden="true" />
       <div className="wd-in">{!empty && <Body it={it} c={cls} r={dgRoom(it, cls, pitch || 100)} info={info} x={ctx} still={still} />}</div>
     </div>
   );
@@ -14662,6 +14851,14 @@ function TradeTracker({ market, onHome, onApp, apps, onUsers, onReset, onRestore
   const M = MARKETS[market];
   const dev = useDevOpt();
   const now = new Date();
+  // drawn again just after midnight, as finance is: Home's widgets read "today" from here (7 November 2026, the
+  // widgets' review: left open overnight, Today, the calendar's day and the streak stayed on the day before)
+  const [dayTick, setDayTick] = useState(0);
+  useEffect(() => {
+    const n = new Date();
+    const t = setTimeout(() => setDayTick((v) => v + 1), new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 0, 0, 5) - n);
+    return () => clearTimeout(t);
+  }, [dayTick]);
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [view, setView] = useState("home");              // "home" (the dashboard, the first screen since 20 October 2026), "year", "month"
@@ -16746,6 +16943,18 @@ const HL_KCAL_KG = 7700;        // kcal in a kilo of body weight lost or gained:
 const HL_SAFE_PCT = 1;          // % of body weight a week: faster than this, a loss is called too fast (0.5 for a gain)
 const HL_FLOOR = { m: 1500, f: 1200 };        // the least a day's eating should come to: below it, walking makes up the rest
 const HL_GYM_MET = 5;           // a weight session, about this hard (MET): kcal = MET × kg × hours
+/* A golf range session (5 November 2026, his words: "on the log gym sessions add a golf driving feature where it estimates
+   how much calories i burn and all that stuff. also add how long i was golf driving"): how hard, in METs. The Compendium of
+   Physical Activities (2024 adult edition, code 15270, golf at a driving range) gives 3.5, as a 2023 study measured
+   (3.51 ± 1.13); a 2024 study with portable meters found 2.3 to 2.6 for range practice. So: relaxed 2.5, steady 3.5 (the
+   Compendium's), hard 4.5 (big buckets at full swing, little rest) */
+const HL_GOLF = "Golf range";
+const HL_GOLF_MET = { easy: 2.5, steady: 3.5, hard: 4.5 };
+const HL_GOLF_EFF = [["easy", "Relaxed"], ["steady", "Steady"], ["hard", "Hard"]];
+const HL_GOLF_CLUBS = ["Driver", "Woods", "Irons", "Wedges", "Mixed"];
+// what a session burned: what the iPhone said, else its kind's METs × his weight × its hours
+const hlSessMet = (s) => (s.golf ? HL_GOLF_MET[s.golf.effort] || HL_GOLF_MET.steady : HL_GYM_MET);
+const hlSessKcal = (s, kg) => (s.src === "apple" ? s.kcal || 0 : (hlSessMet(s) * kg * (s.min || 0)) / 60);
 // BMI bands for Asian bodies (WHO Asia-Pacific): healthy ends at 23, not 25. [upper bound, name, colour]
 const HL_BMI = [[18.5, "Underweight", "#8fa3b8"], [23, "Healthy", "#3ddc97"], [25, "Overweight", "#e3cd77"], [30, "Obese I", "#ff9a76"], [Infinity, "Obese II", "#ff5d6c"]];
 // how active a week is, beyond the steps logged: the factor the resting burn is multiplied by
@@ -16897,7 +17106,7 @@ const cleanHealth = (d) => {
     done: hlDays01(t.done), skip: hlDays01(t.skip), ...test(t) }));
   b.classes = (Array.isArray(d.classes) ? d.classes : []).filter((c) => c && c.id && hlText(c.name, 60).trim() && Number.isInteger(c.dow) && c.dow >= 0 && c.dow < 7
       && hlTimeOk(c.from) && hlTimeOk(c.to) && c.to !== c.from).map((c) => ({
-    id: String(c.id), name: hlText(c.name, 60), room: hlText(c.room, 40), dow: hlDayOk(c.once) ? hlDow(c.once) : c.dow, from: c.from, to: c.to,
+    id: String(c.id), name: hlText(c.name, 60), room: hlText(c.room, 40), ...(hlText(c.prof, 60).trim() ? { prof: hlText(c.prof, 60).trim() } : {}), dow: hlDayOk(c.once) ? hlDow(c.once) : c.dow, from: c.from, to: c.to,
     tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
     ...(HL_HEX.test(c.col || "") ? { col: c.col.toLowerCase() } : {}),
     ...(hlDayOk(c.once) ? { once: c.once } : {}), ...(hlDayOk(c.since) ? { since: c.since } : {}), ...(hlDayOk(c.until) ? { until: c.until } : {}),
@@ -16911,7 +17120,7 @@ const cleanHealth = (d) => {
       ...(feel ? { feel } : {}), ...(q.ph && hlTimeOk(q.bed) && hlTimeOk(q.wake) ? { ph: 1 } : {}) };
   }
   b.clsLib = (Array.isArray(d.clsLib) ? d.clsLib : []).filter((c) => c && hlText(c.name, 60).trim()).slice(0, 60)
-    .map((c) => ({ name: hlText(c.name, 60).trim(), room: hlText(c.room, 40), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
+    .map((c) => ({ name: hlText(c.name, 60).trim(), room: hlText(c.room, 40), ...(hlText(c.prof, 60).trim() ? { prof: hlText(c.prof, 60).trim() } : {}), tint: Number.isInteger(c.tint) && c.tint >= 0 && c.tint < HL_CLS.length ? c.tint : 0,
                    ...(HL_HEX.test(c.col || "") ? { col: c.col.toLowerCase() } : {}) }));
   // the classes he takes this semester (30 October 2026): the names, as keys; null until he has chosen (hlMineList then guesses)
   // (since 4 November 2026 also every class chosen as one on the timetable: up to 200, the latest kept)
@@ -16940,6 +17149,7 @@ const cleanHealth = (d) => {
   b.asg = (Array.isArray(d.asg) ? d.asg : []).filter((a) => a && a.id && hlDayOk(a.due)).slice(0, 400).map((a) => ({
     id: String(a.id), title: hlText(a.title, 120), sub: hlText(a.sub, 200), cls: hlText(a.cls, 60), kind: HL_ASG_KINDS.some((q) => q[0] === a.kind) ? a.kind : "assignment",
     due: a.due, at: hlTimeOk(a.at) ? a.at : "23:59", about: hlText(a.about, 20000),
+    ...(hlText(a.about, 20000).trim() && rtClean(a.aboutH) ? { aboutH: rtClean(a.aboutH) } : {}),
     ...(hlWtNum(a.weight) != null ? { weight: hlWtNum(a.weight) } : {}),
     ...(Number.isInteger(a.wk) && a.wk >= 0 && a.wk <= 60 ? { wk: a.wk } : {}), ...(hlText(a.how, 120).trim() ? { how: hlText(a.how, 120) } : {}),
     items: (Array.isArray(a.items) ? a.items : []).filter((q) => q && q.id && (hlText(q.t, 300).trim() || hlNoteUrl(q.url) || hlNotePath(q.file) || (shotIdOk(q.img) && q.img.startsWith(HL_PIC)))).slice(0, 100).map((q) => ({
@@ -16950,7 +17160,9 @@ const cleanHealth = (d) => {
     id: String(s.id), day: s.day, name: hlText(s.name, 40) || "Workout", min: hlNum(s.min, 0, 600) || 0, note: hlText(s.note, 400),
     ex: (Array.isArray(s.ex) ? s.ex : []).filter((e) => e && hlText(e.name, 60).trim()).slice(0, 30).map((e) => ({
       name: hlText(e.name, 60), sets: (Array.isArray(e.sets) ? e.sets : []).slice(0, 30).map((x) => ({ kg: hlNum(x && x.kg, 0, 1000) || 0, reps: hlNum(x && x.reps, 0, 1000) || 0 })) })),
-    ...(s.src === "apple" ? { src: "apple", kcal: hlNum(s.kcal, 0, 10000) || 0 } : {}), ...test(s) }));
+    ...(s.src === "apple" ? { src: "apple", kcal: hlNum(s.kcal, 0, 10000) || 0 } : {}),
+    ...(s.golf && typeof s.golf === "object" ? { golf: { balls: hlNum(s.golf.balls, 0, 5000) || 0, effort: HL_GOLF_MET[s.golf.effort] ? s.golf.effort : "steady",
+      ...(HL_GOLF_CLUBS.includes(s.golf.club) ? { club: s.golf.club } : {}) } } : {}), ...test(s) }));
   const ph = d.phone;     // the iPhone's file last taken in: when it was saved, how many days it held, its last day
   if (ph && hlNum(ph.at, 1, 1e14)) b.phone = { at: +ph.at, days: hlNum(ph.days, 0, 400) || 0, nights: hlNum(ph.nights, 0, 400) || 0, to: hlDayOk(ph.to) ? ph.to : "" };
   b.board = (Array.isArray(d.board) ? d.board : []).filter((c) => c && c.id && (c.kind === "note" || (c.kind === "pic" && shotIdOk(c.img)))).slice(0, 200).map((c) => ({
@@ -17188,7 +17400,7 @@ const hlClsOn = (c, k) => (c.once ? c.once === k : c.dow === hlDow(k) && (!c.sin
 const hlDayOf = (h, k) => {
   const kg = hlWeightOn(h, k) || 70, steps = h.steps[k] || 0;
   const gym = h.gym.filter((s) => s.day === k);
-  const gymKcal = gym.reduce((a, s) => a + (s.src === "apple" ? s.kcal || 0 : hlGymKcal(kg, s.min)), 0);
+  const gymKcal = gym.reduce((a, s) => a + hlSessKcal(s, kg), 0);
   const todos = h.todos.filter((t) => hlOn(t, k));
   return { kg, steps, gym, gymKcal, stepKcal: steps * hlStepKcal(kg), move: steps * hlStepKcal(kg) + gymKcal, todos,
            done: todos.filter((t) => t.done[k]).length, km: steps * hlStepKm(h.profile.cm || 170) };
@@ -17705,6 +17917,7 @@ const HlLibEdit = ({ ed, set, cols, n, taken, onSave, onCancel }) => {
       <span className="hl-lib-ed-in">
         <input className="jr-in" value={ed.name} maxLength={60} autoFocus placeholder="Class name" aria-label="Class name" onChange={(e) => set({ name: e.target.value })} />
         <input className="jr-in" value={ed.room} maxLength={40} placeholder="Where (room)" aria-label="Room" onChange={(e) => set({ room: e.target.value })} />
+        <input className="jr-in" value={ed.prof || ""} maxLength={60} placeholder="Professor" aria-label="Professor" onChange={(e) => set({ prof: e.target.value })} />
       </span>
       <span className="hl-dots">
         {HL_CLS.map((c, i) => <button key={c} className={!ed.col && ed.tint === i ? "on" : ""} style={{ "--c": c }} onClick={() => set({ tint: i, col: undefined })} aria-label={`Colour ${i + 1}`} />)}
@@ -17973,11 +18186,11 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
   const names = hlAsgNames(classes, lib), clsK = new Set(hlMineList(names, mine).map((c) => hlNoteKey(c.name)));
   const evOf = (f) => (f.ev != null ? f.ev : names.some((c) => hlNoteKey(c.name) === hlNoteKey(f.name)) ? !clsK.has(hlNoteKey(f.name)) : !!f.ev0);
   const ev = !!form && evOf(form), libCls = lib.filter((q) => clsK.has(hlNoteKey(q.name)));
+  const [dropOn, dropFx] = useFileDrop(scanFile, HL_OCR_OK, () => setScan({ err: "That isn't a picture" }));
   const inLib = form && libCls.some((q) => q.name.toLowerCase() === form.name.trim().toLowerCase());
   return (
-    <div className="hl-week" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
-         onDragOver={HL_OCR_OK ? (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); } : undefined}
-         onDrop={HL_OCR_OK ? (e) => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) { e.preventDefault(); scanFile(f); } } : undefined}>
+    <div className={`hl-week${dropOn ? " hl-drop-on" : ""}`} data-drop="Drop the picture: its timetable is read" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
+         {...dropFx}>
       <div className="hl-scan-bar">
         <span className="month-nav hl-wk-nav">
           <button className="nav-arrow" title="The week before" onClick={() => setWk(hlAddDays(wk, -7))}>‹</button>
@@ -18001,7 +18214,14 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
       )}
       <HlSlide open={!!form}>
         {form && (
-        <div className="hl-form" key={form.id || "new"}>
+        <div className="hl-form" key={form.id || "new"}
+             onKeyDown={(e) => {
+               if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+               const t = e.target;
+               if (t.closest && t.closest(".hl-form-go, .hl-lib, .hl-lib-edit, textarea, [role='dialog'], [role='listbox']")) return;
+               if (t.tagName === "INPUT" && (t.type === "text" || !t.getAttribute("type"))) return;   // (its text boxes save on Enter themselves)
+               e.preventDefault(); save();
+             }}>
           <SlideSeg cls="hl-kind" value={ev ? "ev" : "cls"} onPick={(v) => { set({ ev: v === "ev" }); setLibOpen(false); setLibEd(null); }}
                     options={[["cls", "Class", "One of your classes: kept in My classes, and assignments can be tied to it"], ["ev", "Event", "Anything else (a party, practice, a meeting): it stands on the week, but isn't one of your classes"]]} />
           <span className="hl-name-row">
@@ -18025,11 +18245,11 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
                              onSave={() => { api.current.libSet(q.name, libEd, libEd.also); setLibEd(null); }} />
                 ) : (
                   <span key={q.name} className="hl-lib-it" style={{ "--c": hlClsCol(q) }}>
-                    <button className="hl-lib-go" onClick={() => { set({ name: q.name, room: q.room, tint: q.tint, col: q.col, ev: undefined }); setLibOpen(false); }}>
-                      <i /><b>{q.name}</b>{q.room && <small>{q.room}</small>}
+                    <button className="hl-lib-go" onClick={() => { set({ name: q.name, room: q.room, prof: q.prof || "", tint: q.tint, col: q.col, ev: undefined }); setLibOpen(false); }}>
+                      <i /><b>{q.name}</b>{(q.room || q.prof) && <small>{[q.room, q.prof].filter(Boolean).join(" · ")}</small>}
                     </button>
                     <button className="hl-lib-ed" title={`Change ${q.name}`} aria-label={`Change ${q.name}`}
-                            onClick={() => setLibEd({ from: q.name, name: q.name, room: q.room || "", tint: q.tint || 0, col: q.col, also: true })}>
+                            onClick={() => setLibEd({ from: q.name, name: q.name, room: q.room || "", prof: q.prof || "", tint: q.tint || 0, col: q.col, also: true })}>
                       <span className="msym" aria-hidden="true">edit</span>
                     </button>
                     <button className="hl-lib-x" title={`Take ${q.name} off the list`} aria-label={`Take ${q.name} off the list`} onClick={() => api.current.libDel(q.name)}>×</button>
@@ -18043,6 +18263,8 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
           </span>
           <input className="jr-in" placeholder="Where (room)" value={form.room} maxLength={40} onChange={(e) => set({ room: e.target.value })}
                  onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
+          {!ev && <input className="jr-in" placeholder="Professor" aria-label="Professor" value={form.prof || ""} maxLength={60} onChange={(e) => set({ prof: e.target.value, profSet: true })}
+                         onKeyDown={(e) => { if (e.key === "Enter") save(); }} />}
           <Pick>{DOW_FULL.map((n, w) => <button key={n} className={`jr-chip${form.dow === w ? " on" : ""}`} onClick={() => set({ dow: w })}>{n}</button>)}</Pick>
           <span className="hl-times">
             <TimeField value={form.from} onChange={(v) => set({ from: v })} label="Starts" />
@@ -18072,7 +18294,7 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
             </span>
             {form.col && !cols.includes(form.col) && <button className="hl-dot-keep" onClick={() => api.current.colAdd(form.col)}><span className="msym" aria-hidden="true">add</span>Keep this colour</button>}
           </span>
-          <span className="hl-form-go">
+          <span className="hl-form-go wide">
             {form.id && !ask && (
               <button className="bk-btn hl-form-notes" title={notes[hlNoteKey(form.name)] ? `Notes · ${hlKeptSay(notes[hlNoteKey(form.name)])}` : "Notes"} aria-label="Notes"
                       onClick={() => { const c = classes.find((o) => o.id === form.id); if (c) { setForm(null); setNt({ c, k: dates[form.dow] }); } }}>
@@ -18128,12 +18350,14 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
                 /* the lines a block has room for (30 October 2026: "text cut short with space to spare", then a long name,
                    "Eunoia PPI Welcoming Party", cut to one line in a short block while the time took the other): from the
                    width of its lane, how many lines each of its words need; the name first (up to 3), then the time, then the
-                   room (up to 2 each), each as many as are left */
+                   room (up to 2 each), each as many as are left; then the lecturer, one line (5 November 2026, his words:
+                   "have the professor name show up in this timetable box") */
                 const avail = Math.max(1, Math.floor((ht - 10) / 15)), tw = (p.n > 1 ? colW / p.n - 4 : colW - 6) - 14 - (kept ? 14 : 0);
                 const cpl = Math.max(4, Math.floor(tw / 7.2)), cps = Math.max(4, Math.floor(tw / 6.3));
                 const nameL = Math.min(Math.ceil((c.name.length * 1.12) / cpl) || 1, 3, avail), left1 = avail - nameL;
                 const timeL = Math.min(Math.ceil(when.length / cps), 2, left1), roomL = c.room ? Math.min(Math.ceil(c.room.length / cps) || 1, 2, left1 - timeL) : 0;
-                const showT = timeL > 0, showR = roomL > 0;
+                const profL = c.prof ? Math.min(Math.ceil(c.prof.length / cps) || 1, 1, left1 - timeL - roomL) : 0;
+                const showT = timeL > 0, showR = roomL > 0, showP = profL > 0;
                 return (
                   <button key={`${c.id}${p.head ? "" : "+"}`} className={`hl-cls${p.head ? "" : " cont"}${p.e >= 1440 && p.head && night ? " night" : ""}`}
                           style={{ top, height: ht, "--c": col, ...(p.n > 1 ? { left: `calc(${(p.lane * 100) / p.n}% + 2px)`, right: "auto", width: `calc(${100 / p.n}% - 4px)` } : {}), animationDelay: `${w * 30 + i * 40}ms` }}
@@ -18142,18 +18366,23 @@ const HlWeek = memo(({ classes, lib, mine = null, cols = [], notes = {}, asg = [
                           onClick={(e) => { if (e.detail === 0) openCls(c); else if (!p.head) press(c, w > 0 ? w - 1 : w); }}
                           onContextMenu={(e) => clsMenu(e, c, dates[p.head ? w : Math.max(0, w - 1)])}
                           onKeyDown={(e) => { if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); setForm(null); setNt({ c, k: dates[p.head ? w : Math.max(0, w - 1)] }); } }}
-                          title={`${c.name}${clsK.has(hlNoteKey(c.name)) ? "" : " (event)"} · ${clk(c.from)}–${clk(c.to)}${night ? " the next day" : ""}${c.room ? ` · ${c.room}` : ""}${c.once ? " · this date only" : " · every week"}\nDouble-click for its notes${kept ? ` (${hlKeptSay(kept)})` : ""}`}>
+                          title={`${c.name}${clsK.has(hlNoteKey(c.name)) ? "" : " (event)"} · ${clk(c.from)}–${clk(c.to)}${night ? " the next day" : ""}${c.room ? ` · ${c.room}` : ""}${c.prof ? ` · ${c.prof}` : ""}${c.once ? " · this date only" : " · every week"}\nDouble-click for its notes${kept ? ` (${hlKeptSay(kept)})` : ""}`}>
                     <b style={{ "--nl": nameL }}>{c.name}</b>
                     {showT && <span style={{ "--nl": timeL }}>{when}</span>}
                     {showR && <span style={{ "--nl": roomL }}>{c.room}</span>}
+                    {showP && <span className="hl-cls-prof" style={{ "--nl": profL }}><i className="msym" aria-hidden="true">person</i>{c.prof}</span>}
                     {p.head && kept && <span className={`msym hl-cls-kept${star ? " star" : ""}`} aria-hidden="true">{star ? "star" : "sticky_note_2"}</span>}
                     {p.head && <i className="hl-cls-grip" aria-hidden="true" />}
                   </button>
                 );
               })}
               {dates[w] === today && nowMin >= from * 60 && nowMin < to * 60 && <span className="hl-now" style={{ top: ((nowMin - from * 60) / 60) * HL_HOUR }} />}
-              {dues.filter((a) => a.due === dates[w]).map((a, i) => (
-                <button key={`due-${a.id}`} className="hl-due" data-due={a.id} style={{ top: ((hlMin(a.at) - from * 60) / 60) * HL_HOUR, animationDelay: `${240 + w * 30 + i * 60}ms` }}
+              {/* deadlines within half an hour of each other share one line and stack their tabs upwards, each its own (5 November
+                  2026, his words: "there are 2 assignments due on the same day and on the app its overlapping and ignoring the other
+                  one": two at 23:55 stood on one spot, one hidden) */}
+              {(() => { let at = -1e9, k = 0; return dues.filter((a) => a.due === dates[w]).sort((p, q) => hlMin(p.at) - hlMin(q.at) || (p.title || "").localeCompare(q.title || ""))
+                .map((a) => { const m = hlMin(a.at); if (m - at < 30) k++; else { at = m; k = 0; } return { a, at, k }; }); })().map(({ a, at, k }, i) => (
+                <button key={`due-${a.id}`} className={`hl-due${k ? " stack" : ""}`} data-due={a.id} style={{ top: ((at - from * 60) / 60) * HL_HOUR, "--k": k, zIndex: 3 + k, animationDelay: `${240 + w * 30 + i * 60}ms` }}
                         title={`Due ${clk(a.at)}: ${a.title || hlAsgKind(a.kind)[1]}${a.cls ? ` · ${a.cls}` : ""}\nPress to open it`}
                         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); api.current.asgOpen(a.id); }}>
                   <span className="hl-due-tab"><span className="msym" aria-hidden="true">flag</span><b>{a.title || hlAsgKind(a.kind)[1]}</b><i>{clk(a.at)}</i></span>
@@ -18208,7 +18437,7 @@ const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
   const names = hlAsgNames(classes, lib), clsK = new Set(hlMineList(names, mine).map((c) => hlNoteKey(c.name)));
   const isCls = (c) => clsK.has(hlNoteKey(c.name));
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const hit = (c) => words.every((w) => `${c.name} ${c.room || ""}`.toLowerCase().includes(w));
+  const hit = (c) => words.every((w) => `${c.name} ${c.room || ""} ${c.prof || ""}`.toLowerCase().includes(w));
   const byName = (p, o) => p.name.localeCompare(o.name);
   const mineRows = names.filter(isCls).filter(hit).sort(byName);
   const evRows = words.length ? names.filter((c) => !isCls(c) && classes.some((b) => hlNoteKey(b.name) === hlNoteKey(c.name))).filter(hit).sort(byName).slice(0, 12) : [];
@@ -18227,7 +18456,7 @@ const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
   const enter = () => { if (evRows.length === 1 && !mineRows.length) add(evRows[0].name); else if (fresh && !evRows.length && !mineRows.length) addNew(); else nudge(qBox.current); };
   const stop = (e) => e.stopPropagation();
   const sub = (c, k) => { const kept = notes[k], na = asg.filter((a) => hlNoteKey(a.cls) === k).length;
-    return `${when(k)}${c.room ? ` · ${c.room}` : ""}${kept ? ` · ${hlKeptSay(kept)}` : ""}${na ? ` · ${na} ${na === 1 ? "assignment" : "assignments"}` : ""}`; };
+    return `${when(k)}${c.room ? ` · ${c.room}` : ""}${c.prof ? ` · ${c.prof}` : ""}${kept ? ` · ${hlKeptSay(kept)}` : ""}${na ? ` · ${na} ${na === 1 ? "assignment" : "assignments"}` : ""}`; };
   return createPortal(
     <div style={{ ...sh.back, zIndex: 80, alignItems: "flex-start", paddingTop: "max(40px, 10vh)" }} onClick={(e) => { e.stopPropagation(); sh.shut(); }}
          onDoubleClick={stop} onPointerDown={stop} onKeyDown={stop}>
@@ -18260,7 +18489,7 @@ const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
                 <i className="hl-ca-dot" />
                 <span className="hl-ca-txt"><b>{c.name}</b><small>{sub(c, k)}</small></span>
                 <button className="hl-lib-ed hl-ca-ed" title={`Change ${c.name}: its name, room and colour, everywhere`} aria-label={`Change ${c.name}`}
-                        onClick={() => setEd({ from: c.name, name: c.name, room: c.room || "", tint: c.tint || 0, col: c.col, also: true })}>
+                        onClick={() => setEd({ from: c.name, name: c.name, room: c.room || "", prof: c.prof || "", tint: c.tint || 0, col: c.col, also: true })}>
                   <span className="msym" aria-hidden="true">edit</span>
                 </button>
                 <button className="trash-btn bin-sm hl-ca-x" title={`Take ${c.name} out of my classes (it stays on the week)`} aria-label={`Take ${c.name} out of my classes`} onClick={() => out(c.name)}>
@@ -18273,7 +18502,7 @@ const HlClsAll = ({ classes, lib, mine, cols, notes, asg, api, onClose }) => {
           {evRows.map((c) => (
             <div key={hlNoteKey(c.name)} className="hl-ca-row ev" style={{ "--c": hlClsCol(c) }}>
               <i className="hl-ca-dot" />
-              <span className="hl-ca-txt"><b>{c.name}</b><small>{when(hlNoteKey(c.name))}{c.room ? ` · ${c.room}` : ""}</small></span>
+              <span className="hl-ca-txt"><b>{c.name}</b><small>{when(hlNoteKey(c.name))}{c.room ? ` · ${c.room}` : ""}{c.prof ? ` · ${c.prof}` : ""}</small></span>
               <button className="bk-btn hl-ca-add" onClick={() => add(c.name)} title={`Make ${c.name} one of my classes`}><span className="msym" aria-hidden="true">add</span>Add</button>
             </div>
           ))}
@@ -18393,6 +18622,22 @@ const RT_HEX = Object.fromEntries(RT_COLS.map(([k], i) => [`#0a0b${String(i).pad
 const RT_HEX_OF = Object.fromEntries(Object.entries(RT_HEX).map(([h, k]) => [k, h]));
 const RT_CSS = RT_COLS.map(([k, , dk, lt], i) => `.rt-ed [data-c="${k}"], .rt-ed font[color="#0a0b${String(i).padStart(2, "0")}" i] { color: light-dark(${dk}, ${lt}); }
         .rt-sw[data-c="${k}"] { background: light-dark(${dk}, ${lt}); }`).join("\n        ");
+/* Highlighting and bullets (9 November 2026, his words: "add a new feature for descriptions in which i can highlight text and
+   change the highlight colors"; "automatically identify dot points with - and i can adjust if i want circle or - or empty
+   colored circle"). Text Highlight Color as Word has it (the marker with a bar of the last colour; the arrow opens No Color and
+   Word's bright highlights). The engine writes a highlight as an inline background with a stand-in value per colour
+   (rgb(10, 12, n)), coloured here (!important: an inline style beats a rule); it is kept the same way, cleaned by rtClean.
+   For the dark look each is a see-through tint, the text staying light; the light look has Word's own. Bullets: a line begun
+   with "- " (or "* ", "• "), typed or pasted, becomes a bulleted list (Word's AutoFormat); the list's marker is a filled
+   circle, a dash, or a hollow circle in the class's colour (data-b on the <ul>). */
+const RT_HLS = [["none", "No Color"], ["yellow", "Yellow", "rgba(255,222,0,0.36)", "#ffff00"], ["green", "Bright Green", "rgba(70,230,100,0.32)", "#00ff00"],
+  ["turq", "Turquoise", "rgba(0,214,232,0.32)", "#00ffff"], ["pink", "Pink", "rgba(255,80,214,0.34)", "#ff00ff"], ["blue", "Blue", "rgba(80,140,255,0.40)", "#8ab4ff"],
+  ["red", "Red", "rgba(255,80,80,0.38)", "#ff8080"], ["violet", "Violet", "rgba(176,110,255,0.38)", "#cfa8ff"], ["gray", "Gray 25%", "rgba(210,214,220,0.24)", "#c0c0c0"]];
+const RT_HL_HEX = (k) => `#0a0c${String(Math.max(0, RT_HLS.findIndex((h) => h[0] === k))).padStart(2, "0")}`;
+const RT_HL_CSS = RT_HLS.slice(1).map(([k, , dk, lt], i) => `.rt-ed [style*="rgb(10, 12, ${i + 1})"] { background-color: light-dark(${dk}, ${lt}) !important; border-radius: 2px; }
+        .rt-sw[data-h="${k}"] { background: light-dark(${dk}, ${lt}); }`).join("\n        ");
+const RT_BULS = [["disc", "Filled circle", "●"], ["dash", "Dash", "–"], ["ring", "Hollow circle", "○"]];
+const RT_BUL_RE = /^\s*[-*•●○◦▪–]\s+/;
 const rtEsc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const rtFromText = (t) => rtEsc(t || "").replace(/\n/g, "<br>");
 // only <b> <i> <u> <span data-c> <div> <br>; anything else gives its words only
@@ -18410,6 +18655,10 @@ const rtClean = (html) => {
       let w = walk(c);
       const col = c.getAttribute("data-c") || (tag === "font" ? RT_HEX[(c.getAttribute("color") || "").toLowerCase()] : null);
       if (col && RT_HEX_OF[col]) w = `<span data-c="${col}">${w}</span>`;
+      const hm = /background(?:-color)?\s*:\s*(?:rgb\(\s*10\s*,\s*12\s*,\s*(\d+)\s*\)|#0a0c([0-9a-f]{2}))/i.exec(st), hi = hm ? (hm[1] != null ? +hm[1] : parseInt(hm[2], 16)) : 0;
+      if (hi >= 1 && hi < RT_HLS.length) w = `<span style="background-color: rgb(10, 12, ${hi})">${w}</span>`;
+      if (tag === "li") { out += `<li>${w || "<br>"}</li>`; continue; }
+      if (tag === "ul" || tag === "ol") { const b = c.getAttribute("data-b"); out += `<ul data-b="${RT_BULS.some((q) => q[0] === b) ? b : "disc"}">${w}</ul>`; continue; }
       if (tag === "u" || /text-decoration[^;]*underline/i.test(st)) w = `<u>${w}</u>`;
       if (tag === "i" || tag === "em" || /font-style:\s*italic/i.test(st)) w = `<i>${w}</i>`;
       if (tag === "b" || tag === "strong" || /font-weight:\s*(bold|[6-9]00)/i.test(st)) w = `<b>${w}</b>`;
@@ -18421,12 +18670,14 @@ const rtClean = (html) => {
   return walk(tpl.content);
 };
 // html: what is kept (null: only plain words so far); text: those plain words; onType(html, text) as it changes; onLeave
-const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
+// cls: a class more on the box; onPasteText(text): told the plain words of a paste once they are in (an assignment reads a brief's due date from it)
+const RichBox = ({ html, text, label, placeholder, onType, onLeave, cls = "", onPasteText }) => {
   const ed = useRef(null), palRef = useRef(null);
-  const [on, setOn] = useState({}), [pal, setPal] = useState(false), [last, setLast] = useState("red");
+  // pal: the menu open ("col" the font colours, "hl" the highlights, "bul" the bullets, "" none)
+  const [on, setOn] = useState({}), [pal, setPal] = useState(""), [last, setLast] = useState("red"), [lastH, setLastH] = useState("yellow"), [bul, setBul] = useState("disc");
   useLayoutEffect(() => { ed.current.innerHTML = html ? rtClean(html) : rtFromText(text); }, []);
   const tell = () => { const e = ed.current; if (e.innerText.trim() === "" && !e.querySelector("li")) e.innerHTML = ""; onType(e.innerHTML, e.innerText.replace(/\n$/, "")); };
-  const state = () => { try { setOn({ b: document.queryCommandState("bold"), i: document.queryCommandState("italic"), u: document.queryCommandState("underline") }); } catch (e) { /* not in the box */ } };
+  const state = () => { try { setOn({ b: document.queryCommandState("bold"), i: document.queryCommandState("italic"), u: document.queryCommandState("underline"), l: document.queryCommandState("insertUnorderedList") }); } catch (e) { /* not in the box */ } };
   useEffect(() => {
     const f = () => { if (ed.current && ed.current.contains(document.getSelection().anchorNode)) state(); };
     document.addEventListener("selectionchange", f);
@@ -18434,7 +18685,7 @@ const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
   }, []);
   useEffect(() => {
     if (!pal) return;
-    const out = (e) => { if (palRef.current && !palRef.current.contains(e.target)) setPal(false); };
+    const out = (e) => { if (palRef.current && !palRef.current.contains(e.target)) setPal(""); };
     window.addEventListener("pointerdown", out, true);
     return () => window.removeEventListener("pointerdown", out, true);
   }, [pal]);
@@ -18443,22 +18694,85 @@ const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
     if (document.activeElement !== e) e.focus();
     document.execCommand("styleWithCSS", false, false);
     document.execCommand(c, false, v);
-    state(); tell();
+    setPal(""); state(); tell();
   };
-  const paint = (k) => { setLast(k); setPal(false); cmd("foreColor", RT_HEX_OF[k]); };
+  const paint = (k) => { setLast(k); cmd("foreColor", RT_HEX_OF[k]); };
+  // a highlight on the words chosen (No Color takes it off)
+  const mark = (k) => { if (k !== "none") setLastH(k); cmd("hiliteColor", k === "none" ? "transparent" : RT_HL_HEX(k)); };
+  // the list the caret is in (null: none)
+  const curUl = () => {
+    const s = document.getSelection(), e = ed.current;
+    let n = s && s.rangeCount ? s.anchorNode : null;
+    if (!n || !e.contains(n)) return null;
+    if (n.nodeType === 3) n = n.parentNode;
+    const u = n.closest ? n.closest("ul") : null;
+    return u && e.contains(u) ? u : null;
+  };
+  // the bullets button puts the line in a list with the marker picked last, or takes it out of one; a marker picked from
+  // its menu changes the list the caret is in, or starts one
+  const bullets = (k) => {
+    const u = curUl();
+    if (k) setBul(k);
+    if (k && u) { u.setAttribute("data-b", k); setPal(""); tell(); return; }
+    cmd("insertUnorderedList");
+    const n = curUl();
+    if (n) { n.setAttribute("data-b", k || bul); tell(); }
+  };
+  // "- " (or "* ", "• ") at the start of a line starts a list, as Word's AutoFormat does; true when it did
+  const autoBullet = () => {
+    const s = document.getSelection(), t = s && s.anchorNode;
+    if (!s.isCollapsed || !t || t.nodeType !== 3 || s.anchorOffset !== 1 || !/^[-*•]/.test(t.data) || !ed.current.contains(t) || t.parentNode.closest("li")) return false;
+    for (let n = t; ;) {          // nothing before it on its line
+      const p = n.previousSibling;
+      if (p) { if (p.nodeName === "BR") break; if (p.nodeType === 3 && !p.data) { n = p; continue; } return false; }
+      const up = n.parentNode;
+      if (!up || up === ed.current || up.nodeName === "DIV" || up.nodeName === "P") break;
+      n = up;
+    }
+    const r = document.createRange();
+    r.setStart(t, 0); r.setEnd(t, 1); s.removeAllRanges(); s.addRange(r);
+    document.execCommand("delete");
+    bullets(bul);
+    return true;
+  };
+  // a paste comes in as plain words; its lines begun with "- ", "• "… come in as a list (in a list already, as its lines)
+  const paste = (e) => {
+    e.preventDefault();
+    const t = e.clipboardData.getData("text/plain");
+    if (!t) return;
+    const ls = t.replace(/\r?\n$/, "").split(/\r?\n/);
+    if (!ls.some((l) => RT_BUL_RE.test(l))) document.execCommand("insertText", false, t);
+    else if (curUl()) document.execCommand("insertText", false, ls.map((l) => l.replace(RT_BUL_RE, "")).join("\n"));
+    else {
+      let h = "", inL = false;
+      for (const l of ls) {
+        const b = RT_BUL_RE.test(l);
+        if (b !== inL) { h += b ? `<ul data-b="${bul}">` : "</ul>"; inL = b; }
+        h += b ? `<li>${rtEsc(l.replace(RT_BUL_RE, "")) || "<br>"}</li>` : `<div>${rtEsc(l) || "<br>"}</div>`;
+      }
+      document.execCommand("insertHTML", false, h + (inL ? "</ul>" : ""));
+    }
+    if (onPasteText) onPasteText(t);
+  };
   const keep = (e) => e.preventDefault();        // a press on the bar leaves the words chosen in the box
   const name = (k) => (RT_COLS.find((c) => c[0] === k) || RT_COLS[0])[1];
+  const hlName = (k) => (RT_HLS.find((c) => c[0] === k) || RT_HLS[1])[1], bulName = (RT_BULS.find((c) => c[0] === bul) || RT_BULS[0])[1];
+  const arrow = (k, title) => (
+    <button className={`rt-btn rt-arr${pal === k ? " on" : ""}`} aria-expanded={pal === k} aria-haspopup="menu" title={title} onClick={() => setPal((v) => (v === k ? "" : k))}>
+      <span className="msym" aria-hidden="true">arrow_drop_down</span>
+    </button>
+  );
   return (
     <div className="rt">
-      <div className="rt-bar" role="toolbar" aria-label="Text formatting" onMouseDown={keep}>
+      <div className="rt-bar" role="toolbar" aria-label="Text formatting" onMouseDown={keep} ref={palRef}>
         <button className={`rt-btn${on.b ? " on" : ""}`} aria-pressed={!!on.b} title="Bold (⌘B)" onClick={() => cmd("bold")}><b>B</b></button>
         <button className={`rt-btn${on.i ? " on" : ""}`} aria-pressed={!!on.i} title="Italic (⌘I)" onClick={() => cmd("italic")}><i>I</i></button>
         <button className={`rt-btn${on.u ? " on" : ""}`} aria-pressed={!!on.u} title="Underline (⌘U)" onClick={() => cmd("underline")}><u>U</u></button>
         <span className="rt-sep" />
-        <span className="rt-col" ref={palRef}>
+        <span className="rt-col">
           <button className="rt-btn rt-a" title={`Font Color: ${name(last)}`} aria-label={`Font colour ${name(last)}`} onClick={() => paint(last)}><span>A</span><i className="rt-sw" data-c={last} /></button>
-          <button className={`rt-btn rt-arr${pal ? " on" : ""}`} aria-expanded={pal} aria-haspopup="menu" title="More colours" onClick={() => setPal((v) => !v)}><span className="msym" aria-hidden="true">arrow_drop_down</span></button>
-          {pal && (
+          {arrow("col", "More colours")}
+          {pal === "col" && (
             <div className="rt-pal glass lg-float" role="menu" aria-label="Font colour">
               <button className="rt-auto" role="menuitem" onClick={() => paint("auto")}><i className="rt-sw" data-c="auto" />Automatic</button>
               <div className="rt-pal-t">Standard Colors</div>
@@ -18468,14 +18782,47 @@ const RichBox = ({ html, text, label, placeholder, onType, onLeave }) => {
             </div>
           )}
         </span>
+        <span className="rt-col">
+          <button className="rt-btn rt-a rt-hl" title={`Text Highlight Color: ${hlName(lastH)}`} aria-label={`Highlight ${hlName(lastH)}`} onClick={() => mark(lastH)}>
+            <span className="msym" aria-hidden="true">ink_highlighter</span><i className="rt-sw" data-h={lastH} />
+          </button>
+          {arrow("hl", "More highlight colours")}
+          {pal === "hl" && (
+            <div className="rt-pal glass lg-float" role="menu" aria-label="Highlight colour">
+              <button className="rt-auto" role="menuitem" onClick={() => mark("none")}><i className="rt-sw" data-h="none" />No Color</button>
+              <div className="rt-pal-t">Highlight Colors</div>
+              <div className="rt-sws rt-sws-hl">
+                {RT_HLS.slice(1).map(([k, n]) => <button key={k} role="menuitem" className="rt-sw-b" title={n} aria-label={n} onClick={() => mark(k)}><i className="rt-sw" data-h={k} /></button>)}
+              </div>
+            </div>
+          )}
+        </span>
+        <span className="rt-sep" />
+        <span className="rt-col">
+          <button className={`rt-btn rt-bl${on.l ? " on" : ""}`} aria-pressed={!!on.l} title={`Bullets: ${bulName} (or start a line with "- ")`} aria-label={`Bullets, ${bulName}`} onClick={() => bullets()}>
+            <span className="msym" aria-hidden="true">format_list_bulleted</span>
+          </button>
+          {arrow("bul", "Bullet Library")}
+          {pal === "bul" && (
+            <div className="rt-pal rt-pal-bul glass lg-float" role="menu" aria-label="Bullet">
+              <div className="rt-pal-t">Bullet Library</div>
+              {RT_BULS.map(([k, n, g]) => (
+                <button key={k} role="menuitemradio" aria-checked={bul === k} className="rt-auto" onClick={() => bullets(k)}>
+                  <span className="rt-bul" data-b={k} aria-hidden="true">{g}</span>{n}{bul === k && <span className="msym rt-chk" aria-hidden="true">check</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
         <span className="rt-sep" />
         <button className="rt-btn" title="Clear All Formatting" aria-label="Clear all formatting" onClick={() => { cmd("removeFormat"); }}><span className="msym" aria-hidden="true">format_clear</span></button>
       </div>
-      <div ref={ed} className="jr-in hl-nt-about rt-ed" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={label} data-ph={placeholder}
+      <div ref={ed} className={`jr-in hl-nt-about rt-ed${cls ? ` ${cls}` : ""}`} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={label} data-ph={placeholder}
            spellCheck={false} onInput={tell} onBlur={onLeave} onFocus={state}
-           onPaste={(e) => { e.preventDefault(); document.execCommand("insertText", false, e.clipboardData.getData("text/plain")); }}
+           onPaste={paste}
            onKeyDown={(e) => {
              const k = e.key.toLowerCase();
+             if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey && autoBullet()) { e.preventDefault(); return; }
              if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (k === "b" || k === "i" || k === "u")) { e.preventDefault(); e.stopPropagation(); cmd(k === "b" ? "bold" : k === "i" ? "italic" : "underline"); }
            }} />
     </div>
@@ -18688,7 +19035,7 @@ const HlClsNotes = ({ cls, k, notes, api, onClose, onEdit }) => {
           <div className="hl-nt-hd">
             <div className="hl-nt-name">{cls.name}</div>
             <div className="hl-nt-when">
-              {k ? hlNice(k) : HL_DOW_LONG[cls.dow]} · {clk(cls.from)}–{clk(cls.to)}{night ? " the next day" : ""}{cls.room ? ` · ${cls.room}` : ""}{cls.once ? "" : ` · every ${HL_DOW_LONG[cls.dow]}`}
+              {k ? hlNice(k) : HL_DOW_LONG[cls.dow]} · {clk(cls.from)}–{clk(cls.to)}{night ? " the next day" : ""}{cls.room ? ` · ${cls.room}` : ""}{cls.prof ? ` · ${cls.prof}` : ""}{cls.once ? "" : ` · every ${HL_DOW_LONG[cls.dow]}`}
             </div>
           </div>
           <span className="hl-nt-tools">
@@ -19013,13 +19360,16 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
   const txt = useRef(null), aRef = useRef(a), sayT = useRef(0), fileIn = useRef(null), picIn = useRef(null), gone = useRef(false), shut = useRef(false), viewRef = useRef(null), read = useRef(false), aiN = useRef(0);
   const [aiBusy, setAiBusy] = useState(false);
   const [ocrBusy, setOcrBusy] = useState(false);   // a screenshot of the due line being read
+  const [dueDrop, dueDropFx] = useFileDrop((f) => { setOver(false); readShot(f); }, HL_OCR_OK);
   const dueShot = useRef(null);
+  const aboutH = useRef(a.aboutH || "");   // the notes with their bold, italic, underline and colours (RichBox), beside the plain words
   txt.current = { title, sub, about, wk, wt, how }; aRef.current = a; viewRef.current = view;
   const keep = () => {
     const t = txt.current, o = aRef.current, p = {};
     if (t.title !== o.title) p.title = t.title.slice(0, 120);
     if (t.sub !== o.sub) p.sub = t.sub.slice(0, 200);
-    if (t.about !== o.about) p.about = t.about.slice(0, 20000);
+    const h = t.about.trim() ? rtClean(aboutH.current) : "";
+    if (t.about !== o.about || h !== (o.aboutH || "")) { p.about = t.about.slice(0, 20000); p.aboutH = h; }
     if (t.how !== (o.how || "")) p.how = t.how.slice(0, 120);
     const w = hlWtNum(t.wt), k = hlWkNum(t.wk);
     if (w !== (o.weight ?? null)) p.weight = w;
@@ -19170,9 +19520,7 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
         </div>
         <div className="hl-as-body">
         <div className="hl-as-smart">
-          <label className="tp-line hl-as-read"
-                 onDragOver={(e) => { if (HL_OCR_OK && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); e.stopPropagation(); } }}
-                 onDrop={(e) => { const img = HL_OCR_OK && [...(e.dataTransfer.files || [])].find((q) => /^image\//.test(q.type)); if (!img) return; e.preventDefault(); e.stopPropagation(); setOver(false); readShot(img); }}>
+          <label className={`tp-line hl-as-read${dueDrop ? " hl-drop-on" : ""}`} data-drop="Drop the screenshot: the due date is read" {...dueDropFx}>
             <span className="msym" aria-hidden="true">auto_awesome</span>
             <input className="hl-as-due" value={due} placeholder={`Paste the due line${HL_OCR_OK ? " or a screenshot of it" : ""}: Week 4, Friday, 20 November 2026, at 23.55`} spellCheck={false} autoComplete="off"
                    aria-label={`Paste the due date or the weightage: the date, time, week and weight are read for you${HL_DUE_AI ? " by the Mac's own AI" : ""}`}
@@ -19260,16 +19608,18 @@ const HlAsg = ({ a, classes, lib, mine, week1, api, onClose }) => {
             <small className="hl-as-nocls">Parties and other events stay on your timetable; they just don't show as a class here. Change it each semester: assignments you already made keep theirs.</small>
           </div>
         )}
-        <textarea className="jr-in hl-nt-about hl-as-about" value={about} maxLength={20000} rows={9} spellCheck={false} aria-label="Notes"
-                  placeholder="Notes: paste the whole brief here: what to do, the marking, what to hand in…" onChange={(e) => setAbout(e.target.value)} onBlur={keep}
-                  onPaste={(e) => {
-                    // a pasted brief with its own "DUE DATE:" or "WEIGHTAGE:" lines fills those in too (only the labelled lines are read)
-                    const ls = (e.clipboardData.getData("text") || "").split(/\r?\n/).filter((l) => /^\s*(?:due(?: date)?|deadline|weight(?:age)?|bobot)\s*[:\-–]/i.test(l));
-                    const t = e.clipboardData.getData("text") || "", base = ls.length ? hlAsgRead(ls.join("\n"), new Date(), { week1 }) : {};
-                    // with the Mac's AI, a brief that speaks of a due date or a weight is read whole (it finds the due date among the others)
-                    if (HL_DUE_AI && /\b(?:due|deadline|submit|submission|hand in|weight(?:age)?|bobot)\b/i.test(t)) readText(t, base);
-                    else if (ls.length) useRead(base, "Read from your notes");
-                  }} />
+        {/* the notes have the class notes' formatting strip (9 November 2026, his words: "make the assignment descriptions have
+            the same features as the lectures descriptions"): bold, italic, underline, Word's font colours, clear formatting */}
+        <RichBox html={a.aboutH} text={a.about} label="Notes" cls="hl-as-about" placeholder="Notes: paste the whole brief here: what to do, the marking, what to hand in…"
+                 onType={(html, text) => { aboutH.current = html; setAbout(text.slice(0, 20000)); }} onLeave={keep}
+                 onPasteText={(t) => {
+                   // a pasted brief with its own "DUE DATE:" or "WEIGHTAGE:" lines fills those in too (only the labelled lines are read)
+                   const ls = t.split(/\r?\n/).filter((l) => /^\s*(?:due(?: date)?|deadline|weight(?:age)?|bobot)\s*[:\-–]/i.test(l));
+                   const base = ls.length ? hlAsgRead(ls.join("\n"), new Date(), { week1 }) : {};
+                   // with the Mac's AI, a brief that speaks of a due date or a weight is read whole (it finds the due date among the others)
+                   if (HL_DUE_AI && /\b(?:due|deadline|submit|submission|hand in|weight(?:age)?|bobot)\b/i.test(t)) readText(t, base);
+                   else if (ls.length) useRead(base, "Read from your notes");
+                 }} />
         <label className="tp-line hl-nt-add">
           <span className="msym" aria-hidden="true">add_link</span>
           <input value={line} placeholder="Paste a link or write a note, then Enter" spellCheck={false} autoComplete="off" aria-label="A link or a note"
@@ -19380,6 +19730,28 @@ const HlAsgScanSheet = ({ found, names, asg, onAdd, onCancel }) => {
     </div>
   );
 };
+/* A picture dragged over one of the picture readers (the week's timetable, the Assignments card, an assignment's due box):
+   the place lights up and says what a drop does, and any picture file is taken (by its kind, or its name when the Mac gives
+   no kind, as for a HEIC); something else dropped goes on as before (5 November 2026, his words: "make me be able to drag
+   and drop files on the picture ai"). [over, handlers]; the handlers go on the place, `over` lights it (.hl-drop-on) */
+const hlIsPic = (f) => !!f && (/^image\//.test(f.type || "") || /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?)$/i.test(f.name || ""));
+const useFileDrop = (onFile, on = true, onBad) => {
+  const [over, setOver] = useState(false), n = useRef(0);
+  if (!on) return [false, {}];
+  const files = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes("Files");
+  return [over, {
+    onDragEnter: (e) => { if (!files(e)) return; e.preventDefault(); e.stopPropagation(); n.current++; setOver(true); },
+    onDragOver: (e) => { if (!files(e)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; },
+    onDragLeave: (e) => { if (!files(e)) return; e.stopPropagation(); n.current = Math.max(0, n.current - 1); if (!n.current) setOver(false); },
+    onDrop: (e) => {
+      if (!files(e)) return;
+      n.current = 0; setOver(false);
+      const f = [...(e.dataTransfer.files || [])].find(hlIsPic);
+      if (!f) { if (onBad) { e.preventDefault(); e.stopPropagation(); onBad(); } return; }
+      e.preventDefault(); e.stopPropagation(); onFile(f);
+    },
+  }];
+};
 // a picture read for assignments (the card's button, a paste or a drop on it): what the Mac's reading gives, or why not
 const hlReadShotFile = async (f) => {
   if (!f || !HL_OCR_OK) return { err: "Pictures are read on a Mac only" };
@@ -19420,6 +19792,7 @@ const HlAsgList = memo(({ asg, classes, lib, api }) => {
     window.addEventListener("paste", paste);
     return () => window.removeEventListener("paste", paste);
   }, []);
+  const [dropOn, dropFx] = useFileDrop(readFile, HL_OCR_OK, () => setScan({ err: "That isn't a picture: drop a screenshot" }));
   useCmds(() => (HL_OCR_OK ? [{ id: "hl-asg-shot", icon: "document_scanner", text: "Read assignments off a screenshot", tip: "Your deadlines or a course's assessment table", run: () => shotIn.current?.click() }] : []));
   const rows = asg.map((a) => ({ a, ms: hlDueMs(a) }));
   const open = rows.filter((r) => !r.a.done).sort((p, q) => p.ms - q.ms), done = rows.filter((r) => r.a.done).sort((p, q) => q.ms - p.ms);
@@ -19441,29 +19814,35 @@ const HlAsgList = memo(({ asg, classes, lib, api }) => {
             <b>{a.title || `Untitled ${kind[1].toLowerCase()}`}</b>
             <small>{[a.cls, kind[1], a.wk != null && `Week ${a.wk}`, a.sub].filter(Boolean).join(" · ")}</small>
           </span>
-          {a.weight != null && <span className="hl-as-wt" title="Weightage">{a.weight}%</span>}
-          {a.items.length > 0 && <span className="hl-as-n" title={`${a.items.length} kept`}><span className="msym" aria-hidden="true">attach_file</span>{a.items.length}</span>}
+          {/* the due date, and under it one quiet line ending under it: the weight, what is kept, how soon (5 November 2026,
+              his words: "this ui just looks ugly make it better": three chips of three shapes stood round a two-line date) */}
           <span className="hl-as-when">
             <b>{hlNice(a.due)} · {clk(a.at)}</b>
-            {!a.done && <em>{ds.say}</em>}
+            <span className="hl-as-meta2">
+              {a.weight != null && <span className="hl-as-wt" title="Weightage">{a.weight}%</span>}
+              {a.items.length > 0 && <span className="hl-as-n" title={`${a.items.length} kept`}><span className="msym" aria-hidden="true">attach_file</span>{a.items.length}</span>}
+              {!a.done && <em>{ds.say}</em>}
+            </span>
           </span>
         </button>
       </div>
     );
   };
   return (
-    <div className="hl-as" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
-         onDragOver={(e) => { if (HL_OCR_OK && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); }}
-         onDrop={(e) => { const f = HL_OCR_OK && [...(e.dataTransfer.files || [])].find((q) => /^image\//.test(q.type)); if (!f) return; e.preventDefault(); readFile(f); }}>
+    <div className={`hl-as${dropOn ? " hl-drop-on" : ""}`} data-drop="Drop the screenshot: its assignments are read" onPointerEnter={() => { over.current = true; }} onPointerLeave={() => { over.current = false; }}
+         {...dropFx}>
       <div className="hl-as-bar">
         <span className="hl-as-count">{open.length ? `${open.length} to hand in${late.length ? ` · ${late.length} overdue` : ""}` : asg.length ? "All handed in" : ""}</span>
-        {HL_OCR_OK && (
-          <button className="hl-ibtn hl-as-shot-all" disabled={!!(scan && scan.busy)} onClick={() => shotIn.current?.click()}
-                  aria-label="Read assignments off a screenshot" title="Read assignments off a screenshot: your deadlines, or a course's assessment table (or paste or drop one on this card)">
-            <span className="msym" aria-hidden="true">{scan && scan.busy ? "hourglass_top" : "document_scanner"}</span>
-          </button>
-        )}
-        <button className="hl-as-add" onClick={() => api.current.asgOpen(api.current.asgNew())}><span className="msym" aria-hidden="true">add</span>Add</button>
+        {/* Add and its screenshot reader, one pill: + Add │ ⎙ */}
+        <span className="hl-as-addw">
+          <button className="hl-as-add" onClick={() => api.current.asgOpen(api.current.asgNew())}><span className="msym" aria-hidden="true">add</span>Add</button>
+          {HL_OCR_OK && (
+            <button className="hl-as-shot-all" disabled={!!(scan && scan.busy)} onClick={() => shotIn.current?.click()}
+                    aria-label="Read assignments off a screenshot" title="Read assignments off a screenshot: your deadlines, or a course's assessment table (or paste or drop one on this card)">
+              <span className="msym" aria-hidden="true">{scan && scan.busy ? "hourglass_top" : "document_scanner"}</span>
+            </button>
+          )}
+        </span>
       </div>
       {HL_OCR_OK && <input ref={shotIn} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { readFile(e.target.files?.[0]); e.target.value = ""; }} />}
       {scan && scan.busy && <div className="hl-as-found ai" aria-live="polite"><span className="msym" aria-hidden="true">document_scanner</span><span>Reading the screenshot…</span></div>}
@@ -20403,7 +20782,7 @@ const HlActivity = memo(({ h, day, today, api, phoneSaid }) => {
         </div>
       </div>
       <div className="hl-month">
-        <div className="hl-month-head"><b>{MONTHS_FULL[d0.getMonth()]}</b><span>The three rings of each day: steps, moving, to-dos</span></div>
+        <div className="hl-month-head"><button className="hl-month-wrap" title={`${MONTHS_FULL[d0.getMonth()]} wrapped`} onClick={() => api.current.wrap(first.slice(0, 7))}>{MONTHS_FULL[d0.getMonth()]}<span className="msym" aria-hidden="true">auto_awesome</span></button><span>The three rings of each day: steps, moving, to-dos</span></div>
         <div className="hl-month-row">
         <div className="hl-month-grid" ref={mGrid} onPointerLeave={() => setHov(null)}>
           <i className="hl-msel" ref={mSel} aria-hidden="true" />
@@ -20731,6 +21110,7 @@ const HlNumLive = ({ value, onChange, ph, unit, dp = 0, label, onEnter }) => (
    few sets of kilos × reps. Listed with what was lifted in all and about what it burned; the best of each lift ---------- */
 const hlBlankSet = () => ({ kg: "", reps: "" });
 const hlDraftOf = (s) => (s ? { id: s.id, day: s.day, name: s.name, min: String(s.min || ""), note: s.note || "",
+  golf: s.golf ? { balls: s.golf.balls ? String(s.golf.balls) : "", effort: s.golf.effort || "steady", club: s.golf.club || "" } : null,
   ex: s.ex.length ? s.ex.map((e) => ({ name: e.name, sets: e.sets.map((x) => ({ kg: x.kg ? String(x.kg) : "", reps: x.reps ? String(x.reps) : "" })) })) : [{ name: "", sets: [hlBlankSet()] }] }
   : { name: "Push", min: "60", note: "", ex: [{ name: "", sets: [hlBlankSet(), hlBlankSet(), hlBlankSet()] }] });
 const HlGym = memo(({ gym, day, today, kg, api }) => {
@@ -20748,7 +21128,8 @@ const HlGym = memo(({ gym, day, today, kg, api }) => {
   const setSet = (i, k, p) => setD((v) => ({ ...v, ex: v.ex.map((e, j) => (j === i ? { ...e, sets: e.sets.map((x, m) => (m === k ? { ...x, ...p } : x)) } : e)) }));
   const save = () => {
     const ex = d.ex.filter((e) => e.name.trim()).map((e) => ({ name: e.name.trim(), sets: e.sets.filter((x) => Number(x.kg) || Number(x.reps)).map((x) => ({ kg: Number(x.kg) || 0, reps: Number(x.reps) || 0 })) }));
-    api.current.saveGym({ id: d.id, day: d.day || day, name: d.name.trim() || "Workout", min: Math.min(600, Number(d.min) || 0), note: d.note.trim(), ex });
+    const golf = d.golf ? { balls: Math.min(5000, Number(d.golf.balls) || 0), effort: d.golf.effort, ...(d.golf.club ? { club: d.golf.club } : {}) } : undefined;
+    api.current.saveGym({ id: d.id, day: d.day || day, name: d.golf ? HL_GOLF : d.name.trim() || "Workout", min: Math.min(600, Number(d.min) || 0), note: d.note.trim(), ex: d.golf ? [] : ex, golf });
     setD(null);
   };
   return (
@@ -20764,34 +21145,60 @@ const HlGym = memo(({ gym, day, today, kg, api }) => {
       {d && (
         <div className="hl-sheet">
           <div className="hl-sheet-row">
-            <Pick>{HL_SPLITS.map((n) => <button key={n} className={`jr-chip${d.name === n ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: n }))}>{n}</button>)}</Pick>
-            <input className="jr-in hl-sname" value={HL_SPLITS.includes(d.name) ? "" : d.name} placeholder="Or a name of its own" maxLength={40} onChange={(e) => setD((v) => ({ ...v, name: e.target.value }))} />
+            <Pick>{HL_SPLITS.map((n) => <button key={n} className={`jr-chip${!d.golf && d.name === n ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: n, golf: null }))}>{n}</button>)}
+              <button className={`jr-chip hl-golf-chip${d.golf ? " on" : ""}`} onClick={() => setD((v) => ({ ...v, name: HL_GOLF, golf: v.golf || { balls: "", effort: "steady", club: "" } }))}>
+                <span className="msym" aria-hidden="true">sports_golf</span>{HL_GOLF}</button></Pick>
+            {!d.golf && <input className="jr-in hl-sname" value={HL_SPLITS.includes(d.name) ? "" : d.name} placeholder="Or a name of its own" maxLength={40} onChange={(e) => setD((v) => ({ ...v, name: e.target.value }))} />}
             <span className="hl-num u"><input className="pc-in" inputMode="numeric" value={d.min} placeholder="60" aria-label="Minutes" onChange={(e) => setD((v) => ({ ...v, min: e.target.value.replace(/\D/g, "").slice(0, 3) }))} /><i>min</i></span>
           </div>
-          {d.ex.map((e, i) => (
-            <div key={i} className="hl-ex">
-              <div className="hl-ex-head">
-                <input className="jr-in" list="hl-lifts" value={e.name} placeholder="Exercise (bench press, squat…)" maxLength={60} onChange={(ev) => setEx(i, { name: ev.target.value })} />
-                {d.ex.length > 1 && <button className="x-btn hl-x" aria-label="Remove the exercise" onClick={() => setD((v) => ({ ...v, ex: v.ex.filter((_, j) => j !== i) }))}>✕</button>}
+          {d.golf ? (() => {
+            // a range session: how long (the minutes above), balls hit, how hard, the club mostly hit; what it burned, live
+            const g = d.golf, met = HL_GOLF_MET[g.effort] || HL_GOLF_MET.steady, w = kg || 70, mins = Number(d.min) || 0, balls = Number(g.balls) || 0;
+            const setG = (p) => setD((v) => ({ ...v, golf: { ...v.golf, ...p } }));
+            return (
+              <div className="hl-golf">
+                <span className="hl-golf-f"><span className="hl-cap">Balls hit</span>
+                  <span className="hl-num"><input className="pc-in" inputMode="numeric" value={grp(g.balls)} placeholder="100" aria-label="Balls hit" onChange={(e) => setG({ balls: numIn(ungrp(e), 0).slice(0, 4) })} /></span></span>
+                <span className="hl-golf-f"><span className="hl-cap">How hard</span>
+                  <Pick>{HL_GOLF_EFF.map(([k, t]) => <button key={k} className={`jr-chip${g.effort === k ? " on" : ""}`} title={`${HL_GOLF_MET[k]} METs`} onClick={() => setG({ effort: k })}>{t}</button>)}</Pick></span>
+                <span className="hl-golf-f"><span className="hl-cap">Mostly</span>
+                  <Pick>{HL_GOLF_CLUBS.map((n) => <button key={n} className={`jr-chip${g.club === n ? " on" : ""}`} onClick={() => setG({ club: g.club === n ? "" : n })}>{n}</button>)}</Pick></span>
+                <div className="hl-golf-k">
+                  {mins ? <><span className="hl-golf-n">≈ <b><Num v={(met * w * mins) / 60} /></b> kcal burned</span>
+                    <small>{met} METs × {hlKg(w)} kg × {hlDur(mins)}{balls ? ` · ${(balls / mins).toFixed(1)} balls a minute · ${((met * w * mins) / 60 / balls).toFixed(1)} kcal a ball` : ""}</small></>
+                    : <small>Type how long you were at the range (the minutes above) to see what it burned.</small>}
+                  <small className="hl-golf-src">METs from the Compendium of Physical Activities (golf at a driving range, 3.5); measured range practice runs 2.3 to 3.5.</small>
+                </div>
               </div>
-              <div className="hl-sets">
-                {e.sets.map((x, k) => (
-                  <span key={k} className="hl-set">
-                    <i>{k + 1}</i>
-                    <input className="pc-in" inputMode="decimal" value={grp(x.kg)} placeholder="kg" aria-label="Kilos" onChange={(ev) => setSet(i, k, { kg: numIn(ungrp(ev), 2) })} />
-                    <em>×</em>
-                    <input className="pc-in" inputMode="numeric" value={x.reps} placeholder="reps" aria-label="Reps" onChange={(ev) => setSet(i, k, { reps: ev.target.value.replace(/\D/g, "").slice(0, 3) })} />
-                  </span>
-                ))}
-                <button className="jr-chip" onClick={() => setEx(i, { sets: [...e.sets, { ...(e.sets[e.sets.length - 1] || hlBlankSet()) }] })}>+ Set</button>
-                <span className="hl-hint">A set left empty is left out.</span>
+            );
+          })() : (
+            <>
+            {d.ex.map((e, i) => (
+              <div key={i} className="hl-ex">
+                <div className="hl-ex-head">
+                  <input className="jr-in" list="hl-lifts" value={e.name} placeholder="Exercise (bench press, squat…)" maxLength={60} onChange={(ev) => setEx(i, { name: ev.target.value })} />
+                  {d.ex.length > 1 && <button className="x-btn hl-x" aria-label="Remove the exercise" onClick={() => setD((v) => ({ ...v, ex: v.ex.filter((_, j) => j !== i) }))}>✕</button>}
+                </div>
+                <div className="hl-sets">
+                  {e.sets.map((x, k) => (
+                    <span key={k} className="hl-set">
+                      <i>{k + 1}</i>
+                      <input className="pc-in" inputMode="decimal" value={grp(x.kg)} placeholder="kg" aria-label="Kilos" onChange={(ev) => setSet(i, k, { kg: numIn(ungrp(ev), 2) })} />
+                      <em>×</em>
+                      <input className="pc-in" inputMode="numeric" value={x.reps} placeholder="reps" aria-label="Reps" onChange={(ev) => setSet(i, k, { reps: ev.target.value.replace(/\D/g, "").slice(0, 3) })} />
+                    </span>
+                  ))}
+                  <button className="jr-chip" onClick={() => setEx(i, { sets: [...e.sets, { ...(e.sets[e.sets.length - 1] || hlBlankSet()) }] })}>+ Set</button>
+                  <span className="hl-hint">A set left empty is left out.</span>
+                </div>
               </div>
-            </div>
-          ))}
-          <datalist id="hl-lifts">{HL_LIFTS.map((n) => <option key={n} value={n} />)}</datalist>
-          <button className="jr-chip hl-more" onClick={() => setD((v) => ({ ...v, ex: [...v.ex, { name: "", sets: [hlBlankSet(), hlBlankSet(), hlBlankSet()] }] }))}>+ Exercise</button>
+            ))}
+            <datalist id="hl-lifts">{HL_LIFTS.map((n) => <option key={n} value={n} />)}</datalist>
+            <button className="jr-chip hl-more" onClick={() => setD((v) => ({ ...v, ex: [...v.ex, { name: "", sets: [hlBlankSet(), hlBlankSet(), hlBlankSet()] }] }))}>+ Exercise</button>
+            </>
+          )}
           <textarea className="jr-in hl-gnote" value={d.note} placeholder="How it went" maxLength={400} onChange={(e) => setD((v) => ({ ...v, note: e.target.value }))} />
-          <span className="hl-form-go">
+          <span className="hl-form-go wide">
             {d.id && <button className="bk-btn danger" onClick={() => { api.current.delGym(d.id); setD(null); }}>Delete</button>}
             <button className="bk-btn" onClick={() => setD(null)}>Cancel</button>
             <button className="hl-save" onClick={save}>{d.id ? "Save" : `Add to ${d.day && d.day !== today ? hlNice(d.day) : day === today ? "today" : hlNice(day)}`}</button>
@@ -20808,11 +21215,13 @@ const HlGym = memo(({ gym, day, today, kg, api }) => {
                 <button className="hl-sess-row" onClick={() => setOpen(on ? null : s.id)}>
                   <span className="hl-sess-d">{s.day === today ? "Today" : hlNice(s.day)}</span>
                   <span className="hl-tag">{s.name}</span>
-                  <span className="hl-sess-f">{s.min ? hlDur(s.min) : ""}{s.ex.length ? ` · ${s.ex.length} exercise${s.ex.length === 1 ? "" : "s"}` : ""}{vol ? ` · ${hlFmt(vol)} kg` : ""}</span>
-                  <span className="hl-sess-k">≈ {hlFmt(s.src === "apple" ? s.kcal : hlGymKcal(kg || 70, s.min))} kcal</span>
+                  <span className="hl-sess-f">{s.min ? hlDur(s.min) : ""}{s.golf ? `${s.golf.balls ? ` · ${hlFmt(s.golf.balls)} balls` : ""}${s.golf.club ? ` · ${s.golf.club}` : ""}`
+                    : `${s.ex.length ? ` · ${s.ex.length} exercise${s.ex.length === 1 ? "" : "s"}` : ""}${vol ? ` · ${hlFmt(vol)} kg` : ""}`}</span>
+                  <span className="hl-sess-k">≈ {hlFmt(hlSessKcal(s, kg || 70))} kcal</span>
                 </button>
                 {on && (
                   <div className="hl-sess-in">
+                    {s.golf && <span><b>{HL_GOLF_EFF.find((q) => q[0] === s.golf.effort)?.[1] || "Steady"}</b>{hlSessMet(s)} METs{s.golf.balls && s.min ? ` · ${(s.golf.balls / s.min).toFixed(1)} balls a minute` : ""}</span>}
                     {s.ex.map((e, j) => <span key={j}><b>{e.name}</b>{e.sets.map((x) => `${x.kg ? `${x.kg} kg × ` : ""}${x.reps}`).join(", ")}</span>)}
                     {s.note && <span className="hl-sess-note">{s.note}</span>}
                     {s.src !== "apple" && <button className="bk-btn" onClick={() => { setD(hlDraftOf(s)); setOpen(null); }}><span className="msym">edit</span>Edit</button>}
@@ -21201,6 +21610,333 @@ const dayTurnPlay = (page, snap, live) => {
   for (const c of words.slice(0, 80)) go(c, [{ opacity: 0.25, offset: 0 }], 260);
   if (glides.length || slides.length || fades.length || words.length) warm.moved = performance.now() + DT_MS;
 };
+/* ---------- health: the monthly wrapped (9 November 2026, his words: "make a monthly wrapped for the health app, make sure it
+   works perfectly, displays necessary and important info and make sure it follows the other month wrapped styles"). The
+   other sides' pop-up, tiles, pixel figure, day bars and lists (`.wr-*`, S.wr*, WrHeroNum, WrList), filled with Health's
+   month: the steps (the hero, a bar a day under the goal's dashed line), the best and the lowest day, the daily average,
+   the days at the goal, sleep, the gym, to-dos, weight against the plan, the distance, the longest run at the goal, the
+   rings closed, the day score and the most active weekday. Days after today are not counted. Opened from the month over
+   the Activity card's rings, the sidebar (and Home's, the month of today) and ⌘P; a tile with ↗ opens its list under the
+   grid, as on the other sides ---------- */
+const HL_SLEEP_COL = { Great: "#d6c9ff", Good: "#b7a4e6", Fair: "#f0d88a", Poor: "#ff8d97" };
+const hlWrapData = (h, ym, today) => {
+  const [y, m1] = ym.split("-").map(Number), mo = m1 - 1, dim = new Date(y, mo + 1, 0).getDate(), goal = h.profile.steps || 8000;
+  const days = [];
+  for (let d = 1; d <= dim; d++) {
+    const k = hlKey(new Date(y, mo, d)), later = k > today, s = hlScore(h, k), dd = s.d;
+    days.push({ k, d, later, steps: dd.steps, km: dd.km, move: dd.move, todos: dd.todos, done: dd.done, v: s.v, score: s.score });
+  }
+  const past = days.filter((q) => !q.later), walked = past.filter((q) => q.steps > 0);
+  const tot = walked.reduce((a, q) => a + q.steps, 0), atGoal = past.filter((q) => q.steps >= goal).length;
+  let run = 0, best = 0;
+  past.forEach((q) => { run = q.steps >= goal ? run + 1 : 0; best = Math.max(best, run); });
+  const byWd = Array.from({ length: 7 }, () => ({ n: 0, s: 0 }));
+  past.forEach((q) => { const w = hlDow(q.k); byWd[w].n++; byWd[w].s += q.steps; });
+  const wd = byWd.map((o, w) => ({ w, avg: o.n ? o.s / o.n : 0 })).sort((a, b) => b.avg - a.avg)[0];
+  const nights = past.map((q) => ({ k: q.k, q: h.sleep[q.k] || {}, s: hlSleepScore(h.sleep, q.k) })).filter((x) => x.s);
+  const words = HL_SLEEP_WORD.map(([, w]) => ({ w, n: nights.filter((x) => x.s.word === w).length })).filter((o) => o.n);
+  const gym = h.gym.filter((s) => s.day.slice(0, 7) === ym && s.day <= today).sort((a, b) => (a.day < b.day ? 1 : -1));
+  const names = {};
+  gym.forEach((s) => { names[s.name] = (names[s.name] || 0) + 1; });
+  let lift = null;
+  gym.forEach((s) => (s.ex || []).forEach((e) => (e.sets || []).forEach((x) => { const r = hl1rm(x.kg, x.reps); if (r > (lift ? lift.r : 0)) lift = { r, name: e.name }; })));
+  const tds = {};
+  past.forEach((q) => q.todos.forEach((t) => { const o = (tds[t.id] ||= { text: t.text, on: 0, done: 0 }); o.on++; if (t.done[q.k]) o.done++; }));
+  const wks = Object.keys(h.weights).filter((k) => k.slice(0, 7) === ym && k <= today).sort();
+  const first = past.length ? past[0].k : `${ym}-01`, last = past.length ? past[past.length - 1].k : first;
+  const w0 = hlWeightOn(h, hlAddDays(first, -1)) || (wks.length ? h.weights[wks[0]] : 0), w1 = hlWeightOn(h, last);
+  const due = past.reduce((a, q) => a + q.todos.length, 0), done = past.reduce((a, q) => a + q.done, 0);
+  const closed = [0, 1].map((i) => past.filter((q) => q.v[i] >= 1).length).concat(past.filter((q) => q.todos.length && q.done === q.todos.length).length);
+  const all3 = past.filter((q) => q.v[0] >= 1 && q.v[1] >= 1 && (!q.todos.length || q.done === q.todos.length)).length;
+  const scored = past.filter((q) => q.steps || q.todos.length || q.v[1] > 0);
+  return {
+    y, mo, ym, goal, days, past: past.length, tot, avg: walked.length ? tot / walked.length : 0, walked: walked.length, atGoal, run: best,
+    best: walked.length ? walked.reduce((p, q) => (q.steps > p.steps ? q : p)) : null,
+    low: walked.length > 1 ? walked.reduce((p, q) => (q.steps < p.steps ? q : p)) : null,
+    ranked: [...walked].sort((p, q) => q.steps - p.steps),
+    km: past.reduce((a, q) => a + q.km, 0), move: past.reduce((a, q) => a + q.move, 0),
+    wd: wd && wd.avg > 0 ? wd : null, nights, words,
+    sleepMin: nights.length ? nights.reduce((a, x) => a + x.s.min, 0) / nights.length : 0,
+    sleepScore: nights.length ? nights.reduce((a, x) => a + x.s.score, 0) / nights.length : 0,
+    gym, gymMin: gym.reduce((a, s) => a + (s.min || 0), 0), top: Object.entries(names).sort((a, b) => b[1] - a[1])[0] || null, lift,
+    tds: Object.values(tds).sort((a, b) => b.done / b.on - a.done / a.on || b.on - a.on), due, done,
+    w0, w1, wks: wks.length, wLast: wks.length ? wks[wks.length - 1] : null,
+    closed, all3, score: scored.length ? scored.reduce((a, q) => a + q.score, 0) / scored.length : 0,
+    topScore: scored.length ? scored.reduce((p, q) => (q.score > p.score ? q : p)) : null,
+    empty: !walked.length && !nights.length && !gym.length && !due && !wks.length,
+  };
+};
+const HlWrapped = ({ h, ym, today, onClose }) => {
+  useClock12();
+  const r = useMemo(() => hlWrapData(h, ym, today), [h, ym, today]);
+  const [closing, setClosing] = useState(false), [hov, setHov] = useState(null), [detail, setDetail] = useState(null), [open, setOpen] = useState(false);
+  const detailRef = useRef(null), shut = useRef(null);
+  shut.current = () => { setClosing(true); setTimeout(onClose, 240); };
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); shut.current(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  const toggle = (key) => {
+    if (open && detail === key) { setOpen(false); return; }
+    setDetail(key); setOpen(true);
+    setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 120);
+  };
+  const title = `${MONTHS_FULL[r.mo]} ${r.y}`, goal = r.goal, pct = (n, of) => (of ? Math.round((n / of) * 100) : 0);
+  let tileN = 0;
+  const tile = (cls, acc, key) => ({
+    className: `wr-tile ${cls}${key ? " clickable" : ""}${key && open && detail === key ? " active" : ""}`,
+    style: { "--acc": acc, animationDelay: `${120 + (tileN++) * 70}ms` },
+    ...(key ? { onClick: () => toggle(key), title: "Show the list" } : {}),
+  });
+  const none = (t, sub) => <><div style={{ ...S.wrBig, color: "#8e969e" }}>{t}</div>{sub && <div style={S.wrSmall}>{sub}</div>}</>;
+  const lose = h.goal ? h.goal.start > h.goal.target : true, dw = Math.round((r.w1 - r.w0) * 10) / 10;
+  const plan = h.goal && r.wLast ? hlPlanAt(h.goal, r.wLast) : null, ok = plan !== null && (lose ? r.w1 <= plan + 0.3 : r.w1 >= plan - 0.3);
+  const thisMonth = today.slice(0, 7) === ym;
+  const maxV = Math.max(goal * 1.15, ...r.days.map((q) => q.steps)), gf = Math.min(100, (goal / maxV) * 100);
+  const hq = hov !== null ? r.days[hov] : null;
+  const RING_R = 30, RING_C = 2 * Math.PI * RING_R, gp = pct(r.atGoal, r.past);
+  const detailBody = () => {
+    const two = (a, b, left, right) => (
+      <div className="wr-two">
+        <div><div style={{ ...S.wrLabel, color: "#8fd7a4" }}>{left}</div><WrList dkey={`${detail}-a`} rows={a} emptyText="—" /></div>
+        <div><div style={{ ...S.wrLabel, color: "#e2808c" }}>{right}</div><WrList dkey={`${detail}-b`} rows={b} emptyText="—" /></div>
+      </div>
+    );
+    let ttl = "", icon = "list", acc = "#9aa3ab", body = null;
+    if (detail === "rank") {
+      acc = "#2fd08a"; icon = "leaderboard"; ttl = "Best & lowest days";
+      const max = Math.max(1, ...r.ranked.map((q) => q.steps));
+      const rows = (arr) => arr.map((q) => ({ label: hlNice(q.k), value: hlFmt(q.steps), valColor: q.steps >= goal ? "#8fd7a4" : "#e8eaec", frac: q.steps / max,
+        color: q.steps >= goal ? "#2fd08a" : "rgba(47,208,138,0.45)", sub: `${q.km.toFixed(1)} km · ${pct(q.steps, goal)}% of your goal` }));
+      body = two(rows(r.ranked.slice(0, 5)), rows([...r.ranked].reverse().slice(0, 5)), "Top 5", "Lowest 5");
+    } else if (detail === "sleep") {
+      acc = "#b7a4e6"; icon = "bedtime"; ttl = "Best & worst nights";
+      const by = [...r.nights].sort((a, b) => b.s.score - a.s.score), max = Math.max(1, ...r.nights.map((x) => x.s.min));
+      const rows = (arr) => arr.map((x) => ({ label: `Before ${hlNice(x.k)}`, value: hlDur(x.s.min), valColor: HL_SLEEP_COL[x.s.word], frac: x.s.min / max, color: HL_SLEEP_COL[x.s.word],
+        sub: `${x.s.word} · rated ${x.s.score} · ${clk(x.q.bed)}–${clk(x.q.wake)}` }));
+      body = two(rows(by.slice(0, 5)), rows([...by].reverse().slice(0, 5)), "Best 5", "Worst 5");
+    } else if (detail === "gym") {
+      acc = "#ffa497"; icon = "fitness_center"; ttl = "Every session";
+      const max = Math.max(1, ...r.gym.map((s) => s.min || 0));
+      body = <WrList dkey="gym" emptyText="No sessions." rows={r.gym.slice(0, 20).map((s) => ({ label: s.name, value: s.min ? hlDur(s.min) : "–", valColor: "#ffc4bb", frac: (s.min || 0) / max,
+        color: "#ffa497", sub: `${hlNice(s.day)}${hlVolume(s) ? ` · ${hlFmt(hlVolume(s))} kg lifted` : ""}` }))} />;
+    } else if (detail === "todos") {
+      acc = "#4fb3ff"; icon = "checklist"; ttl = "How each to-do went";
+      body = <WrList dkey="todos" emptyText="No to-dos." rows={r.tds.slice(0, 12).map((t) => ({ label: t.text, value: `${t.done}/${t.on}`, valColor: t.done === t.on ? "#8fd7a4" : "#a8e1ff",
+        frac: t.done / t.on, color: "#4fb3ff", sub: `${pct(t.done, t.on)}% done` }))} />;
+    }
+    return (
+      <div className="wr-detail" style={{ "--acc": acc }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <span style={{ ...S.wrLabel, marginBottom: 0, color: "#c7cdd2" }}><span className="msym wr-ico">{icon}</span>{ttl}</span>
+          <button className="x-btn" style={{ ...S.closeBtn, width: 26, height: 26 }} aria-label="Close the list" onClick={() => setOpen(false)}>✕</button>
+        </div>
+        {body}
+      </div>
+    );
+  };
+  return createPortal(
+    <div style={{ ...S.backdrop, zIndex: 60, animation: closing ? "fadeOut .22s ease both" : "fadeIn .22s ease backwards" }} onClick={() => shut.current()}>
+      <div role="dialog" aria-modal="true" aria-label={`${title}: wrapped`} className="glass wr-modal" onClick={(e) => e.stopPropagation()}
+           style={{ animation: closing ? "modalPopOut .24s var(--ease-soft) both" : "modalPop .45s var(--ease) backwards" }}>
+        <div style={S.modalHead}>
+          <span style={S.wrKicker}>
+            <span className="msym" style={{ fontSize: 17, color: "#e6c877" }}>auto_awesome</span>
+            <span className="px-word">MONTHLY WRAPPED</span>
+          </span>
+          <button className="x-btn" style={S.closeBtn} aria-label="Close" onClick={() => shut.current()}>✕</button>
+        </div>
+        {r.empty ? (
+          <div className="wr-tile wr-hero" style={{ "--acc": "#6d757d", minHeight: 220, animationDelay: "100ms" }}>
+            <div style={S.wrLabel}>{title}</div>
+            <div style={{ ...S.wrHeroNum, fontSize: 40, color: "#8e969e" }}>Nothing logged yet</div>
+            <div style={S.wrHeroSub}>Log your steps, sleep, workouts, to-dos or weight this month and your recap will fill in.</div>
+          </div>
+        ) : (<>
+          <div className="wr-grid">
+            {/* hero: the month's steps, a bar a day under the goal's line */}
+            <div {...tile("wr-hero", "#2fd08a", null)}>
+              <div style={S.wrLabel}>{title}</div>
+              <WrHeroNum value={r.tot} render={(n) => hlFmt(n)} grad={{ backgroundImage: "linear-gradient(100deg, #ffffff 10%, #9cf0c8 55%, #2fd08a)" }} />
+              <div style={S.wrHeroSub}>
+                Steps for the month
+                <br /><span style={{ color: "#e8eaec" }}>You walked <b>{r.km.toFixed(1)} km</b> and reached your goal on <b>{r.atGoal} of {r.past}</b> {r.past === 1 ? "day" : "days"}.</span>
+              </div>
+              <div className="wr-bars hlw-bars" onMouseLeave={() => setHov(null)}>
+                {hq && (
+                  <div className="wr-bar-tip" style={{ left: `${Math.min(88, Math.max(12, ((hov + 0.5) / r.days.length) * 100))}%` }}>
+                    <span style={{ color: "#8a9299", fontSize: 10.5, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase" }}>{hlNice(hq.k)}</span>
+                    <span style={{ fontWeight: 800, fontSize: 14, color: hq.later || !hq.steps ? "#6d757d" : hq.steps >= goal ? "#8fd7a4" : "#e8eaec" }}>
+                      {hq.later ? "Still to come" : hq.steps ? `${hlFmt(hq.steps)} steps` : "No steps"}
+                    </span>
+                  </div>
+                )}
+                {r.days.map((q, k) => (
+                  <div key={q.k} className="wr-bar-col" style={{ opacity: hov !== null && hov !== k ? 0.4 : 1 }} onMouseEnter={() => setHov(k)}>
+                    <div className="wr-bar-half">
+                      <i className="hlw-gl" style={{ bottom: `${gf}%` }} />
+                      {!q.later && q.steps > 0 ? <span className={`wr-bar up${q.steps >= goal ? "" : " hlw-lo"}`} style={{ height: `${Math.max(4, (q.steps / maxV) * 100)}%`, animationDelay: `${420 + k * 14}ms` }} />
+                        : <span className="wr-bar none" />}
+                    </div>
+                    {(q.d === 1 || q.d % 5 === 0) && <span className="wr-bar-lbl">{q.d}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* best / lowest day, the average, the days at the goal */}
+            <div {...tile("", "#2fd08a", r.best ? "rank" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">north_east</span>Best day</div>
+              {r.best ? (<>
+                <div style={S.wrBig}>{hlNice(r.best.k)}</div>
+                <div style={S.wrSmall}>{r.best.km.toFixed(1)} km · {pct(r.best.steps, goal)}% of your goal</div>
+                <div style={{ ...S.wrValue, color: "#8fd7a4" }}><CountNum value={r.best.steps} duration={800} render={(n) => hlFmt(n)} /></div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("No steps yet")}
+            </div>
+            <div {...tile("", "#ffa497", r.low ? "rank" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">south_east</span>Lowest day</div>
+              {r.low ? (<>
+                <div style={S.wrBig}>{hlNice(r.low.k)}</div>
+                <div style={S.wrSmall}>{r.low.km.toFixed(1)} km · {pct(r.low.steps, goal)}% of your goal</div>
+                <div style={{ ...S.wrValue, color: r.low.steps >= goal ? "#8fd7a4" : "#ffb3a8" }}><CountNum value={r.low.steps} duration={800} render={(n) => hlFmt(n)} /></div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("N/A")}
+            </div>
+            <div {...tile("", "#8ec8f8", r.best ? "rank" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">equalizer</span>Daily average</div>
+              {r.walked ? (<>
+                <div style={S.wrBig}><CountNum value={r.avg} duration={800} render={(n) => hlFmt(n)} /></div>
+                <div style={S.wrSmall}>steps a day, across {r.walked} {r.walked === 1 ? "day" : "days"} with steps</div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("No steps yet")}
+            </div>
+            <div {...tile("wr-row", "#2fd08a", null)}>
+              <svg width="74" height="74" viewBox="0 0 74 74" style={{ flexShrink: 0, transform: "rotate(-90deg)" }} aria-hidden="true">
+                <circle cx="37" cy="37" r={RING_R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="7" />
+                <circle className="wr-ring" cx="37" cy="37" r={RING_R} fill="none" stroke="#2fd08a" strokeWidth="7" strokeLinecap="round"
+                        strokeDasharray={RING_C} style={{ "--ring-off": RING_C * (1 - gp / 100), "--ring-c": RING_C }} />
+              </svg>
+              <div>
+                <div style={S.wrLabel}>At your goal</div>
+                <div style={S.wrBig}><CountNum value={gp} duration={800} render={(n) => `${Math.round(n)}%`} /></div>
+                <div style={S.wrSmall}>{r.atGoal} of {r.past} {r.past === 1 ? "day" : "days"} at {hlFmt(goal)} steps</div>
+              </div>
+            </div>
+
+            {/* sleep: the night's average, its rating, how the nights were rated */}
+            <div {...tile("wr-wide", "#b7a4e6", r.nights.length ? "sleep" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">bedtime</span>Sleep</div>
+              {r.nights.length ? (<>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                  <div style={S.wrBig}><CountNum value={r.sleepMin} duration={800} render={(n) => hlDur(Math.round(n))} /></div>
+                  <div style={S.wrSmall}>a night</div>
+                </div>
+                <div style={S.wrSmall}>Rated <b style={{ color: "#e8eaec" }}>{Math.round(r.sleepScore)}</b> on average · {r.nights.length} of {r.past} nights logged</div>
+                <div className="wr-stack">
+                  {r.words.map((o, k) => <span key={o.w} className="wr-stack-seg" style={{ width: `${(o.n / r.nights.length) * 100}%`, background: HL_SLEEP_COL[o.w], animationDelay: `${520 + k * 80}ms`, cursor: "default" }} />)}
+                </div>
+                <div style={S.wrLegend}>
+                  {r.words.map((o) => <span key={o.w} className="wr-leg"><i style={{ display: "inline-block", width: 7, height: 7, borderRadius: 99, marginRight: 6, background: HL_SLEEP_COL[o.w] }} />{o.w} {pct(o.n, r.nights.length)}%</span>)}
+                </div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("No nights logged", "Put in when you went to sleep and woke, under Activity.")}
+            </div>
+
+            {/* the gym, the to-dos */}
+            <div {...tile("", "#ffa497", r.gym.length ? "gym" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">fitness_center</span>Gym</div>
+              {r.gym.length ? (<>
+                <div style={S.wrBig}><CountNum value={r.gym.length} duration={800} render={(n) => Math.round(n)} /> {r.gym.length === 1 ? "session" : "sessions"}</div>
+                <div style={{ ...S.wrValue, color: "#ffc4bb" }}>{hlDur(r.gymMin)}</div>
+                <div style={S.wrSmall}>{r.top ? `${r.top[0]} most (${r.top[1]}×)` : ""}{r.lift ? `${r.top ? " · " : ""}best ${r.lift.name} ${hlKg(r.lift.r)} kg` : ""}</div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("No sessions", "Log a workout under Gym.")}
+            </div>
+            <div {...tile("", "#4fb3ff", r.due ? "todos" : null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">checklist</span>To-dos</div>
+              {r.due ? (<>
+                <div style={S.wrBig}><CountNum value={pct(r.done, r.due)} duration={800} render={(n) => `${Math.round(n)}%`} /> done</div>
+                <div style={{ ...S.wrValue, color: "#a8e1ff" }}>{r.done} of {r.due}</div>
+                <div style={S.wrSmall}>across {r.tds.length} {r.tds.length === 1 ? "to-do" : "to-dos"}</div>
+                <span className="msym wr-more">arrow_outward</span>
+              </>) : none("No to-dos")}
+            </div>
+
+            {/* weight: where the month began and where it stands, against the plan */}
+            <div {...tile("wr-wide", "#c3a8ff", null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">monitor_weight</span>Weight</div>
+              {r.w1 ? (<>
+                <div style={{ display: "flex", gap: 18, marginTop: 2 }}>
+                  {[["Start of the month", r.w0 || r.w1, hlNice(r.past ? r.days[0].k : `${ym}-01`)], [thisMonth ? "Now" : "End of the month", r.w1, r.wLast ? `last weighed ${hlNice(r.wLast)}` : "no weigh-in this month"]].map(([n, kg, sub]) => (
+                    <div key={n} style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ ...S.wrSmall, marginTop: 0, color: "#c3a8ff", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 10.5 }}>{n}</div>
+                      <div style={{ ...S.wrBig, fontSize: 21 }}><CountNum value={kg} duration={800} render={(v, busy) => `${busy ? hlKg1(v) : hlKg(v)} kg`} /></div>
+                      <div style={S.wrSmall}>{sub}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={S.wrSmall}>
+                  <b style={{ color: !dw ? "#e8eaec" : (lose ? dw < 0 : dw > 0) ? "#8fd7a4" : "#ffb3a8" }}>{dw > 0 ? "+" : dw < 0 ? "−" : "±"}{hlKg(Math.abs(dw))} kg</b> this month
+                  {plan !== null ? <> · <span style={{ color: ok ? "#8fd7a4" : "#f0d88a" }}>{ok ? "on track with your plan" : "behind your plan"}</span></> : null}
+                  {r.wks ? ` · ${r.wks} ${r.wks === 1 ? "weigh-in" : "weigh-ins"}` : ""}
+                </div>
+              </>) : none("No weigh-ins", "Put in your weight under Body.")}
+            </div>
+
+            {/* distance, the longest run at the goal */}
+            <div {...tile("", "#84dcd4", null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">straighten</span>Distance</div>
+              <div style={S.wrBig}><CountNum value={r.km} duration={800} render={(n) => n.toFixed(1)} /> km</div>
+              <div style={S.wrSmall}>about {hlFmt(r.move)} kcal burned moving</div>
+            </div>
+            <div {...tile("", "#ffc07e", null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">local_fire_department</span>Goal streak</div>
+              <div style={S.wrBig}><CountNum value={r.run} duration={800} render={(n) => Math.round(n)} /> {r.run === 1 ? "day" : "days"}</div>
+              <div style={S.wrSmall}>in a row at your step goal</div>
+            </div>
+
+            {/* the rings closed, the day score, the most active weekday */}
+            <div {...tile("wr-wide", "#ff8a4c", null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">track_changes</span>Rings closed</div>
+              <div style={{ display: "flex", gap: 18, marginTop: 2 }}>
+                {[["Steps", 0], ["Move", 1], ["To-dos", 2]].map(([n, i]) => (
+                  <div key={n} style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ ...S.wrSmall, marginTop: 0, color: HL_TINT[i][0], fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 10.5 }}>{n}</div>
+                    <div style={{ ...S.wrBig, fontSize: 21 }}><CountNum value={r.closed[i]} duration={800} render={(v) => Math.round(v)} /> {r.closed[i] === 1 ? "day" : "days"}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={S.wrSmall}>All three closed on <b style={{ color: "#e8eaec" }}>{r.all3}</b> of {r.past} {r.past === 1 ? "day" : "days"}</div>
+            </div>
+            <div {...tile("", hlScoreHue(r.score), null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">speed</span>Day score</div>
+              <div style={{ ...S.wrBig, color: hlScoreHue(r.score) }}><CountNum value={r.score} duration={800} render={(n) => Math.round(n)} /></div>
+              <div style={S.wrSmall}>{hlScoreSay(Math.round(r.score))}, on average{r.topScore ? ` · best ${hlNice(r.topScore.k)} (${r.topScore.score})` : ""}</div>
+            </div>
+            <div {...tile("", "#a6b3ff", null)}>
+              <div style={S.wrLabel}><span className="msym wr-ico">calendar_today</span>Most active</div>
+              {r.wd ? (<>
+                <div style={S.wrBig}>{HL_DOW_LONG[r.wd.w]}s</div>
+                <div style={S.wrSmall}>{hlFmt(r.wd.avg)} steps on average</div>
+              </>) : none("N/A")}
+            </div>
+          </div>
+
+          {/* the list that opens under the grid */}
+          <div ref={detailRef} style={{ display: "grid", gridTemplateRows: open ? "1fr" : "0fr", transition: "grid-template-rows .38s cubic-bezier(0.4,0,0.2,1)" }}>
+            <div style={S.fold} ref={(el) => { if (el) el.inert = !open; }}>
+              <div style={{ paddingTop: 12, opacity: open ? 1 : 0, transform: open ? "none" : "translateY(-10px)", transition: "opacity .28s ease, transform .32s cubic-bezier(0.22,1,0.36,1)" }}>
+                {detail && detailBody()}
+              </div>
+            </div>
+          </div>
+        </>)}
+      </div>
+    </div>,
+    document.body);
+};
 function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, who }) {
   useClock12();
   const dev = useDevOpt();
@@ -21228,6 +21964,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [wrap, setWrap] = useState(null);         // the monthly wrapped open: its month ("2026-11")
   const [nowMin, setNowMin] = useState(() => { const t = new Date(); return t.getHours() * 60 + t.getMinutes(); });
   const hRef = useRef(h), saveChain = useRef(Promise.resolve()), unreadable = useRef(false);
   useEffect(() => { const t = setTimeout(() => setEntering(false), 1200); return () => clearTimeout(t); }, []);
@@ -21295,7 +22032,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       setLoaded(true);
     })();
   }, []);
-  useWarmScreen(entering ? null : view === "home" ? "health-home" : "health-day");
+  useWarmScreen(entering ? null : `${view === "home" ? "health-home" : "health-day"}${wrap ? "+recap" : ""}`);
   // the iPhone's file (hlPhoneRead): a file already taken in (saved at the same moment) is passed over; days whose steps
   // he typed himself keep them, as with the Apple Health import
   const [phoneSaid, setPhoneSaid] = useState("");
@@ -21345,6 +22082,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   const api = useRef(null);
   api.current = {
     pick: (k) => setDay(k),
+    wrap: (ym) => setWrap(ym),
     phoneNow: () => phoneCheck.current(true),
     // the shopping list: a place typed again gets the new things on its own list, not a second list
     shopPlace: (place, items) => up((x) => {
@@ -21392,11 +22130,18 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     // a class saved from the form: every week (from the week it was put in), or this week only (`once`, its date); its
     // name goes into the quick list the first time. `ev`: an event, not a class (it stays out of the quick list)
     saveCls: (f) => up((x) => {
-      const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), dow: f.dow, from: f.from, to: f.to, tint: f.tint,
+      // the professor is the class's: typed (or cleared) here, every block of that name and its place in the quick list take
+      // it; left alone, a block keeps what its class already has (a new block typed by name doesn't wipe it)
+      const kc = hlNoteKey(f.name), typed = String(f.prof || "").trim().slice(0, 60);
+      const had = (x.clsLib.find((q) => hlNoteKey(q.name) === kc) || x.classes.find((o) => o.id !== f.id && hlNoteKey(o.name) === kc) || {}).prof || "";
+      const prof = f.profSet ? typed : typed || had;
+      const c = { id: f.id || uid(), name: f.name.trim(), room: f.room.trim(), ...(prof ? { prof } : {}), dow: f.dow, from: f.from, to: f.to, tint: f.tint,
                   ...(HL_HEX.test(f.col || "") ? { col: f.col.toLowerCase() } : {}), ...(f.once ? { once: f.once } : f.since ? { since: f.since } : {}) };
       const keep = (o) => ({ ...(f.once ? {} : { ...(o.since && !f.since ? { since: o.since } : {}), ...(o.until ? { until: o.until } : {}), ...(o.skip ? { skip: o.skip } : {}) }), ...(o.test ? { test: true } : {}) });
-      const lib = f.ev || x.clsLib.some((q) => q.name.toLowerCase() === c.name.toLowerCase()) ? x.clsLib : [...x.clsLib, { name: c.name, room: c.room, tint: c.tint, ...(c.col ? { col: c.col } : {}) }].slice(-60);
-      const classes = f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...keep(o) } : o)) : [...x.classes, c];
+      const withProf = (o) => { const { prof: _p, ...r } = o; return prof ? { ...r, prof } : r; };
+      const lib0 = f.ev || x.clsLib.some((q) => q.name.toLowerCase() === c.name.toLowerCase()) ? x.clsLib : [...x.clsLib, { name: c.name, room: c.room, ...(prof ? { prof } : {}), tint: c.tint, ...(c.col ? { col: c.col } : {}) }].slice(-60);
+      const all = f.profSet && !f.ev, lib = all ? lib0.map((q) => (hlNoteKey(q.name) === kc ? withProf(q) : q)) : lib0;
+      const classes = (f.id ? x.classes.map((o) => (o.id === f.id ? { ...c, ...keep(o) } : o)) : [...x.classes, c]).map((o) => (all && hlNoteKey(o.name) === kc ? withProf(o) : o));
       const was = f.id && x.classes.find((o) => o.id === f.id), ko = was && hlNoteKey(was.name), kn = hlNoteKey(c.name);
       let clsNotes = x.clsNotes;
       if (ko && ko !== kn && clsNotes[ko] && !clsNotes[kn]) {
@@ -21409,7 +22154,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     // quick list when it is not there, so it can be picked again; an event stays where it is in it (only classes are shown)
     clsKind: (name, on) => up((x) => {
       const k = hlNoteKey(name), c = on && !x.clsLib.some((q) => hlNoteKey(q.name) === k) && hlAsgNames(x.classes, x.clsLib).find((q) => hlNoteKey(q.name) === k);
-      return { ...x, mine: hlMineWith(x, [k], on), ...(c ? { clsLib: [...x.clsLib, { name: c.name, room: c.room || "", tint: c.tint || 0, ...(c.col ? { col: c.col } : {}) }].slice(-60) } : {}) };
+      return { ...x, mine: hlMineWith(x, [k], on), ...(c ? { clsLib: [...x.clsLib, { name: c.name, room: c.room || "", ...(c.prof ? { prof: c.prof } : {}), tint: c.tint || 0, ...(c.col ? { col: c.col } : {}) }].slice(-60) } : {}) };
     }),
     // a class or an event off the week altogether, every block of it and its place in the quick list, with Undo; its notes
     // and the assignments tied to it are kept (they come back with it)
@@ -21553,7 +22298,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       offerUndo(was.name, () => up((x) => ({ ...x, classes: x.classes.some((c) => c.id === id) ? x.classes.map((c) => (c.id === id ? was : c)) : [...x.classes, was] })));
     },
     libAdd: (c) => up((x) => (!c.name.trim() ? x : { ...x, mine: hlMineWith(x, [hlNoteKey(c.name)], true),
-      ...(x.clsLib.some((q) => q.name.toLowerCase() === c.name.trim().toLowerCase()) ? {} : { clsLib: [...x.clsLib, { name: c.name.trim(), room: (c.room || "").trim(), tint: c.tint || 0 }].slice(-60) }) })),
+      ...(x.clsLib.some((q) => q.name.toLowerCase() === c.name.trim().toLowerCase()) ? {} : { clsLib: [...x.clsLib, { name: c.name.trim(), room: (c.room || "").trim(), ...(String(c.prof || "").trim() ? { prof: String(c.prof).trim().slice(0, 60) } : {}), tint: c.tint || 0 }].slice(-60) }) })),
     libDel: (name) => up((x) => ({ ...x, clsLib: x.clsLib.filter((q) => q.name !== name) })),
     mineSet: (keys) => up((x) => ({ ...x, mine: keys })),
     // a kept file found in a new place (fileFind in main.cjs): its path changes wherever it is kept
@@ -21569,14 +22314,14 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     libSet: (from, p, also) => up((x) => {
       const name = hlText(p.name, 60).trim(), kf = hlNoteKey(from), kn = hlNoteKey(name), inLib = x.clsLib.some((o) => hlNoteKey(o.name) === kf);
       if (!name || !(inLib || (also && x.classes.some((o) => hlNoteKey(o.name) === kf))) || (kn !== kf && x.clsLib.some((o) => hlNoteKey(o.name) === kn))) return x;
-      const q = { name, room: hlText(p.room, 40).trim(), tint: Number.isInteger(p.tint) && p.tint >= 0 && p.tint < HL_CLS.length ? p.tint : 0, ...(HL_HEX.test(p.col || "") ? { col: p.col.toLowerCase() } : {}) };
+      const q = { name, room: hlText(p.room, 40).trim(), ...(hlText(p.prof, 60).trim() ? { prof: hlText(p.prof, 60).trim() } : {}), tint: Number.isInteger(p.tint) && p.tint >= 0 && p.tint < HL_CLS.length ? p.tint : 0, ...(HL_HEX.test(p.col || "") ? { col: p.col.toLowerCase() } : {}) };
       const clsLib = x.clsLib.map((o) => (hlNoteKey(o.name) === kf ? q : o));
       const was = hlMineKeys(x).includes(kf);
       if (!also) return { ...x, clsLib, ...(kn !== kf && was ? { mine: hlMineWith(x, [kn], true) } : {}) };
       const classes = x.classes.map((c) => {
         if (hlNoteKey(c.name) !== kf) return c;
-        const { col, ...rest } = c;
-        return { ...rest, name: q.name, room: q.room, tint: q.tint, ...(q.col ? { col: q.col } : {}) };
+        const { col, prof, ...rest } = c;
+        return { ...rest, name: q.name, room: q.room, ...(q.prof ? { prof: q.prof } : {}), tint: q.tint, ...(q.col ? { col: q.col } : {}) };
       });
       let clsNotes = x.clsNotes;
       if (kn !== kf && clsNotes[kf]) {
@@ -21701,7 +22446,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   // ← and → step through the days, while nothing is being typed and nothing is open; ⌘N goes to a new to-do, as it
   // opens the quick log on the other sides
   useEffect(() => {
-    if (settingsOpen || tpOpen) return;
+    if (settingsOpen || tpOpen || wrap) return;
     const onKey = (e) => {
       if (kbIs(e, "quick")) { e.preventDefault(); if (!e.repeat) sideApi.current.go("addtodo"); return; }
       if (kbIs(e, "plan")) { e.preventDefault(); if (!e.repeat) setTpOpen(true); return; }      // ⌘T: the time plan
@@ -21712,7 +22457,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, tpOpen, view]);
+  }, [settingsOpen, tpOpen, view, wrap]);
 
   /* ---------- what the page shows ---------- */
   const p = h.profile, kg = hlWeightOn(h, today), dd = hlDayOf(h, day), vals = hlRingVals(h, dd), band = hlBand(hlBmi(kg, p.cm));
@@ -21742,6 +22487,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       if (id === "users") { onUsers(); return; }
       if (id === "reset") { onReset(); return; }
       if (id === "restore") { onRestore(); return; }
+      if (id === "wrap") { setWrap((view === "day" ? day : today).slice(0, 7)); return; }      // the month on screen (Home's: this one)
       if (id === "today") { setDay(today); if (view !== "day") showDay(); window.scrollTo({ top: 0 }); return; }
       // a part of the day page, from Home: the day page first, then the part once it is there
       if (view !== "day") { setDay(today); showDay(); setTimeout(() => sideApi.current.go(id), 90); return; }
@@ -21766,7 +22512,8 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   // the day's logs in ⌘P from anywhere on Health (4 November 2026, the day-to-day pass); to-do and steps are the sidebar's
   useCmds(() => [{ id: "hl-sleep", icon: "bedtime", text: "Log last night's sleep", tip: "When you went to sleep and woke", run: () => sideApi.current.go("sleep") },
                  { id: "hl-weigh", icon: "monitor_weight", text: "Weigh in", tip: "Today's weight", run: () => sideApi.current.go("weigh") },
-                 { id: "hl-gym", icon: "fitness_center", text: "Log a workout", tip: "A gym session", run: () => sideApi.current.go("gym") }]);
+                 { id: "hl-gym", icon: "fitness_center", text: "Log a workout", tip: "A gym session", run: () => sideApi.current.go("gym") },
+                 { id: "hl-wrap", icon: "auto_awesome", text: "This month's wrapped", tip: "Health · the month looked back on", run: () => sideApi.current.go("wrap") }]);
   // Home's layout, and what its widgets ask for: a to-do ticked for today, the time plan, a day opened, a part of today's page
   const hdashNow = useMemo(() => hdash || dgDefault("health", HL_M), [hdash]);
   const dashApi = useRef(null), hdashLive = useRef(null);         // hdashLive: the layout as Home last saved it
@@ -21846,6 +22593,31 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   const clearTest = () => { if (!hlHasTest(hRef.current)) { flashTest("No test data to clear"); return; } commit(hlClearTest(hRef.current)); flashTest("Test data cleared"); };
 
   const dayWord = day === today ? "Today" : HL_DOW_LONG[hlDow(day)];
+  // the title's pixel flicker, finance's month title's own (10 November 2026; asked 23 October: Health's animations "1:1
+  // from finance"). Opening the day page, each letter flickers in from the normal font; another day's word flickers over
+  // the old one letter by letter. Until then the word faded up as a whole (keyed on the word). Same cells, classes and
+  // timings as the month title (.month-big), rolled before the first paint of the new word
+  const titleShown = useRef(null);
+  const [titleFlick, setTitleFlick] = useState(null);
+  useLayoutEffect(() => {
+    if (view === "home") { titleShown.current = null; return; }
+    const from = titleShown.current;
+    if (from === dayWord) return;
+    titleShown.current = dayWord;
+    const wait = from ? 0 : YEAR_FLICK_DELAY_MS, shift = from ? [] : monthTwinShift(dayWord);
+    const rnd = (a, b) => Math.round(a + Math.random() * (b - a));
+    setTitleFlick((f) => ({
+      id: (f?.id || 0) + 1, wait, from,
+      cells: Array.from({ length: Math.max(dayWord.length, from ? from.length : 0) }, (_, i) => (from
+        ? { cls: `fk${rnd(0, 2)}`, style: { "--kd": `${i * 45 + rnd(0, 90)}ms`, "--kt": `${rnd(1250, 1650)}ms`, "--ox": `${monthTightShift(from, i) - monthTightShift(dayWord, i)}px` } }
+        : { cls: `fk${rnd(0, 2)}`, style: { "--kd": `${wait + rnd(0, 240)}ms`, "--kt": `${rnd(800, 1150)}ms`, "--nx": `${shift[i] || 0}px` } })),
+    }));
+  }, [view, dayWord]);
+  useEffect(() => {
+    if (!titleFlick?.cells) return;
+    const t = setTimeout(() => setTitleFlick((f) => (f && f.id === titleFlick.id ? { ...f, cells: null } : f)), titleFlick.from ? 2400 : titleFlick.wait + 1500);
+    return () => clearTimeout(t);
+  }, [titleFlick]);
   // the day page's cards, each by its name: they stand in the order he arranged (the button under Home, top left)
   const shopLeft = h.shop.reduce((n, q) => n + q.items.filter((t) => !t.got).length, 0);
   const hlCards = {
@@ -21898,11 +22670,23 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
   return (
     <>
       {view === "home" ? (
-        <HomeDash market="health" M={HL_M} who={who} loaded={loaded} layout={hdashLive.current || hdashNow} ctx={hlCtx} api={dashApi} busy={!!(settingsOpen || tpOpen)} />
+        <HomeDash market="health" M={HL_M} who={who} loaded={loaded} layout={hdashLive.current || hdashNow} ctx={hlCtx} api={dashApi} busy={!!(settingsOpen || tpOpen || wrap)} />
       ) : (
       <div ref={pageRef} className={`hl-page month-view${entering ? " enter" : ""}`}>
         <div data-mv="" style={S.topRow}>
-          <h1 key={dayWord} className="hl-title" style={S.title}>{dayWord.split("").map((ch, i) => <span key={i} className={ch === "t" ? "tt" : undefined}>{ch}</span>)}</h1>
+          <h1 className={`hl-title month-big${titleFlick?.cells ? (titleFlick.from ? " swap" : " flick") : ""}`} style={S.title} aria-label={dayWord}>
+            {Array.from({ length: titleFlick?.cells ? titleFlick.cells.length : dayWord.length }, (_, i) => {
+              const ch = dayWord[i], f = titleFlick?.cells?.[i];
+              const old = f && titleFlick.from ? titleFlick.from[i] : undefined;
+              return (
+                <span key={`${titleFlick?.id || 0}-${i}`} className={`yb-cell${f ? ` ${f.cls}` : ""}${ch === "t" ? " tt" : ""}`} style={f?.style} aria-hidden="true">
+                  {ch && <span className="yb-px">{ch}</span>}
+                  {f && ch && !titleFlick.from && <span className="yb-n">{ch}</span>}
+                  {old && <span className="yb-old">{old}</span>}
+                </span>
+              );
+            })}
+          </h1>
           <div style={S.navBox} className="hl-nav">
             <span className="month-nav">
               <button className="nav-arrow" title="The day before (←)" onClick={() => setDay(hlAddDays(day, -1))}>‹</button>
@@ -21970,6 +22754,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
       )}
 
       {tpOpen && <TimePlan onClose={() => setTpOpen(false)} />}
+      {wrap && <HlWrapped h={h} ym={wrap} today={today} onClose={() => setWrap(null)} />}
       {asgOpen && (() => {
         const a = h.asg.find((o) => o.id === asgOpen);
         return a ? <HlAsg key={a.id} a={a} classes={h.classes} lib={h.clsLib} mine={h.mine} week1={hlWeek1(h.asg)} api={api} onClose={() => setAsgOpen(null)} /> : null;
@@ -21995,6 +22780,7 @@ function HealthApp({ onHome, onApp, apps, onUsers, onReset, onRestore, onOther, 
                  { head: "Health" },
                  ...(homeOn ? [{ id: "dash", icon: "home", text: "Home", on: view === "home" }] : []),
                  { id: "today", icon: "today", text: "Today", tail: hlNice(today).slice(4), on: view === "day" && day === today },
+                 { id: "wrap", icon: "auto_awesome", text: `${MONTHS_SHORT[+(view === "day" ? day : today).slice(5, 7) - 1]} wrapped`, tip: "The month looked back on: steps, sleep, the gym, to-dos, weight" },
                  { head: day === today ? "Today" : hlNice(day) },
                  ...order.map((n) => { const c = HL_CARDS.find((q) => q[0] === n); return { id: c[1], icon: c[3], text: c[2], sub: true }; }),
                  { head: "Account" },
@@ -22393,7 +23179,8 @@ export default function PnlCalendar() {
      income; before any has come in, of the month before's (ruleBase says which). */
   // a month's own rule counts unless it is test data and he has a rule for every month: his comes first
   const ruleOwn = (y, m) => { const mk = monthKeyOf(y, m), r = ruleByMonth[mk]; return mk in ruleByMonth && !(r && r.test && spendRule); };
-  const ruleFor = (y, m) => (ruleOwn(y, m) ? ruleByMonth[monthKeyOf(y, m)] || null : spendRule);
+  const ruleFor = (y, m) => (ruleOwn(y, m) ? ruleByMonth[monthKeyOf(y, m)] || null
+    : spendRule && monthKeyOf(y, m) >= (spendRule.since || RULE_FIRST) ? spendRule : null);     // (the every-month rule from its month on)
   // the month's income (else the month before's), and what a rule splits: the amount it was given (pocket money), else that
   const incomeBase = (y, m) => {
     const sum = (mk) => (incomes[mk] || []).reduce((a, x) => a + x.amount, 0), own = sum(monthKeyOf(y, m));
@@ -22408,7 +23195,9 @@ export default function PnlCalendar() {
   // the rule pop-up's three ways out: saved for every month (this month's own goes) or this month only; turned off for
   // every month or for this month alone; this month back on every month's rule
   const putRule = (rule, byMonth) => { setSpendRule(rule); setRuleByMonth(byMonth); persist({ rule, ruleByMonth: byMonth }); };
-  const ruleSave = (r, scope) => { const mk = monthKeyOf(year, month), b = { ...ruleByMonth }; if (scope === "month") putRule(spendRule, { ...b, [mk]: r }); else { delete b[mk]; putRule(r, b); } };
+  // (one for every month starts in the month on screen; one changed keeps the month it started in)
+  const ruleSave = (r, scope) => { const mk = monthKeyOf(year, month), b = { ...ruleByMonth }; if (scope === "month") putRule(spendRule, { ...b, [mk]: r });
+    else { delete b[mk]; putRule({ ...r, since: spendRule ? spendRule.since || RULE_FIRST : mk }, b); } };
   const ruleOff = (scope) => { const mk = monthKeyOf(year, month); if (scope === "month") putRule(spendRule, { ...ruleByMonth, [mk]: false }); else putRule(null, ruleByMonth); };
   const ruleBack = () => { const b = { ...ruleByMonth }; delete b[monthKeyOf(year, month)]; putRule(spendRule, b); };
   const monthIncomes = incomes[mKey] || [];
@@ -25106,8 +25895,63 @@ export default function PnlCalendar() {
     return out;
   }, [projection]);
 
+  // A month that is over (7 November 2026, his words: "make the projections still appear even when the month has already
+  // ended"): how it really ended, and the projection as it stood halfway through, worked out again from only the
+  // spending entered by then. The month's income is known by now, so it is given whole (and no pay is still expected):
+  // the two lines differ only in what was spent, which is what the projection guesses. Null for a month to come and
+  // for one with nothing in it.
+  const projPast = useMemo(() => {
+    if (view !== "month" || isCurrentMonth || year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth())) return null;
+    const dim = new Date(year, month + 1, 0).getDate(), mk = monthKeyOf(year, month), cut = Math.ceil(dim / 2), last = keyOf(year, month, cut);
+    const real = [0];
+    for (let dd = 1; dd <= dim; dd++) real.push(real[dd - 1] + (spending[keyOf(year, month, dd)] || []).reduce((s, it) => s + (!it.zero && it.amount > 0 ? it.amount : 0), 0));
+    const income = (incomes[mk] || []).reduce((s, it) => s + (it.amount > 0 ? it.amount : 0), 0);
+    if (!real[dim] && !income) return null;
+    const catOf = (it) => { const c = it.cat || inferCat(it.desc) || aiCats[it.id] || "other"; return c in CATS ? c : "other"; };
+    const sp = {}, inc = {};
+    Object.keys(spending).forEach((k) => { if (k <= last) sp[k] = spending[k]; });
+    Object.keys(incomes).forEach((k) => { if (k <= mk) inc[k] = incomes[k]; });
+    const r = projectMonth({ spending: sp, incomes: inc, limits, limit: limitOf(year, month), y: year, m: month, d: cut, hour: 24, catOf });
+    const p = r && { ...r, payDue: [], paySum: 0, endIncome: income, endLeft: income - r.endSpend };
+    return { p, real, income, cut, dim };
+  }, [spending, incomes, limits, spendRule, ruleByMonth, aiCats, view, isCurrentMonth, year, month, dayTick]);
+
+  // the month that is over: how it ended, big, then what the projection said halfway and how far off it was
+  const renderProjPast = () => {
+    const { p, real, income, cut, dim } = projPast;
+    const mon = MONTHS_SHORT[month], end = `${dim} ${mon}`, spent = real[dim];
+    const hasInc = income > 0, left = income - spent, good = left >= 0;
+    const tone = !hasInc ? "#e8eaec" : good ? "#3ddc97" : "#ff5d6c";
+    const off = p ? Math.abs(p.endSpend - spent) : 0, close = off < 1000 || off <= spent * 0.03;
+    return (
+      <div className="proj-box">
+        <SecHead icon="query_stats" title="Projection">month over</SecHead>
+        <div className="proj-main">
+          <span className="proj-num" style={{ color: tone }}><CountNum value={hasInc ? Math.abs(left) : spent} duration={620} render={fmtLive} /></span>
+          <span className="proj-cap">{hasInc ? `${good ? "left" : "short"} on ${end}` : `spent in ${mon}`}</span>
+        </div>
+        {p ? (
+          <>
+            <p className="proj-say">
+              On {cut} {mon} it expected <b>{hasInc ? `${fmt(Math.abs(p.endLeft))} ${p.endLeft >= 0 ? "left" : "short"}` : `${fmt(p.endSpend)} spent`}</b>
+              {close ? ", spot on." : <>, off by <b>{fmt(off)}</b>.</>}
+            </p>
+            <ProjChart p={p} tone={tone} hasInc={hasInc} band={1.28 * p.sd} fmt={fmt} monthName={mon} real={real} />
+            <div className="proj-legend">
+              <span><i className="done" />What happened</span>
+              <span><i className="todo" />What it expected</span>
+              <span><i className="cone" style={{ background: "#e8eaec" }} />Likely range</span>
+            </div>
+          </>
+        ) : (
+          <p className="proj-say">Too little was logged by {cut} {mon} for a projection.</p>
+        )}
+      </div>
+    );
+  };
+
   const renderProjection = () => {
-    if (!isCurrentMonth) return null;
+    if (!isCurrentMonth) return projPast ? renderProjPast() : null;
     const p = projection;
     const head = (right) => <SecHead icon="query_stats" title="Projection">{right}</SecHead>;
     if (!p) {
@@ -25134,74 +25978,65 @@ export default function PnlCalendar() {
     // what each empty day could cost and the month still end on zero, once the bills, the big buys and what is
     // already written are set aside
     const room = hasInc && p.openDays > 0 ? Math.max(0, (p.endLeft + p.everyday - p.todayMore) / p.openDays) : null;
-    const tiles = [
-      { label: "WEEKDAYS", value: fmt(p.weekday), unit: "/ day", note: p.nWd ? `${p.nWd} still to come` : "none left this month",
-        tip: "What a weekday usually costs you, read from the last 12 weeks. Recent days count more." },
-      { label: "WEEKENDS", value: fmt(p.weekend), unit: "/ day", note: p.nWe ? `${p.nWe} still to come` : "none left this month",
-        tip: "What a Saturday or Sunday usually costs you, read the same way." },
-    ];
-    if (room !== null) tiles.push({ label: "ROOM A DAY", value: fmt(room), unit: "/ day", note: room > 0 ? "and the month ends on zero" : "none: the month is short as it is", color: room > 0 ? undefined : "#ff8d97",
-      tip: "What each of the empty days still to come could cost with the month ending on exactly zero, after the bills due, the big buys expected and what is already entered." });
-    if (p.billsDue.length) tiles.push({ label: "BILLS DUE", value: fmt(p.billSum), note: names(p.billsDue),
-      tip: "Bills that come back every month and aren't paid yet this month: " + p.billsDue.map((b) => `${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around ${b.day} ${MONTHS_SHORT[month]}`).join(" · ") });
-    if (p.big >= 1000) tiles.push({ label: "BIG BUYS", value: `≈ ${fmt(p.big)}`, note: p.bigMonths >= 4 ? `${p.bigNow} made, about ${p.bigMore.toFixed(1).replace(".0", "")} more` : `about ${p.bigPerMonth >= 1.5 ? Math.round(p.bigPerMonth) : "1"} a month`,
-      tip: `One-off buys of ${fmt(p.bigFrom)} or more follow no weekday. You make about ${p.bigPerMonth.toFixed(1).replace(".0", "")} a month at ${fmt(p.bigEach)} each, read from the last year. ${p.bigMonths >= 4 ? `Going by how many each of the last ${p.bigMonths} months had and the ${p.bigNow} made so far this month, about ${p.bigMore.toFixed(1)} more should come.` : "The days left carry this much of them."}` });
-    if (p.planSum > 0) tiles.push({ label: "PLANNED", value: fmt(p.planSum), note: p.planDue.length === 1 ? prettyName(p.planDue[0].desc || "planned expense") : `${p.planDue.length} to come`, color: "#ff8d97",
-      tip: "What you planned in Weekly expenses for today or later this month: " + p.planDue.map((x) => `${prettyName(x.desc || "planned expense")} ${fmt(x.amount)} on ${x.day} ${MONTHS_SHORT[month]}`).join(" · ") + ". Counted as it stands, on top of the everyday spending. A planned big buy is one of the big buys expected, not one more." });
-    if (p.planned > 0) tiles.push({ label: "ALREADY ENTERED", value: fmt(p.planned), note: `on ${p.daysLeft - p.openDays} later day${p.daysLeft - p.openDays === 1 ? "" : "s"}`,
-      tip: "Expenses already written on later days of this month. Those days are taken as written; only the empty days are projected." });
-    if (p.paySum > 0) tiles.push({ label: "INCOME DUE", value: `+${fmt(p.paySum)}`, note: names(p.payDue).replace(/No description/g, "Income"), color: "#8fd7a4",
-      tip: "Income that comes every month and hasn't arrived yet. It is counted in what will be left." });
+    // Made plain (7 November 2026, his words: "clean it up because its all clutter and the average user cant really
+    // understand all of that stuff"): one headline, one line of what to do about it, the chart, and what is still to
+    // come as one bar. The eight tiles (weekdays, weekends, room a day, bills, big buys, planned, already entered,
+    // income due) are the bar's parts and its one green note now; what each tile explained is in its part's tooltip.
+    const parts = [
+      { k: "Everyday", v: p.everyday, c: "#c7cdd2",
+        tip: `Your usual spending on the days left: about ${fmt(p.weekday)} a weekday and ${fmt(p.weekend)} a weekend day, read from the last 12 weeks (recent days count more).` },
+      { k: "Bills", v: p.billSum, c: "#ff8d97",
+        tip: "Monthly bills not paid yet: " + p.billsDue.map((b) => `${prettyName(b.desc || b.key)} ${fmt(b.amount)}, around ${b.day} ${MONTHS_SHORT[month]}`).join(" · ") },
+      { k: "Big buys", v: p.big, c: "#e3cd77", approx: true,
+        tip: `One-off buys of ${fmt(p.bigFrom)} or more. You make about ${p.bigPerMonth.toFixed(1).replace(".0", "")} a month at ${fmt(p.bigEach)} each, so this much is expected on the days left.` },
+      { k: "Planned", v: p.planSum, c: "#8fa3b8",
+        tip: "Planned in Weekly expenses: " + p.planDue.map((x) => `${prettyName(x.desc || "planned expense")} ${fmt(x.amount)} on ${x.day} ${MONTHS_SHORT[month]}`).join(" · ") },
+      { k: "Logged ahead", v: p.planned, c: "#6d757c",
+        tip: "Expenses you already wrote on later days of this month. They count as written." },
+    ].filter((x) => x.v >= 1000);
+    const come = parts.reduce((s, x) => s + x.v, 0);
     return (
       <div className="proj-box">
         {head(p.daysLeft === 0 ? "last day of the month" : `${p.daysLeft} day${p.daysLeft === 1 ? "" : "s"} left`)}
         {cross ? (
-          <div className="proj-main">
+          <div className="proj-main" title={`Most likely ${fmt(Math.abs(p.endLeft))} ${good ? "left" : "short"}. Four times in five the month ends inside this range.`}>
+            <span className="proj-cap">Between</span>
             <span className="proj-num" style={{ color: tone }}><CountNum value={-lo} duration={620} render={fmtLive} /></span>
-            <span className="proj-cap">short to</span>
+            <span className="proj-cap">short and</span>
             <span className="proj-num" style={{ color: tone }}><CountNum value={hi} duration={620} render={fmtLive} /></span>
             <span className="proj-cap">left on {end}</span>
-            <span style={{ flex: 1 }} />
-            <span className="proj-range" title="The middle of that range, the projection's own figure. Four times in five the month should end inside the range">
-              middle {fmt(Math.abs(p.endLeft))} {good ? "left" : "short"}
-            </span>
           </div>
         ) : (
-          <div className="proj-main">
+          <div className="proj-main" title={band >= 1000 ? `Likely ${hasInc && hi < 0 ? `${fmt(-hi)} to ${fmt(-lo)} short` : `${fmt(lo)} to ${fmt(hi)}`}: four times in five the month ends inside that range.` : undefined}>
             <span className="proj-num" style={{ color: tone }}>
               <CountNum value={hasInc ? Math.abs(p.endLeft) : p.endSpend} duration={620} render={fmtLive} />
             </span>
             <span className="proj-cap">{hasInc ? (good ? `left on ${end}` : `short on ${end}`) : `spent by ${end}`}</span>
-            <span style={{ flex: 1 }} />
-            {band >= 1000 && (
-              <span className="proj-range" title="Four times in five the month should end inside this range">
-                likely {hasInc && hi < 0 ? `${fmt(-hi)} to ${fmt(-lo)} short` : `${fmt(lo)} to ${fmt(hi)}`}
-              </span>
-            )}
           </div>
+        )}
+        {room !== null && (
+          <p className="proj-say">{room > 0 ? <>Stay under <b>{fmt(room)} a day</b> and you won't run short.</> : <>Even with no more everyday spending, the month ends <b style={{ color: "#ff8d97" }}>short</b>.</>}</p>
         )}
         <ProjChart p={p} tone={tone} hasInc={hasInc} band={band} fmt={fmt} monthName={MONTHS_SHORT[month]} />
         <div className="proj-legend">
           <span><i className="done" />Spent so far <b>{fmt(p.spent)}</b></span>
-          <span><i className="todo" />Still to come <b>{fmt(p.toCome)}</b></span>
+          <span><i className="todo" />Expected</span>
           {band >= 1000 && <span><i className="cone" style={{ background: tone }} />Likely range</span>}
-          {p.billsDue.length > 0 && <span><i className="bill" />Bill due</span>}
         </div>
-        {/* its figures, set as the trade view sets its own (.jv-grid): a name over each, in a row under a hairline. They
-            were tiles with a frame each, inside the Projection box, inside the Money flow card (12 October 2026) */}
-        <div className="jv-grid proj-tiles">
-          {tiles.map((t, i) => (
-            <div key={t.label} className="jv-cell proj-tile" title={t.tip} style={{ animationDelay: `${300 + i * 70}ms` }}>
-              <span className="jv-k">{t.label}</span>
-              <span className="jv-line"><span className="jv-v" style={t.color ? { color: t.color } : undefined}>{t.value}</span>{t.unit && <span className="jv-s">{t.unit}</span>}</span>
-              <span className="proj-tile-note">{t.note}</span>
+        {come > 0 && (
+          <div className="proj-come">
+            <div className="proj-come-h"><span>Still to come</span><b>{fmt(come)}</b></div>
+            <div className="proj-bar">{parts.map((x) => <i key={x.k} style={{ flexGrow: x.v, background: x.c }} />)}</div>
+            <div className="proj-keys">
+              {parts.map((x) => <span key={x.k} title={x.tip}><i style={{ background: x.c }} />{x.k} <b>{x.approx ? "≈ " : ""}{fmt(x.v)}</b></span>)}
+              {p.paySum > 0 && <span className="pay" title={`Income that comes every month and hasn't arrived yet: ${names(p.payDue).replace(/No description/g, "Income")}. It counts toward what's left.`}>+{fmt(p.paySum)} income on the way</span>}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
         {projRecord.length > 0 && (
-          <div className="proj-rec" title="The projection worked out again as it would have stood on this day of each earlier month, from only what was entered by then, against how that month's spending really ended.">
+          <div className="proj-rec" title={"How far off it was at this point in earlier months: " + projRecord.map((r) => `${Math.round(r.off * 100)}% in ${r.name}`).join(" · ")}>
             <span className="msym">history</span>
-            <span>How close it came before, from the {nth(now.getDate())}: {projRecord.map((r, i) => <Fragment key={r.name}>{i > 0 && " · "}<b>{Math.round(r.off * 100)}%</b> off in {r.name}</Fragment>)}</span>
+            <span>Usually off by about <b>{Math.round((projRecord.reduce((s, r) => s + r.off, 0) / projRecord.length) * 100)}%</b> in past months</span>
           </div>
         )}
       </div>
@@ -26656,7 +27491,18 @@ export default function PnlCalendar() {
           --lg-kb: var(--lg-k);
           --lg-rim: linear-gradient(150deg, rgba(255,255,255,0.6) 0%, rgba(214,232,255,0.26) 10%, rgba(255,255,255,0.06) 30%,
                                     rgba(255,255,255,0) 50%, rgba(255,255,255,0.04) 70%, rgba(255,226,196,0.2) 90%, rgba(255,255,255,0.38) 100%);
-          --lg-edge: inset 1px 1px 0 rgba(255,255,255,0.15), inset -1px -1px 0 rgba(255,255,255,0.055), inset 0 0 0 1px rgba(255,255,255,0.04);
+          /* the edge as hairlines (9 November 2026, "improve the overall tint of the liquid glass"): one device pixel on his 2x
+             screen, brightest along the top, as the rim of Apple's glass; it was 1px lines offset 1px 1px (0.15 / 0.055 / 0.04) */
+          --lg-edge: inset 0 0.5px 0 rgba(255,255,255,0.24), inset 0.5px 0 0 rgba(255,255,255,0.09), inset -0.5px -0.5px 0 rgba(255,255,255,0.065), inset 0 0 0 0.5px rgba(255,255,255,0.06);
+          /* the glass's own colour in the dark look (9 November 2026): a cool smoked slate drawn from the page's glows, so a pane
+             darkens what is behind it without turning it grey. Until then a neutral graphite: 27,30,35 on the cards and widgets,
+             30,33,38 on .glass, 24,27,31 on the hero and the tray, 32,34,38 on the pop-ups. Only ever inside a rule the light look
+             writes by hand (LIGHT_EXTRA) or a light-dark() pair: the rewriting can't see a colour made of var() */
+          --lg-tint: 28,34,42;
+          /* the light gathered just inside a pane's edge, as in a thick lens: strongest at the top-left where the light comes in,
+             a softer glint at the bottom-right. Only on panes whose size doesn't move (Home's widgets, the hero, the tray, the
+             sidebar): a blurred shadow on a card that folds would be drawn again every frame of the fold */
+          --lg-lensing: inset 7px 9px 16px -12px rgba(255,255,255,0.09), inset -6px -8px 16px -12px rgba(255,255,255,0.04);
           /* a small capsule's body: bright at the top, a dip below the middle, light again at the bottom where the
              glass gathers it, as a lens does. Written for both looks (light-dark), so the rewriting leaves it alone.
              Its strength follows the liquid glass slider (--lg-k) as the panes' fills do (20 October 2026: he found the
@@ -26721,7 +27567,7 @@ export default function PnlCalendar() {
            one shadow; glass-soft rgba(36,40,45,0.44) with a 0.07 top line */
         .glass {
           position: relative;
-          background: linear-gradient(180deg, rgba(255,255,255,calc(0.08 * var(--lg-k))) 0%, rgba(255,255,255,calc(0.026 * var(--lg-k))) 38%, rgba(255,255,255,calc(0.012 * var(--lg-k))) 100%), rgba(30,33,38,calc(0.62 * var(--lg-k)));
+          background: linear-gradient(180deg, rgba(255,255,255,calc(0.06 * var(--lg-k))) 0%, rgba(255,255,255,calc(0.016 * var(--lg-k))) 38%, rgba(255,255,255,0) 70%, rgba(4,7,12,calc(0.07 * var(--lg-k))) 100%), rgba(var(--lg-tint),calc(0.58 * var(--lg-k)));
           /* the white frost on every pane (here, .glass-soft, the cards, the hero, the calendar's tray, Home's widgets)
              follows the slider as the fills do (23 October 2026): on a dark page the frost, not the dark fill, is what
              reads as glass, so it is what makes the slider's ends look different. At the default it is as it was */
@@ -26745,11 +27591,11 @@ export default function PnlCalendar() {
                       radial-gradient(16% 100% at 38% 0%, rgba(255,255,255,0.04), transparent);
         }
         .glass > *, .cell > *, .ycell > * { position: relative; z-index: 1; }
-        .glass:hover { border-color: rgba(255,255,255,0.10); box-shadow: inset 1px 1px 0 rgba(255,255,255,0.19), inset -1px -1px 0 rgba(255,255,255,0.07), inset 0 0 0 1px rgba(255,255,255,0.05), var(--lg-drop); }
+        .glass:hover { border-color: rgba(255,255,255,0.10); box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.32), inset 0.5px 0 0 rgba(255,255,255,0.13), inset -0.5px -0.5px 0 rgba(255,255,255,0.09), inset 0 0 0 0.5px rgba(255,255,255,0.08), var(--lg-drop); }
 
 
         .glass-soft {
-          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))), rgba(255,255,255,calc(0.018 * var(--lg-k)))), rgba(30,33,38,calc(0.36 * var(--lg-k)));
+          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))), rgba(255,255,255,calc(0.018 * var(--lg-k)))), rgba(var(--lg-tint),calc(0.34 * var(--lg-k)));
           border: 1px solid rgba(255,255,255,0.06);
           box-shadow: inset 1px 1px 0 rgba(255,255,255,0.09), inset -1px -1px 0 rgba(255,255,255,0.035), 0 6px 16px -10px rgba(0,0,0,0.5);
         }
@@ -28524,7 +29370,20 @@ export default function PnlCalendar() {
         .proj-main { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding: 0 2px; }
         .proj-num { font-size: 27px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.1; }
         .proj-cap { font-size: 13.5px; color: #aeb5bb; }
-        .proj-range { font-size: 12.5px; color: var(--c-mute-2); font-variant-numeric: tabular-nums; }
+        .proj-say { margin: 6px 2px 0; font-size: 13px; color: #aeb5bb; line-height: 1.45; }
+        .proj-say b { color: var(--c-ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+        /* what is still to come, as one bar split into its parts (it was eight tiles; 7 November 2026) */
+        .proj-come { margin: 14px 2px 0; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .proj-come-h { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: var(--c-ink-3); }
+        .proj-come-h b { color: var(--c-ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+        .proj-bar { display: flex; gap: 2px; height: 8px; margin: 8px 0 9px; border-radius: 99px; overflow: hidden;
+                    transform-origin: left center; animation: scGrow .7s cubic-bezier(0.22,1,0.36,1) .35s backwards; }
+        .proj-bar i { min-width: 4px; }
+        .proj-keys { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--c-ink-3); }
+        .proj-keys span { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+        .proj-keys i { width: 8px; height: 8px; border-radius: 50%; }
+        .proj-keys b { color: var(--c-ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+        .proj-keys .pay { color: #8fd7a4; margin-left: auto; }
         @keyframes projWipe { from { transform: translateX(-100%); } to { transform: translateX(0); } }
         .proj-legend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 8px 2px 0;
                        font-size: 12.5px; color: var(--c-ink-3); font-variant-numeric: tabular-nums; }
@@ -28533,7 +29392,6 @@ export default function PnlCalendar() {
         .proj-legend i.done { height: 2px; border-radius: 2px; background: var(--c-ink); }
         .proj-legend i.todo { height: 2px; background: repeating-linear-gradient(90deg, var(--c-ink) 0 2px, transparent 2px 6px); }
         .proj-legend i.cone { opacity: 0.22; }
-        .proj-legend i.bill { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--c-red-soft); box-sizing: border-box; }
         .proj-plot { margin: 10px 0 0; }
         .pj-wipe { transform-box: fill-box; transform-origin: left center; animation: flowWipe .8s cubic-bezier(0.45,0,0.15,1) 1s backwards; }
         .pj-now { animation: axisIn .3s ease .95s backwards; }
@@ -28542,14 +29400,6 @@ export default function PnlCalendar() {
         .proj-rec .msym { font-size: 15px; color: var(--c-mute); }
         .proj-rec b { color: var(--c-ink-2); font-weight: 600; }
         .proj-legend b { color: var(--c-ink); font-weight: 600; }
-        /* the projection's figures: a name over each, in a row under a hairline, as the trade view sets its own
-           (.jv-grid gives the row, the hairline and the type). They come in one after the other as the tiles did. The
-           name and the unit keep the greys they had here; a long note (the names of the bills) is cut off, its full
-           text is in the tooltip */
-        .proj-tile { max-width: 240px; animation: subBoxIn .38s cubic-bezier(0.34,1.15,0.64,1) backwards; }
-        .proj-tile .jv-k { font-size: 10.5px; color: var(--c-mute); }
-        .proj-tile .jv-s { font-size: 12px; font-weight: 600; color: var(--c-mute-2); }
-        .proj-tile-note { font-size: 12px; color: var(--c-mute-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         /* insights drop-down */
         .ins-box { margin-top: 14px; border-radius: 14px; background: rgba(255,255,255,0.03);
                    border: 1px solid rgba(255,255,255,0.07); padding: 2px 12px; }
@@ -29176,8 +30026,10 @@ export default function PnlCalendar() {
            is drawn again every frame) */
         .glass[role="dialog"], .cat-pop.glass, .lg-float {
           backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
-          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))), rgba(255,255,255,0) 45%),
-                      light-dark(rgba(32,34,38,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(224,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) !important;
+          /* the tint since 9 November 2026: --lg-tint (was 32,34,38), with a pool of light in the top-left corner */
+          background: radial-gradient(110% 60% at 0% 0%, rgba(255,255,255,calc(0.045 * var(--lg-k))), transparent 62%),
+                      linear-gradient(180deg, rgba(255,255,255,calc(0.04 * var(--lg-k))), rgba(255,255,255,0) 40%),
+                      light-dark(rgba(var(--lg-tint),clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(224,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) !important;
         }
         /* a pane over the live page with nothing dimming it (.lg-float: the Arrange pane, the colour picker, his classes' list, the
            category menus; since 31 October also the time pane, the quick log's calendar, a goal's symbols, the calculators' settings; 29 October 2026, his picture of the Arrange pane: "this ui doesnt follow the liquid glass setting. make
@@ -30403,6 +31255,21 @@ export default function PnlCalendar() {
         .rt-ed:empty::before { content: attr(data-ph); color: var(--c-mute); pointer-events: none; }
         .rt-ed b { font-weight: 750; } .rt-ed u { text-underline-offset: 2px; }
         ${RT_CSS}
+        /* highlights and bullets (9 November 2026) */
+        ${RT_HL_CSS}
+        .rt-hl .msym { font-size: 16px; line-height: 16px; }
+        .rt-bl { border-radius: 8px 0 0 8px; }
+        .rt-sws-hl { grid-template-columns: repeat(8, 1fr); }
+        .rt-sw[data-h="none"] { background: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.32); }
+        .rt-pal-bul { width: 200px; }
+        .rt-bul { width: 16px; text-align: center; font-size: 15px; line-height: 1; }
+        .rt-bul[data-b="ring"] { color: var(--c, #8ab4ff); }
+        .rt-chk { margin-left: auto; font-size: 16px; }
+        .rt-ed ul { margin: 2px 0; padding-left: 24px; list-style: none; }
+        .rt-ed li { position: relative; }
+        .rt-ed li::before { content: ""; position: absolute; left: -15px; top: calc(0.5lh - 3px); width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .rt-ed ul[data-b="dash"] > li::before { content: "–"; top: 0; left: -17px; width: auto; height: auto; border-radius: 0; background: none; }
+        .rt-ed ul[data-b="ring"] > li::before { top: calc(0.5lh - 3.5px); width: 7px; height: 7px; background: none; box-shadow: inset 0 0 0 1.5px var(--c, #8ab4ff); }
         /* the kinds of an assignment fill their bar, five equal columns (31 October 2026, his words: "make all of these buttons fit the whole bar") */
         .hl-as-kinds { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
         .hl-as-kinds .jr-chip { justify-content: center; min-width: 0; }
@@ -30512,11 +31379,14 @@ export default function PnlCalendar() {
 
         /* ---- the cards of a month ---- */
         .flow-card.glass {
-          background: linear-gradient(180deg, rgba(255,255,255,calc(0.058 * var(--lg-k))) 0px, rgba(255,255,255,calc(0.02 * var(--lg-k))) 220px, rgba(255,255,255,0) 520px) 0 0 / 100% 520px no-repeat,
-                      rgba(27,30,35,calc(0.58 * var(--lg-k)));     /* down to nothing at its end: stopping at 0.008 left a faint line across a tall card */
-          box-shadow: inset 1px 1px 0 rgba(255,255,255,0.15), inset -1px -1px 0 rgba(255,255,255,0.05), inset 0 0 0 1px rgba(255,255,255,0.04), var(--lg-drop);
+          /* 9 November 2026: the tint is --lg-tint (was 27,30,35 at 0.58), the frost along the top thinner, and a pool of light in
+             the top-left corner of a fixed size; both strips are 520px high, so a fold draws them no differently */
+          background: linear-gradient(180deg, rgba(255,255,255,calc(0.048 * var(--lg-k))) 0px, rgba(255,255,255,calc(0.014 * var(--lg-k))) 200px, rgba(255,255,255,0) 520px) 0 0 / 100% 520px no-repeat,
+                      radial-gradient(760px 300px at 0% 0%, rgba(255,255,255,calc(0.032 * var(--lg-k))), transparent 72%) 0 0 / 100% 520px no-repeat,
+                      rgba(var(--lg-tint),calc(0.54 * var(--lg-k)));     /* down to nothing at its end: stopping at 0.008 left a faint line across a tall card */
+          box-shadow: var(--lg-edge), var(--lg-drop);
         }
-        .flow-card.glass:hover { box-shadow: inset 1px 1px 0 rgba(255,255,255,0.15), inset -1px -1px 0 rgba(255,255,255,0.05), inset 0 0 0 1px rgba(255,255,255,0.04), var(--lg-drop); }
+        .flow-card.glass:hover { box-shadow: var(--lg-edge), var(--lg-drop); }
         .card-tag { box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); backdrop-filter: none; }
         .hero-tag, .hero-vs { box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); }
 
@@ -30524,8 +31394,8 @@ export default function PnlCalendar() {
         .hero {
           background: radial-gradient(900px 300px at 0% 0%, color-mix(in srgb, var(--hc) 22%, transparent), transparent 70%),
                       radial-gradient(640px 260px at 100% 100%, color-mix(in srgb, var(--hc) 9%, transparent), transparent 72%),
-                      linear-gradient(180deg, rgba(255,255,255,calc(0.07 * var(--lg-k))), rgba(255,255,255,calc(0.015 * var(--lg-k))) 60%), rgba(24,27,31,calc(0.5 * var(--lg-k)));
-          box-shadow: inset 0 1.5px 0 color-mix(in srgb, var(--hc) 62%, transparent), inset 0 0 0 1px rgba(255,255,255,0.04), inset -1px -1px 0 rgba(255,255,255,0.05),
+                      linear-gradient(180deg, rgba(255,255,255,calc(0.07 * var(--lg-k))), rgba(255,255,255,calc(0.015 * var(--lg-k))) 60%), rgba(var(--lg-tint),calc(0.46 * var(--lg-k)));
+          box-shadow: inset 0 1.5px 0 color-mix(in srgb, var(--hc) 62%, transparent), inset 0 0 0 0.5px rgba(255,255,255,0.06), inset -0.5px -0.5px 0 rgba(255,255,255,0.065), var(--lg-lensing),
                       0 -1px 26px color-mix(in srgb, var(--hc) 16%, transparent), var(--lg-drop);
         }
         .hero::after { background: linear-gradient(150deg, color-mix(in srgb, var(--hc) 70%, rgba(255,255,255,0.6)) 0%, color-mix(in srgb, var(--hc) 30%, transparent) 16%,
@@ -30541,8 +31411,8 @@ export default function PnlCalendar() {
 
         /* ---- the calendar's tray ---- */
         .cal-wrap {
-          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))) 0%, rgba(255,255,255,calc(0.016 * var(--lg-k))) 40%, rgba(255,255,255,calc(0.008 * var(--lg-k))) 100%), rgba(24,27,31,calc(0.42 * var(--lg-k)));
-          box-shadow: var(--lg-drop) !important;
+          background: linear-gradient(180deg, rgba(255,255,255,calc(0.05 * var(--lg-k))) 0%, rgba(255,255,255,calc(0.016 * var(--lg-k))) 40%, rgba(255,255,255,calc(0.008 * var(--lg-k))) 100%), rgba(var(--lg-tint),calc(0.4 * var(--lg-k)));
+          box-shadow: var(--lg-lensing), var(--lg-drop) !important;
         }
 
         /* ---- day tiles and month boxes: clear glass chips, lit from the top ---- */
@@ -30555,10 +31425,10 @@ export default function PnlCalendar() {
         /* ---- controls: glass capsules ---- */
         .snav-burger {
           border-radius: 50%;
-          background: var(--lg-lens), rgba(32,35,40,0.6);
+          background: var(--lg-lens), rgba(30,36,45,0.6);
           box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
         }
-        .snav-burger:hover { background: var(--lg-lens), rgba(46,50,56,0.66); }
+        .snav-burger:hover { background: var(--lg-lens), rgba(42,49,59,0.66); }
         .snav-burger i { z-index: 4; }
         .calc-fab.glass, .year-nav {
           background: var(--lg-lens) !important;
@@ -30593,8 +31463,8 @@ export default function PnlCalendar() {
 
         /* ---- the sidebar: solid, as it was, with the same lit edge ---- */
         /* (the sidebar follows the slider as the pop-ups do, 28 October 2026: it was a solid gradient at every setting) */
-        .snav { background: linear-gradient(180deg, light-dark(rgba(40,44,49,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(227,230,235,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 0%, light-dark(rgba(29,32,36,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(222,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 55%, light-dark(rgba(25,27,31,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(217,221,226,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 100%);
-                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.07), inset 0 1px 0 rgba(255,255,255,0.13);
+        .snav { background: linear-gradient(180deg, light-dark(rgba(36,42,51,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(227,230,235,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 0%, light-dark(rgba(27,32,40,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(222,226,230,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 55%, light-dark(rgba(23,27,34,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97)), rgba(217,221,226,clamp(0.4, calc(0.42 + 0.48 * var(--lg-k)), 0.97))) 100%);
+                box-shadow: 0 30px 70px rgba(0,0,0,0.55), inset 0 0 0 0.5px rgba(255,255,255,0.08), inset 0 0.5px 0 rgba(255,255,255,0.26), var(--lg-lensing);
                 /* frosted like the cards (29 October 2026: "the side bar background liquid glass … is too transparent though other ui look
                    like this"): with the fill let through by the slider and no blur, the page's own words showed through it. The same blur
                    and colour as .glass, always on: the panel is off the screen when shut, so it draws nothing then */
@@ -30668,9 +31538,17 @@ export default function PnlCalendar() {
         /* the board: each widget is a cell placed by a transform (its width and height only change when it is resized) */
         .dg-board { position: relative; min-height: 120px; user-select: none; -webkit-user-select: none; }
         .dg-cell { position: absolute; left: 0; top: 0; will-change: transform; outline: none; touch-action: none; }
-        .dg-board.edit .dg-cell { cursor: grab; transition: transform .38s var(--ease); }
-        .dg-board.edit .dg-cell.lift { cursor: grabbing; transition: none; z-index: 5; }
-        .dg-board.dragging, .dg-board.dragging .dg-cell { cursor: grabbing; }
+        .dg-board.edit .dg-cell { transition: transform .38s var(--ease); }
+        .dg-board.edit .dg-cell.lift { transition: none; z-index: 5; }
+        .dg-board.dragging { cursor: grabbing; }
+        /* editing: one layer over each widget's content takes the presses and shows the hand (10 November 2026, the lag on
+           Done with a full board). Until then .dg-cell had cursor: grab and .wd-in pointer-events: none under .edit: both
+           are inherited, so every element inside every widget had its style worked out again when editing began and ended
+           (43 + 73ms of styles traced on a board of 30 widgets). Now only this layer changes: one box per widget. Above the
+           content (.wd-in, z 1, earlier), under the stack's dots (z 2), the edges and the − / + buttons */
+        .wdg::after { content: ""; position: absolute; inset: 0; z-index: 1; border-radius: inherit; pointer-events: none; cursor: grab; }
+        .dg-board.edit .wdg::after { pointer-events: auto; }
+        .dg-cell.lift .wdg::after, .dg-board.dragging .wdg::after { cursor: grabbing; }
         .dg-board.edit .dg-cell.sizing { z-index: 4; }
         .dg-cell:focus-visible .wdg { box-shadow: var(--lg-edge), var(--lg-drop), 0 0 0 2px rgba(255,255,255,0.7); }
         /* the lifted widget's deeper shadow fades in on a layer of its own (a shadow itself is never animated) */
@@ -30710,11 +31588,14 @@ export default function PnlCalendar() {
         .wdg { position: relative; height: 100%; border-radius: 26px; overflow: hidden; display: flex; flex-direction: column; color: var(--c-ink);
                background: radial-gradient(110% 80% at 0% 0%, color-mix(in srgb, var(--wc) 12%, transparent), transparent 62%),
                            radial-gradient(90% 80% at 100% 110%, color-mix(in srgb, var(--wc) 5%, transparent), transparent 70%),
-                           linear-gradient(180deg, rgba(255,255,255,calc(0.055 * var(--lg-k))), rgba(255,255,255,calc(0.014 * var(--lg-k))) 42%, rgba(255,255,255,calc(0.006 * var(--lg-k)))),
-                           rgba(27,30,35,calc(0.58 * var(--lg-k)));
-               box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 0 0 1px rgba(255,255,255,0.055), 0 12px 28px -18px rgba(0,0,0,0.65); transition: transform .4s var(--ease) .1s; }
+                           radial-gradient(120% 90% at 0% 0%, rgba(255,255,255,calc(0.04 * var(--lg-k))), transparent 58%),
+                           linear-gradient(180deg, rgba(255,255,255,calc(0.032 * var(--lg-k))), rgba(255,255,255,0) 40%, rgba(4,7,12,calc(0.06 * var(--lg-k)))),
+                           rgba(var(--lg-tint),calc(0.54 * var(--lg-k)));
+               /* 9 November 2026: the tint --lg-tint (was 27,30,35 at 0.58), a pool of light top-left, a little deeper at the foot,
+                  hairline edges and the light gathered inside them (--lg-lensing). Until then: a 1px line along the top (0.12), a 1px ring (0.055) */
+               box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.24), inset 0 0 0 0.5px rgba(255,255,255,0.07), var(--lg-lensing), 0 12px 28px -18px rgba(0,0,0,0.65); transition: transform .4s var(--ease) .1s; }
         .wdg[data-c="s"] { border-radius: 24px; }
-        .wdg::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: rgba(24,27,32,0.88); opacity: 0; transition: opacity .25s ease; }
+        .wdg::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: rgba(22,27,34,0.88); opacity: 0; transition: opacity .25s ease; }
         .dg-cell.lift .wdg { transform: scale(1.035); transition-delay: 0s; }
         .dg-cell.lift .wdg::before { opacity: 1; }
         .dg-cell.hold .wdg { transform: scale(0.965); }
@@ -30726,9 +31607,16 @@ export default function PnlCalendar() {
         @keyframes dgBump { from { opacity: 0.55; transform: scale(0.965); } to { opacity: 1; transform: scale(1); } }
         @keyframes dgRise { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
         @keyframes dgIn { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: scale(1); } }
+        /* a soft light in the widget's own colour under the pointer (7 November 2026, the widgets' review), as the
+           day tiles light under it: a disc moved by transform alone (wdgGlow, no React), faded in by opacity, under
+           the content. A surface of its own only while the pointer is over it; none while editing */
+        .wd-glow { position: absolute; left: 0; top: 0; width: 340px; height: 340px; margin: -170px 0 0 -170px; border-radius: 50%; pointer-events: none; z-index: 0;
+                   background: radial-gradient(closest-side, color-mix(in srgb, var(--wc) 17%, transparent), color-mix(in srgb, var(--wc) 6%, transparent) 55%, transparent);
+                   opacity: 0; transition: opacity .5s cubic-bezier(0.22, 1, 0.36, 1); }
+        .dg-board:not(.edit) .wdg:hover > .wd-glow { opacity: 1; will-change: transform; }
+        @media (prefers-reduced-motion: reduce) { .wd-glow { display: none; } }
         .wd-in { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 15px 16px 16px; }
         .wdg[data-c="s"] .wd-in { padding: 13px 14px 14px; gap: 6px; }
-        .dg-board.edit .wd-in { pointer-events: none; }
         /* editing: a round button takes a widget off (top left), its edges and corners resize it (.dg-egs) */
         /* the − (and the resize corner it had then) are surfaces of their own for as long as editing lasts (25 October 2026, his words:
            "theres some lag on the closing or exiting the edit widget thingy (when pressing done), the lag is with the
@@ -30885,6 +31773,15 @@ export default function PnlCalendar() {
         .wd-foot { flex: none; margin-top: auto; font-size: 11px; color: var(--c-mute); }
         .wd-note { font-size: 11.5px; color: var(--c-mute); margin: auto 0; }
         .wd-split2 { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+        /* a right half's name, on the head's line: "Spent today", "Came in", with how many when more than one */
+        .wd-colh { flex: none; min-height: 28px; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--c-mute-hi); }
+        .wd-colh b { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; display: inline-grid; place-items: center; font-size: 11px;
+                     color: var(--c-ink-2); background: rgba(255,255,255,0.07); font-variant-numeric: tabular-nums; }
+        /* the debts' two totals in a small one: room for "Owed to me" on one line */
+        .wd-colh.wd-lifts { min-height: 22px; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; }
+        .wd-colh.wd-lifts span { margin-left: auto; font-weight: 500; font-size: 11px; color: var(--c-mute); }
+        .wd-debt2:not(.v) { gap: 8px; }
+        .wd-debt2:not(.v) small { font-size: 11px; gap: 5px; white-space: nowrap; }
         .wd-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
 
         /* a line chart */
@@ -30900,6 +31797,11 @@ export default function PnlCalendar() {
 
         /* bars */
         .wd-bars { flex: 1; min-height: 44px; display: flex; gap: 3px; }
+        .wd-bars.cmp { min-height: 26px; }
+        .wd-chart.cmp { min-height: 26px; }
+        /* a widget answers a change in place (9 November 2026, dgMorph): what changes colour fades to it, and a ring runs to its new length */
+        .wd-day i, .wd-gdots i, .wd-hwd, .wd-medal { transition: background-color .4s ease, color .4s ease, border-color .4s ease, box-shadow .4s ease, opacity .4s ease; }
+        .wdg svg circle { transition: stroke-dasharray .6s var(--ease), stroke-dashoffset .6s var(--ease), stroke .4s ease; }
         .wd-bar { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: var(--c-mute); }
         .wd-bar:disabled { cursor: default; }
         .wd-plot { position: relative; flex: 1; border-radius: 4px; }
@@ -30968,7 +31870,10 @@ export default function PnlCalendar() {
         .wd-av[data-dk] { display: grid; place-items: center; flex: none; border-radius: 50%; font-weight: 700; letter-spacing: -0.02em; line-height: 1;
                           color: color-mix(in srgb, var(--ac) 30%, #0f1113); background: var(--ac); box-shadow: inset 0 -2px 0 rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.35); }
         .wd-rt { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
-        .wd-rt b { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* a block, not a flex box: text in a flex box is cut off with no "…" (7 November 2026: a long to-do stopped
+           mid-letter on the small To-dos). The one with a mark beside its name keeps the flex (.wd-rtf) */
+        .wd-rt b { display: block; font-size: 13px; font-weight: 600; color: var(--c-ink-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .wd-rt b.wd-rtf { display: flex; align-items: center; gap: 6px; }
         .wd-rt small { font-size: 11px; color: var(--c-mute-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .wd-rbar { display: block; height: 3px; margin-top: 4px; border-radius: 99px; opacity: 0.75; transform-origin: left; animation: wdGrowX .6s var(--ease) backwards; }
         @keyframes wdGrowX { from { transform: scaleX(0); } to { transform: scaleX(1); } }
@@ -31521,7 +32426,7 @@ export default function PnlCalendar() {
         .wd-hwd.now span { color: var(--c-ink-1); font-weight: 600; }
         .wd-heat { flex: 1; min-height: 0; display: grid; grid-auto-flow: column; justify-content: end; align-content: center; cursor: pointer; }
         .wd-heat i, .wd-heatk i { border-radius: 3px; background: rgba(255,255,255,0.055); }
-        .wd-heat i { transition: transform .15s var(--ease); }
+        .wd-heat i { transition: transform .15s var(--ease), background-color .4s ease, box-shadow .4s ease; }
         .wd-heat i.l-1 { background: none; cursor: default; }
         .wd-heat i.l1, .wd-heatk i.l1 { background: rgba(47,208,138,0.24); }
         .wd-heat i.l2, .wd-heatk i.l2 { background: rgba(47,208,138,0.5); }
@@ -31614,17 +32519,17 @@ export default function PnlCalendar() {
         /* Home's button, under the menu's three lines on the yearly and monthly panels of every side (it stood beside
            Log on the yearly header; he asked for it "somewhere else more appropriate") */
         .snav-home { position: fixed; left: 18px; top: 68px; width: 40px; height: 40px; padding: 0; border: none; border-radius: 50%; cursor: pointer; display: grid; place-items: center;
-                     color: var(--c-ink); background: var(--lg-lens), rgba(32,35,40,0.6); box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
+                     color: var(--c-ink); background: var(--lg-lens), rgba(30,36,45,0.6); box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
                      animation: sideIn .6s var(--ease) backwards; transition: background .2s ease, opacity .25s ease, transform .22s var(--ease); }
-        .snav-home:hover { background: var(--lg-lens), rgba(46,50,56,0.66); }
+        .snav-home:hover { background: var(--lg-lens), rgba(42,49,59,0.66); }
         .snav-home .msym { font-size: 20px; }
         .snav-root.open .snav-home, .snav-root.open .snav-arrange { opacity: 0; pointer-events: none; }
         /* the button under Home (Health's day page): the cards' order; where Home is not shown it takes Home's place */
         .snav-arrange { position: fixed; left: 18px; top: 118px; width: 40px; height: 40px; padding: 0; border: none; border-radius: 50%; cursor: pointer; display: grid; place-items: center;
-                        color: var(--c-ink); background: var(--lg-lens), rgba(32,35,40,0.6); box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
+                        color: var(--c-ink); background: var(--lg-lens), rgba(30,36,45,0.6); box-shadow: 0 1px 2px rgba(0,0,0,0.25), 0 10px 24px -8px rgba(0,0,0,0.55);
                         animation: sideIn .6s var(--ease) backwards; transition: background .2s ease, opacity .25s ease, color .2s ease; }
         .snav-arrange.solo { top: 68px; }
-        .snav-arrange:hover { background: var(--lg-lens), rgba(46,50,56,0.66); }
+        .snav-arrange:hover { background: var(--lg-lens), rgba(42,49,59,0.66); }
         .snav-arrange.on { color: #a9c6ea; }
         .snav-arrange .msym { font-size: 20px; }
         .hlarr { position: fixed; left: 70px; top: 118px; z-index: 70; width: 252px; box-sizing: border-box; padding: 12px; border-radius: 20px; display: flex; flex-direction: column; gap: 8px;
@@ -31681,9 +32586,7 @@ export default function PnlCalendar() {
 
         /* ---------- Health (22 October 2026): the third app, after Apple's rings, Garmin's day, Notion and Milanote. It wears
            the finance side's cards and hero; its own colours are the rings' (green steps, orange moving, blue to-dos) ---------- */
-        .hl-title { display: inline-flex; animation: hlTitleIn .5s var(--ease) backwards; }
-        .hl-title > span { font-family: inherit; }
-        .hl-title > .tt { margin-left: -3px; }
+        .hl-title { display: inline-flex; }       /* its letters are the month title's cells (.month-big .yb-cell) since 10 November 2026; until then it faded up (hlTitleIn) */
         @keyframes hlTitleIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .hl-nav { position: relative; }
         .hl-day-btn { display: inline-grid; justify-items: center; font-variant-numeric: tabular-nums; }
@@ -31810,6 +32713,8 @@ export default function PnlCalendar() {
         .hl-cls b, .hl-cls span:not(.msym) { flex: none; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--nl, 1); white-space: normal; overflow-wrap: anywhere; overflow: hidden; }
         .hl-cls b { font-size: 12px; font-weight: 700; line-height: 15px; }
         .hl-cls span:not(.msym) { color: color-mix(in srgb, var(--c) 55%, #c7cdd2); font-variant-numeric: tabular-nums; line-height: 14px; }
+        .hl-cls span.hl-cls-prof { opacity: 0.85; }
+        .hl-cls-prof .msym { font-style: normal; font-size: 12px; vertical-align: -2px; margin-right: 3px; }
         @keyframes hlClsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         .hl-now { position: absolute; left: -2px; right: -2px; height: 2px; background: #ff7a6b; border-radius: 2px; pointer-events: none; z-index: 2; box-shadow: 0 0 8px rgba(255,122,107,0.6); }
         .hl-now::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 99px; background: #ff7a6b; }
@@ -31861,6 +32766,7 @@ export default function PnlCalendar() {
                        box-shadow: inset 3px 0 0 var(--c); animation: hlFormIn .22s var(--ease) backwards; }
         .hl-lib-ed-in { display: flex; gap: 6px; }
         .hl-lib-ed-in .jr-in { flex: 1 1 0; min-width: 0; height: 32px; }
+        .hl-lib-ed-in .jr-in:first-child { flex-grow: 1.5; }
         .hl-lib-also { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8e969e; cursor: pointer; }
         .hl-lib-also input { margin: 0; accent-color: #4fb3ff; color-scheme: dark; }
         .hl-lib-taken { font-size: 11.5px; color: #ff9aa3; }
@@ -31910,6 +32816,20 @@ export default function PnlCalendar() {
         :is(.hl-form-go, .hl-lib-ed-go) .hl-save { padding: 0 calc(var(--hb) * 0.6); }
         :is(.hl-form-go, .hl-ask, .hl-mv-ask, .hl-lib-ed-go) .msym { margin: 0; vertical-align: baseline; font-size: 17px; }
         .hl-form-go .hl-form-notes, .hl-mv-ask .hl-mv-x { width: var(--hb); padding: 0; }
+        /* a form's foot (6 November 2026, his words: "improve this ui", his picture of four boxed buttons side by side: notes,
+           Delete, Cancel, Save): one filled button, Save; Cancel a quiet word; Delete a quiet red word; with a Delete
+           (.wide) it and the notes stand at the left, away from Save */
+        .hl-form-go.wide { display: flex; width: 100%; justify-content: flex-end; margin-left: 0; }
+        .hl-form-go.wide > .bk-btn.danger { margin-right: auto; }
+        .hl-form-go > .bk-btn:not(.danger):not(.hl-form-notes) { border-color: transparent; background: none; }
+        .hl-form-go > .bk-btn:not(.danger):not(.hl-form-notes):hover { background: rgba(255,255,255,0.07); color: #ffffff; }
+        .hl-form-go > .bk-btn.danger { border-color: transparent; background: none; color: #ff8d97; }
+        .hl-form-go > .bk-btn.danger:hover { background: rgba(255,93,108,0.12); color: #ffb3ba; }
+        .hl-form-go .hl-form-notes { border-color: transparent; background: rgba(255,255,255,0.05); }
+        .hl-form-go .hl-form-notes:hover { background: rgba(255,255,255,0.1); color: #ffffff; }
+        .hl-form-go .hl-save { border: none; background: linear-gradient(180deg, #8ff0c4, #5ad8a0); color: #0b2a1c; box-shadow: 0 6px 16px -9px rgba(47,208,138,0.7); }
+        .hl-form-go .hl-save:hover:not(:disabled) { background: linear-gradient(180deg, #a6f5d2, #6fe0ae); }
+        .hl-form-go .hl-save:disabled { opacity: 0.35; box-shadow: none; }
         .hl-nt { position: relative; display: flex; flex-direction: column; gap: 12px; width: min(660px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - max(40px, 10vh) - 24px));
                  padding: 22px 18px 14px; border-radius: 28px; overflow: hidden; }
         .hl-nt .fx-head { padding-bottom: 2px; }
@@ -31930,8 +32850,34 @@ export default function PnlCalendar() {
         .hl-ca-add { flex: none; display: inline-flex; align-items: center; gap: 4px; }
         .hl-ca-add .msym { font-size: 15px; }
         .hl-ca-new { margin-top: 4px; }
-        .hl-as-shot-all { margin-left: auto; }
-        .hl-as-shot-all + .hl-as-add { margin-left: 6px; }
+        .hl-golf-chip { display: inline-flex; align-items: center; gap: 5px; }
+        .hl-golf-chip .msym { font-size: 16px; }
+        .hl-golf { display: grid; grid-template-columns: auto 1fr; gap: 10px 14px; align-items: center; margin: 4px 0 8px; }
+        .hl-golf-f { display: contents; }
+        .hl-golf-f > .hl-cap { white-space: nowrap; }
+        .hl-golf-f .hl-num { width: 110px; }
+        .hl-golf-k { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; background: rgba(255,164,151,0.08); border: 1px solid rgba(255,164,151,0.18); }
+        .hl-golf-n { font-size: 14px; color: var(--c-ink-2); } .hl-golf-n b { font-size: 20px; color: #ffb4a8; font-variant-numeric: tabular-nums; }
+        .hl-golf-k small { font-size: 12px; color: #9aa2a9; font-variant-numeric: tabular-nums; }
+        .hl-golf-k .hl-golf-src { font-size: 11px; color: #7d858c; }
+        .hl-as-addw { flex: none; display: inline-flex; height: 32px; border-radius: 99px; border: 1px solid rgba(242,165,230,0.28); background: rgba(242,165,230,0.1); overflow: hidden;
+                      transition: border-color .18s ease; }
+        .hl-as-addw:hover { border-color: rgba(242,165,230,0.45); }
+        .hl-as-addw > button { height: 100%; border: 0; border-radius: 0; background: none; color: #f6c7ee; cursor: pointer; outline-offset: -3px; transition: background .18s ease; }
+        .hl-as-addw > button:hover:not(:disabled) { background: rgba(242,165,230,0.12); }
+        .hl-as-addw .hl-as-add { padding: 0 12px 0 10px; }
+        .hl-as-shot-all { width: 38px; display: grid; place-items: center; border-left: 1px solid rgba(242,165,230,0.22) !important; }
+        .hl-as-shot-all .msym { font-size: 17px; }
+        .hl-as-shot-all:disabled { cursor: default; opacity: 0.6; }
+        .hl-as-meta2 { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .hl-as-meta2 > * + *::before { content: "·"; margin-right: 6px; color: #5d646b; font-weight: 400; }
+        .hl-as-row .hl-as-when .hl-as-meta2 em { padding: 0; border-radius: 0; background: none; font-size: 11.5px; font-weight: 600; color: #9aa2a9; }
+        .hl-as-row.near .hl-as-when .hl-as-meta2 em { color: #f6c7ee; background: none; }
+        .hl-as-row.hot .hl-as-when .hl-as-meta2 em { color: #ffd6a0; background: none; }
+        .hl-as-row.over .hl-as-when .hl-as-meta2 em { color: #ff9aa3; background: none; font-weight: 700; }
+        .hl-as-meta2 .hl-as-wt { padding: 0; background: none; font-size: 11.5px; color: #f6c7ee; }
+        .hl-as-meta2 .hl-as-n { font-size: 11.5px; color: #9aa2a9; gap: 1px; }
+        .hl-as-meta2 .hl-as-n .msym { font-size: 13px; }
         /* (over the timetable sheet's own row of day, times, name and room) */
         .hl-scan-row.hl-asc-row { display: grid; grid-template-columns: auto minmax(200px, 2.2fr) minmax(130px, 1fr) 150px 112px 84px; align-items: center; gap: 8px; }
         .hl-asc-row > * { min-width: 0; }
@@ -32097,6 +33043,17 @@ export default function PnlCalendar() {
         .hl-as-smart { display: flex; flex-direction: column; gap: 6px; flex: none; }
         .hl-as-read.tp-line { height: 44px; padding: 0 8px 0 14px; }
         .hl-as-read .msym { color: #f2a5e6; }
+        /* its buttons keep their own colours (the box's pink went into them: pink on lilac, 5 November 2026): Read it, white
+           on the class's colour; the screenshot, the card's quiet pink (as + Add │ ⎙) */
+        .hl-as-read .hl-nt-plus .msym { color: inherit; }
+        .hl-as-read .hl-as-shot { color: #f6c7ee; background: rgba(242,165,230,0.1); box-shadow: inset 0 0 0 1px rgba(242,165,230,0.28); transition: background .18s ease, box-shadow .18s ease, color .18s ease; }
+        .hl-as-read .hl-as-shot:hover:not(:disabled) { color: #ffffff; background: rgba(242,165,230,0.2); box-shadow: inset 0 0 0 1px rgba(242,165,230,0.45); }
+        .hl-as-read .hl-as-shot:disabled { opacity: 0.55; cursor: default; }
+        /* a picture reader with a file dragged over it */
+        .hl-drop-on { position: relative; }
+        .hl-drop-on::after { content: attr(data-drop); position: absolute; inset: 0; z-index: 6; display: grid; place-items: center; padding: 0 12px; text-align: center;
+                             border-radius: inherit; border: 2px dashed rgba(242,165,230,0.75); background: rgba(22,18,26,0.82); color: #f6c7ee;
+                             font-size: 13.5px; font-weight: 600; pointer-events: none; animation: fadeIn .14s ease backwards; }
         .hl-as-read input { font-size: 13.5px; }
         .hl-as-found { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 6px; font-size: 12.5px; font-weight: 600; color: #f6c7ee; animation: fadeIn .18s ease backwards; }
         .hl-as-found .msym { font-size: 16px; font-variation-settings: 'FILL' 1; }
@@ -32117,6 +33074,7 @@ export default function PnlCalendar() {
         .hl-as-fld input::placeholder { color: #6f777f; font-weight: 500; }
         .hl-as-fld em { flex: none; font-style: normal; font-size: 13px; font-weight: 600; color: #8e969e; margin-left: -4px; }
         .hl-as-pop .hl-nt-about.hl-as-about { flex: none; min-height: 240px; max-height: 56vh; overflow-y: auto; }
+        .hl-as-body > .rt { flex: none; }
         .hl-as-found.ai { color: #f6c7ee; font-weight: 500; }
         .hl-as-found.ai .msym { animation: hlAiPulse 1.1s ease-in-out infinite; }
         @keyframes hlAiPulse { 50% { opacity: 0.3; } }
@@ -32174,13 +33132,17 @@ export default function PnlCalendar() {
         .hl-due { position: absolute; left: -2px; right: -2px; height: 16px; margin-top: -8px; padding: 0; border: none; background: none; z-index: 3; cursor: pointer;
                   animation: hlDueIn .45s var(--ease) backwards; }
         .hl-due::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; border-top: 2px dashed #f2a5e6; box-shadow: 0 0 8px rgba(242,165,230,0.5); }
-        .hl-due-tab { position: absolute; left: 3px; bottom: 9px; max-width: calc(100% - 6px); display: inline-flex; align-items: center; gap: 3px; height: 17px; padding: 0 6px 0 3px;
+        .hl-due-tab { position: absolute; left: 3px; bottom: calc(9px + var(--k, 0) * 19px); max-width: calc(100% - 6px); display: inline-flex; align-items: center; gap: 3px; height: 17px; padding: 0 6px 0 3px;
                       border-radius: 6px 6px 6px 1px; background: #f2a5e6; color: #3a1735; font-size: 10.5px; font-weight: 700; line-height: 1; white-space: nowrap; overflow: hidden;
                       box-shadow: 0 2px 10px rgba(242,165,230,0.35); transition: transform .2s var(--ease); }
         .hl-due-tab .msym { flex: none; font-size: 12px; font-variation-settings: 'FILL' 1; }
         .hl-due-tab b { min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
         .hl-due-tab i { flex: none; font-style: normal; font-weight: 600; opacity: 0.75; }
         .hl-due:hover .hl-due-tab { transform: translateY(-1px); }
+        .hl-due.stack { pointer-events: none; }            /* (one line for the ones stacked on it: the line opens the first, each tab its own) */
+        .hl-due.stack .hl-due-tab { pointer-events: auto; }
+        .hl-due.stack::before { display: none; }
+        .hl-due.stack .hl-due-tab { border-radius: 6px; }
         @keyframes hlDueIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         .hl-heads { position: fixed; z-index: 75; top: 16px; left: 0; right: 0; margin: 0 auto; width: fit-content; max-width: min(620px, calc(100vw - 32px));
                     display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 14px; border-radius: 18px;
@@ -32380,6 +33342,16 @@ export default function PnlCalendar() {
         .hl-month { margin-top: 22px; }
         .hl-month-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
         .hl-month-head b { font-size: 13px; font-weight: 700; color: #eef1f4; }
+        /* the month opens its wrapped (9 November 2026), as a month's title does on the other sides */
+        .hl-month-head .hl-month-wrap { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; margin: -3px -8px; border: 0; border-radius: 8px; background: none;
+                                        font: inherit; font-size: 13px; font-weight: 700; color: #eef1f4; cursor: pointer; transition: background-color .16s ease, color .16s ease; }
+        .hl-month-head .hl-month-wrap .msym { font-size: 14px; color: #e6c877; opacity: 0.75; transition: opacity .16s ease; }
+        .hl-month-head .hl-month-wrap:hover { background: rgba(255,255,255,0.06); color: #f0d88a; }
+        .hl-month-head .hl-month-wrap:hover .msym { opacity: 1; }
+        /* Health's wrapped: its bars stand from one line, under the step goal's dashed line; a day under the goal is paler */
+        .hlw-bars .wr-bar-half { position: relative; border-bottom: 1px solid rgba(255,255,255,0.12); }
+        .hlw-gl { position: absolute; left: -2px; right: -2px; height: 0; border-top: 1px dashed rgba(255,255,255,0.24); pointer-events: none; }
+        .wr-bar.up.hlw-lo { background: linear-gradient(180deg, rgba(126,240,189,0.6), rgba(47,208,138,0.38)); }
         .hl-month-head span { font-size: 12px; color: #8e969e; }
         .hl-month-row { display: grid; grid-template-columns: minmax(0, 560px) minmax(220px, 1fr); gap: 28px; align-items: start; }
         @media (max-width: 900px) { .hl-month-row { grid-template-columns: minmax(0, 1fr); } }
@@ -33662,7 +34634,10 @@ export default function PnlCalendar() {
       })()}
       {launched && arrOpen && view === "month" && <CardArrange cards={FIN_CARDS} order={cardOrd} solo={!(homeOn && view !== "home")}
                                                          onOrder={(next) => { setCardOrd(next); saveFinPrefs({ order: next }); }} onClose={() => setArrOpen(false)} />}
-      {launched && rulePop && <RulePop rule={ruleFor(year, month)} own={ruleOwn(year, month)} monthName={`${MONTHS_SHORT[month]} ${year}`}
+      {/* (a month before the every-month rule starts opens on that rule, not on the stock 50/30/20: saved "from its month on",
+          the stock draft took his rule's place, 10 November 2026) */}
+      {launched && rulePop && <RulePop rule={ruleFor(year, month) || (!ruleOwn(year, month) && spendRule) || null} own={ruleOwn(year, month)} monthName={`${MONTHS_SHORT[month]} ${year}`}
+                                      fromName={(() => { const k = spendRule ? spendRule.since || RULE_FIRST : mKey; return `${MONTHS_SHORT[+k.slice(5) - 1]} ${k.slice(0, 4)}`; })()}
                                       base={incomeBase(year, month)} money={{ cur, isMYR, toIDR: amtToIDR, show: dispStr }}
                                       days={daysInMonth} fmt={fmt} onSave={ruleSave} onOff={ruleOff} onBack={ruleBack} onClose={() => setRulePop(false)} />}
       {launched && cfgDraft && <TestCfg cfg={testCfg} closing={cfgClosing} year={year} month={month} span={view === "month" ? "month" : "year"} fmt={fmt} onRun={runTestCfg} onClose={closeTestCfg} />}

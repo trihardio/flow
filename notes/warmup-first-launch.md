@@ -1,6 +1,7 @@
 # Warm-up and first launch
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/stage]] · [[notes/installer]] · [[notes/dev-test-data]] · [[notes/dashboard]]
 
 - **Warm-up** (`warm*`, near the top of `App.jsx`; 3 October 2026): Rassam's complaint was that everything lags the first time it is opened after a launch (the wallets, a card scrolled to, a chart) and never the second time.
   - What a first showing pays for: text shaped in each font, weight and size; the system asked for a font for the characters Inter lacks (▾ ✕ ▮ ▬ → ← ⇄ ↔ ≈ ★: 30–50ms the first time); pictures decoded; and a small graphics program built for each new kind of paint, blur and blend (a burst of 25–40 of those froze a few frames). None of it can be asked for ahead of time except by drawing the thing.

@@ -1057,6 +1057,76 @@ const richnotes = async (c) => {
   await shot("rn-4-kinds", ".hl-as-kinds");
   c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
+// The assignment's notes with the class notes' strip, highlights and bullets (9 November 2026; `--shots --fresh --profile=asgrich`):
+// test data, an assignment opened, words typed, bold and two highlights put on, "- " typed at a line's start (a list), the
+// marker changed to a dash and a hollow circle, a brief with "- " lines pasted, a highlight taken off with No Color, what was
+// saved, the assignment opened again; then a class's notes have the same strip
+const asgrich = async (c) => {
+  const box = (sel, pad = 10) => c.js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
+    return { x: Math.max(0, Math.round(r.left - ${pad})), y: Math.max(0, Math.round(r.top - ${pad})), width: Math.round(Math.min(innerWidth - Math.max(0, r.left - ${pad}), r.width + ${pad} * 2)), height: Math.round(Math.min(innerHeight - Math.max(0, r.top - ${pad}), r.height + ${pad} * 2)) }; })()`);
+  const shot = async (name, sel) => { if (c.shots) await c.shot(name, sel ? (await box(sel)) || undefined : undefined); };
+  const pick = (word) => c.js(`(() => { const ed = document.querySelector('.rt-ed'); const w = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) { const i = n.nodeValue.indexOf(${JSON.stringify(word)}); if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + ${word.length}); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return true; } } return false; })()`);
+  const end = () => c.js(`(() => { const ed = document.querySelector('.rt-ed'); ed.focus(); const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return 0; })()`);
+  const press = (sel) => c.js(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return false; b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); b.click(); return true; })()`);
+  const put = (t) => c.js(`document.execCommand('insertText', false, ${JSON.stringify(t)})`);
+  const space = () => c.js(`(() => { const ed = document.querySelector('.rt-ed'); const e = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }); ed.dispatchEvent(e); if (!e.defaultPrevented) document.execCommand('insertText', false, ' '); return e.defaultPrevented ? 'list started' : 'a plain space'; })()`);
+  const html = () => c.js(`document.querySelector('.rt-ed')?.innerHTML || 'none'`);
+  const marks = () => c.js(`JSON.stringify([...document.querySelectorAll('.rt-ed li')].map((l) => { const b = getComputedStyle(l, '::before'); return [l.closest('ul').dataset.b, l.textContent, b.content, b.backgroundColor, b.boxShadow.slice(0, 40)]; }))`);
+  const hls = () => c.js(`JSON.stringify([...document.querySelectorAll('.rt-ed [style*="background-color"]')].map((e) => [e.textContent, getComputedStyle(e).backgroundColor]))`);
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  // (the test tools are off for somebody new since 3 November 2026: on, and the page again)
+  await c.js(`localStorage.setItem('flow-dev', '1'); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await c.js(`document.querySelector('.foot-logo')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(600);
+  c.log("TEST DATA", await c.js(`(() => { const b = document.querySelector('button[aria-label="Add test data"]'); if (!b) return 'no button'; b.click(); return 'pressed'; })()`)); await c.sleep(1800);
+  const openAsg = async () => { await c.js(`document.querySelector('[data-card="assignments"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1200); await c.js(`document.querySelector('.hl-as-row .hl-as-go')?.click()`); await c.sleep(1100); };
+  await openAsg();
+  c.log("OPEN", await c.js(`(() => { const e = document.querySelector('.hl-as-pop .rt-ed'); return e ? 'editor: ' + e.className + ' ' + Math.round(e.getBoundingClientRect().height) + 'px; strip: ' + [...document.querySelectorAll('.hl-as-pop .rt-bar > *')].map((b) => b.title || b.className).join(' | ') : 'no editor in the assignment'; })()`));
+  await end(); await put("Read chapter 3 before the group meets. Groups of four."); await c.sleep(150);
+  await pick("chapter 3"); await press('.rt-btn[title="Bold (⌘B)"]'); await c.sleep(150);
+  await pick("group meets"); await press('.rt-hl'); await c.sleep(150);
+  await pick("four"); await press('.rt-arr[title="More highlight colours"]'); await c.sleep(300);
+  c.log("HL PALETTE", await c.js(`document.querySelector('.rt-pal')?.innerText.replace(/\\s+/g, ' ') + ' | swatches ' + document.querySelectorAll('.rt-pal .rt-sw-b').length`));
+  await shot("ar-1-hl-palette", ".hl-as-pop");
+  await press('.rt-pal .rt-sw-b[title="Pink"]'); await c.sleep(200);
+  c.log("HIGHLIGHTS", await hls());
+  await end(); await c.js(`document.execCommand('insertParagraph')`); await put("-"); c.log("SPACE", await space()); await put("Slides for week 5");
+  await c.js(`document.execCommand('insertParagraph')`); await put("Report, 2000 words"); await c.sleep(150);
+  c.log("AUTO LIST", await marks());
+  await press('.rt-arr[title="Bullet Library"]'); await c.sleep(300);
+  c.log("BUL MENU", await c.js(`document.querySelector('.rt-pal-bul')?.innerText.replace(/\\s+/g, ' ')`));
+  await shot("ar-2-bullet-menu", ".hl-as-pop");
+  await press('.rt-pal-bul .rt-auto:nth-of-type(2)'); await c.sleep(200);
+  c.log("DASH", await marks());
+  await press('.rt-arr[title="Bullet Library"]'); await c.sleep(200); await press('.rt-pal-bul .rt-auto:nth-of-type(3)'); await c.sleep(200);
+  c.log("RING", await marks());
+  await shot("ar-3-ring", ".hl-as-pop");
+  await end(); await c.js(`document.execCommand('insertParagraph'); document.execCommand('insertParagraph')`);
+  c.log("OUT OF LIST", await c.js(`getSelection().anchorNode.parentNode.closest?.('li') || getSelection().anchorNode.closest?.('li') ? 'still in the list' : 'out of the list'`));
+  await c.js(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', 'Hand in:\\n- the report\\n- the slides\\nThat is all.'); document.querySelector('.rt-ed').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return 0; })()`); await c.sleep(300);
+  c.log("PASTED", await marks());
+  await pick("group meets"); await press('.rt-arr[title="More highlight colours"]'); await c.sleep(200); await press('.rt-pal .rt-auto'); await c.sleep(200);
+  c.log("NO COLOR", await hls());
+  c.log("HTML", await html());
+  await shot("ar-4-all", ".hl-as-pop");
+  await c.js(`document.querySelector('.rt-ed').dispatchEvent(new FocusEvent('focusout', { bubbles: true })); 0`); await c.sleep(400);
+  c.log("SAVED", await c.js(`(() => { const k = Object.keys(localStorage).find((x) => x.endsWith('flow-health')); const v = k ? JSON.parse(localStorage.getItem(k)) : null; const a = v && (v.asg || []).find((q) => q.aboutH); return a ? JSON.stringify({ about: a.about, aboutH: a.aboutH }) : 'no formatted notes saved'; })()`));
+  await c.key("Escape"); await c.sleep(900);
+  await openAsg();
+  c.log("REOPENED", await html());
+  c.log("REOPENED MARKS", await marks(), await hls());
+  await shot("ar-5-reopened", ".hl-as-pop");
+  await c.key("Escape"); await c.sleep(900);
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' })`); await c.sleep(1500);
+  await c.press(".hl-cls"); await c.sleep(900); await c.js(`document.querySelector('.hl-form-notes')?.click(); 0`); await c.sleep(1100);
+  c.log("CLASS STRIP", await c.js(`[...document.querySelectorAll('.hl-nt .rt-bar > *')].map((b) => b.title || b.className).join(' | ') || 'none'`));
+  await shot("ar-6-class", ".hl-nt");
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
 const roworder = async (c) => {
   const seed = { spending: { "2026-10-10": [{ id: "a", amount: 10000, desc: "alpha", cat: "food" }, { id: "b", amount: 20000, desc: "bravo", cat: "food" }, { id: "c", amount: 30000, desc: "charlie", cat: "food" }] },
     incomes: { "2026-10": [{ id: "i1", amount: 500000, desc: "pay", day: 10 }, { id: "i2", amount: 90000, desc: "refund", day: 10 }] }, limits: {}, currency: "IDR", goals: [], debts: [] };
@@ -3310,7 +3380,9 @@ const homelag = async (c) => {
   const chips = await c.js(`document.querySelectorAll(".wd-chip").length`);
   for (let i = 0; i < chips; i++) for (const n of [1, 2]) { await c.step(`chip-${i}-${n}`, () => into(".wd-chip", i), 900); }
   await top(); await c.sleep(400);
-  await c.step("edit-1", () => c.press(".dash-tools .dg-btn.pri"), 900);
+  // (Edit widgets and Done are one button since the fewer-buttons pass, .dg-main: it had been .dg-btn.pri, and this journey
+  // stopped entering edit mode. 10 November 2026)
+  await c.step("edit-1", () => c.press(".dash-tools .dg-main"), 900);
   // (by their names, not their places: with the board full, Add widget is greyed out, an Esc with nothing open then ended
   // editing, and the next press by place hit Calendar; 23 October 2026)
   const ADD = '.dash-tools .dg-btn[title="Add a widget"]', LAY = '.dash-tools .dg-btn[title="Ready-made arrangements to start from"]';
@@ -3336,7 +3408,9 @@ const homelag = async (c) => {
       c.wc.sendInputEvent({ type: "mouseUp", x: Math.round(a.x + (n === 1 ? 210 : -210)), y: Math.round(a.y + 90), button: "left", clickCount: 1 });
     }, 1000);
   }
-  await c.step("done-1", () => c.press(".dash-tools .dg-btn.pri"), 900);
+  await c.step("done-1", () => c.press(".dash-tools .dg-main"), 900);
+  await c.step("edit-2", () => c.press(".dash-tools .dg-main"), 900);
+  await c.step("done-2", () => c.press(".dash-tools .dg-main"), 900);
   for (const n of [1, 2]) {
     await c.step(`scroll-down-${n}`, () => c.scroll(1400, 900), 1200);
     await c.step(`scroll-up-${n}`, () => c.scroll(-1600, 700), 1000);
@@ -3930,6 +4004,41 @@ const glasslook = async (c) => {
     c.key("Escape"); await c.sleep(600);
   }
   await c.js(`localStorage.setItem('flow-glass', '50'); 0`);
+};
+// The glass's tint (9 November 2026): finance's Home, a month's top, its cards, the settings pop-up and the sidebar at the
+// slider's default, then Home and settings at the tinted end, then the light look's Home, month and settings.
+// TAG=<word> puts a word before every still's name (before / after). Run on --profile=hunt (test data).
+const glasstint = async (c) => {
+  const tag = process.env.TAG || "t";
+  const enter = async () => {
+    await c.press(".wallet-unit.active"); await c.sleep(1400); await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+    await c.press(".big-card"); await c.sleep(6500);
+  };
+  const month = async () => {
+    await c.js(`(() => { const b = document.querySelector('.dash-tools [aria-label="Calendar"]'); if (b) b.click(); })()`); await c.sleep(2500);
+    await c.press(".ycell", await c.js(`new Date().getMonth()`)); await c.sleep(3500);
+  };
+  const settings = async (n) => { await c.js(`document.querySelector('[aria-label="Settings"]').click()`); await c.sleep(1300); await c.shot(n); c.key("Escape"); await c.sleep(700); };
+  const look = async (v, theme, all) => {
+    await c.js(`(() => { localStorage.setItem('flow-glass', '${v}'); localStorage.setItem('flow-theme', '${theme}'); location.reload(); })()`); await c.sleep(SPLASH_MS + 900);
+    await enter();
+    const p = `${tag}-${theme[0]}${v}`;
+    await c.shot(`${p}-1-home`);
+    if (all || theme === "light") { await month(); await c.shot(`${p}-2-month`); }
+    if (all) {
+      await c.js(`(() => { const e = document.querySelectorAll('.flow-card')[1]; if (e) e.scrollIntoView({ block: 'start', behavior: 'instant' }); })()`); await c.sleep(1800);
+      await c.shot(`${p}-3-cards`);
+      await c.js(`scrollTo({ top: 0, behavior: 'instant' })`); await c.sleep(800);
+      await c.press(".snav-burger"); await c.sleep(1200); await c.shot(`${p}-5-sidebar`); c.key("Escape"); await c.sleep(800);
+    }
+    await settings(`${p}-4-settings`);
+  };
+  await c.sleep(SPLASH_MS);
+  c.log("ACCOUNT", await c.js(`localStorage.getItem('flow-users')`));
+  await look(50, "dark", true);
+  await look(100, "dark", false);
+  await look(50, "light", false);
+  await c.js(`localStorage.setItem('flow-glass', '50'); localStorage.setItem('flow-theme', 'dark'); 0`);
 };
 // Every panel and pop-up on all four sides (stills with --shots; run on a profile with test data on every side, e.g.
 // `seedprep --profile=look --fresh`, then `look --profile=look --shots`). After each press the log lists what is
@@ -4824,7 +4933,8 @@ const dueshot = async (c) => {
   const p2 = (n) => String(n).padStart(2, "0"), t = new Date(), plus = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
   const data = { classes: [{ id: "c1", name: "MKW1120: Tutorial 20", room: "MA 95", dow: 1, from: "12:00", to: "14:00", tint: 1 }, { id: "c2", name: "BTW1042: Tutorial 10", room: "MA 93", dow: 0, from: "14:00", to: "16:00", tint: 2 }],
     clsLib: [{ name: "MKW1120: Tutorial 20", room: "MA 95", tint: 1 }, { name: "BTW1042: Tutorial 10", room: "MA 93", tint: 2 }],
-    asg: [{ id: "a1", title: "Assignment 1: Individual Poster", sub: "", cls: "MKW1120: Tutorial 20", kind: "assignment", due: plus(3), at: "12:00", about: "", done: false, items: [] }] };
+    asg: [{ id: "a1", title: "Assignment 1: Individual Poster", sub: "", cls: "MKW1120: Tutorial 20", kind: "assignment", due: plus(3), at: "12:00", about: "", done: false,
+            items: [{ id: "i1", t: "Brief", url: "https://example.edu/brief.pdf", at: 0 }, { id: "i2", t: "Rubric", url: "https://example.edu/rubric.pdf", at: 0 }] }] };
   const saved = () => c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).asg.map((a) => [a.title, a.cls, a.due, a.at, a.weight ?? null, a.kind]))`);
   const pic = `(async () => { const cv = document.createElement('canvas'); cv.width = 40; cv.height = 40; const blob = await new Promise((ok) => cv.toBlob(ok, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'shot.png', { type: 'image/png' })); return dt; })()`;
   await c.sleep(SPLASH_MS);
@@ -4838,20 +4948,155 @@ const dueshot = async (c) => {
   await c.js(`document.querySelector('[data-card="assignments"]')?.scrollIntoView({ block: 'start', behavior: 'instant' }); 0`); await c.sleep(1400);
   c.log("CARD BUTTON", await c.js(`(() => { const b = document.querySelector('.hl-as-shot-all'); return b ? b.getAttribute('aria-label') : 'missing'; })()`));
   await c.js(`window.__ocrLines = ${JSON.stringify(fx("asg-deadlines-list.json"))}; 0`);
-  await c.js(`(async () => { const dt = await ${pic}; document.querySelector('.hl-as').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return 'dropped'; })()`); await c.sleep(1200);
+  // dragged over first: the card lights up and says what a drop does (5 November 2026)
+  c.log("DRAG OVER CARD", await c.js(`(async () => { window.__dt = await ${pic}; const el = document.querySelector('.hl-as'); el.dispatchEvent(new DragEvent('dragenter', { dataTransfer: window.__dt, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new DragEvent('dragover', { dataTransfer: window.__dt, bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 300));
+    return JSON.stringify({ lit: el.classList.contains('hl-drop-on'), says: getComputedStyle(el, '::after').content }); })()`));
+  if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('[data-card="assignments"]').getBoundingClientRect(); return { x: Math.floor(b.left), y: Math.max(0, Math.floor(b.top)), width: Math.ceil(b.width), height: Math.min(Math.ceil(b.height), 400) }; })()`); await c.shot("dueshot-0-drag", r); }
+  await c.js(`document.querySelector('.hl-as').dispatchEvent(new DragEvent('drop', { dataTransfer: window.__dt, bubbles: true, cancelable: true })); 0`); await c.sleep(1200);
+  c.log("AFTER DROP", await c.js(`document.querySelector('.hl-as').classList.contains('hl-drop-on') ? 'still lit' : 'unlit'`));
   c.log("SHEET", await c.js(`(() => { const s = document.querySelector('.hl-asc'); if (!s) return 'no sheet: ' + (document.querySelector('.hl-as-found')?.innerText || ''); return JSON.stringify({ head: s.querySelector('.hl-scan-head b').innerText,
     rows: [...s.querySelectorAll('.hl-asc-row')].map((r) => [r.querySelector('.hl-asc-t').value, r.querySelector('.hl-asc-c').value, r.querySelector('.hl-asc-d').value, r.querySelector('.hl-tf')?.innerText.trim(), r.querySelector('.hl-asc-w input').value, r.classList.contains('off') ? 'off' : 'on']) }); })()`));
   if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-asc').getBoundingClientRect(); return { x: Math.floor(b.left), y: Math.floor(b.top), width: Math.ceil(b.width), height: Math.ceil(b.height) }; })()`); await c.shot("dueshot-1-sheet", r); }
   await c.js(`document.querySelector('.hl-asc .hl-save')?.click(); 0`); await c.sleep(900);
   c.log("ADDED", await saved(), await c.js(`document.querySelector('.undo-note.on')?.innerText.replace(/\\s+/g, ' ') || 'no undo'`));
+  if (c.shots) { await c.sleep(4500); const r = await c.js(`(() => { const b = document.querySelector('[data-card="assignments"]').getBoundingClientRect(); return { x: Math.floor(b.left), y: Math.max(0, Math.floor(b.top)), width: Math.ceil(b.width), height: Math.min(Math.ceil(b.height), 620) }; })()`); await c.shot("dueshot-0-card", r); }
   // 2 the assignment's own due box: the same screenshot pasted, the one that is this assignment taken (title and class)
   await c.js(`document.querySelector('.hl-as-row .hl-as-go')?.click(); 0`); await c.sleep(1200);
   c.log("OPEN", await c.js(`document.querySelector('.hl-as-pop')?.getAttribute('aria-label') || 'not open'`));
   c.log("DUE BUTTON", await c.js(`(() => { const b = document.querySelector('.hl-as-pop .hl-as-shot'), i = document.querySelector('.hl-as-pop .hl-as-due'), l = i && i.closest('label'); if (!b || !i) return 'missing';
     const rb = b.getBoundingClientRect(), ri = i.getBoundingClientRect(), rl = l.getBoundingClientRect(); return JSON.stringify({ rightOfBox: rb.left >= ri.right - 1, fromLabelEnd: Math.round(rl.right - rb.right) }); })()`));
   if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-as-pop .hl-as-read').getBoundingClientRect(); return { x: Math.floor(b.left) - 6, y: Math.floor(b.top) - 6, width: Math.ceil(b.width) + 12, height: Math.ceil(b.height) + 12 }; })()`); await c.shot("dueshot-2-box", r); }
+  c.log("DRAG OVER BOX", await c.js(`(async () => { const dt = await ${pic}; const el = document.querySelector('.hl-as-pop .hl-as-read'); el.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 300)); const lit = el.classList.contains('hl-drop-on'); el.dispatchEvent(new DragEvent('dragleave', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 200)); return JSON.stringify({ lit, afterLeave: el.classList.contains('hl-drop-on') }); })()`));
   await c.js(`(async () => { const dt = await ${pic}; const i = document.querySelector('.hl-as-pop .hl-as-due'); i.focus(); i.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return 'pasted'; })()`); await c.sleep(1500);
   c.log("DUE READ", await c.js(`document.querySelector('.hl-as-pop .hl-nt-say')?.innerText || 'no word'`), await c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).asg.find((a) => a.id === 'a1'))`));
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// The lecturer in the week's block, and Enter saving the class form (5 November 2026, his words: "have the professor name show
+// up in this timetable box", "if im editing a class/event on the timetable and i press enter it automatically saves";
+// `--shots --fresh --profile=clsprof`): a class with a lecturer drawn; a block opened, its room typed, Enter pressed on its
+// Starts time (a button: it opened the time's pane before), the form shut and saved; a new class added with Enter in its
+// name box, once (the box saves on its own Enter and the form must not save it again)
+const clsprof = async (c) => {
+  const data = { classes: [{ id: "c1", name: "MGW1010: Tutorial 21", room: "MA ClassRoom 61", prof: "Dr. Sarah Lim", dow: 3, from: "10:00", to: "12:00", tint: 2 }],
+    clsLib: [{ name: "MGW1010: Tutorial 21", room: "MA ClassRoom 61", prof: "Dr. Sarah Lim", tint: 2 }] };
+  const saved = () => c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).classes.map((q) => [q.name, q.room, q.prof || '', q.dow, q.from, q.to]))`);
+  const typeIn = (sel, t) => c.js(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); if (!i) return 'no box'; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(t)}); i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })()`);
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await c.js(`document.querySelector('[data-card="week"]')?.scrollIntoView({ block: 'start', behavior: 'instant' }); 0`); await c.sleep(1500);
+  c.log("BLOCK", await c.js(`(() => { const b = [...document.querySelectorAll('.hl-cls')].find((e) => /MGW1010/.test(e.innerText)); return b ? JSON.stringify({ lines: b.innerText.split('\\n'), prof: b.querySelector('.hl-cls-prof')?.innerText || 'none' }) : 'no block'; })()`));
+  if (c.shots) { const r = await c.js(`(() => { const b = [...document.querySelectorAll('.hl-cls')].find((e) => /MGW1010/.test(e.innerText)).getBoundingClientRect(); return { x: Math.floor(b.left) - 8, y: Math.floor(b.top) - 8, width: Math.ceil(b.width) + 16, height: Math.ceil(b.height) + 16 }; })()`); await c.shot("clsprof-1-block", r); }
+  // Enter on the Starts time saves the form
+  await c.js(`[...document.querySelectorAll('.hl-cls')].find((e) => /MGW1010/.test(e.innerText)).click(); 0`); await c.sleep(900);
+  c.log("FORM", await c.js(`!!document.querySelector('.hl-form')`), await typeIn(".hl-form input[placeholder='Where (room)']", "MA ClassRoom 62"));
+  if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-form').getBoundingClientRect(); return { x: Math.floor(b.left) - 8, y: Math.floor(b.bottom) - 70, width: Math.ceil(b.width) + 16, height: 78 }; })()`); await c.shot("clsprof-2-foot", r); }
+  await c.sleep(200);
+  c.log("ENTER ON TIME", await c.js(`(() => { const b = document.querySelector('.hl-form .hl-tf'); if (!b) return 'no time'; b.focus(); b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 'sent'; })()`));
+  await c.sleep(900);
+  c.log("AFTER", JSON.stringify({ formOpen: await c.js(`!!document.querySelector('.hl-form')`), pane: await c.js(`document.querySelectorAll('[role=dialog]').length`) }), await saved());
+  // a new one: Enter in its name box adds it once
+  await c.js(`document.querySelector('[aria-label="Add a class or an event"]').click(); 0`); await c.sleep(800);
+  await typeIn(".hl-name-row input", "Futsal"); await c.sleep(200);
+  await c.js(`document.querySelector('.hl-name-row input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); 0`); await c.sleep(900);
+  c.log("NEW BY ENTER", await saved());
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// A golf range session in the gym log (5 November 2026, his words: "add a golf driving feature where it estimates how much
+// calories i burn and all that stuff. also add how long i was golf driving"; `--shots --fresh --profile=golf`): at 72 kg,
+// Log a session, Golf range, 60 minutes, 120 balls, Hard, Driver: the live estimate (4.5 METs × 72 kg × 1 h = 324 kcal),
+// saved, the session's row, and the day's moving counting it
+const golf = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), d0 = new Date(), today = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}`;
+  const data = { profile: { cm: 175, kg: 72, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, weights: { [today]: 72 } };
+  const typeIn = (sel, t) => c.js(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); if (!i) return 'no box ' + ${JSON.stringify(sel)}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(t)}); i.dispatchEvent(new Event('input', { bubbles: true })); return 'typed'; })()`);
+  const chip = (txt) => c.js(`(() => { const b = [...document.querySelectorAll('.hl-gym .hl-sheet .jr-chip')].find((e) => e.innerText.trim().endsWith(${JSON.stringify(txt)})); if (!b) return 'no chip'; b.click(); return 'pressed'; })()`);
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await c.js(`document.querySelector('[data-card="gym"]')?.scrollIntoView({ block: 'start', behavior: 'instant' }); 0`); await c.sleep(1500);
+  await c.js(`[...document.querySelectorAll('.hl-gym .hl-save')].find((b) => /Log a session/.test(b.innerText))?.click(); 0`); await c.sleep(700);
+  c.log("GOLF CHIP", await chip("Golf range")); await c.sleep(500);
+  c.log("FIELDS", await c.js(`JSON.stringify({ golf: !!document.querySelector('.hl-golf'), exercises: document.querySelectorAll('.hl-gym .hl-ex').length, nameBox: !!document.querySelector('.hl-sname') })`));
+  c.log("MIN", await typeIn(".hl-gym .hl-sheet input[aria-label='Minutes']", "60"), "BALLS", await typeIn(".hl-golf input[aria-label='Balls hit']", "120"));
+  c.log("HARD", await chip("Hard"), "DRIVER", await chip("Driver")); await c.sleep(800);
+  c.log("ESTIMATE", await c.js(`document.querySelector('.hl-golf-k')?.innerText.replace(/\\s+/g, ' ')`));
+  if (c.shots) { const r = await c.js(`(() => { const b = document.querySelector('.hl-gym .hl-sheet').getBoundingClientRect(); return { x: Math.floor(b.left), y: Math.max(0, Math.floor(b.top)), width: Math.ceil(b.width), height: Math.ceil(b.height) }; })()`); await c.shot("golf-1-sheet", r); }
+  await c.js(`[...document.querySelectorAll('.hl-gym .hl-sheet .hl-save')].pop()?.click(); 0`); await c.sleep(1000);
+  c.log("SAVED", await c.js(`JSON.stringify(JSON.parse(localStorage.getItem('flow-health')).gym)`));
+  c.log("ROW", await c.js(`document.querySelector('.hl-sess-row')?.innerText.replace(/\\s+/g, ' ') || 'no row'`));
+  c.log("DAY MOVE", await c.js(`[...document.querySelectorAll('[data-card="activity"] .hl-stats span, .hl-tile')].map((e) => e.innerText.replace(/\\s+/g, ' ')).filter((t) => /kcal|Move/i.test(t)).slice(0, 4).join(' | ')`));
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// Two deadlines at the same time on the week (5 November 2026, his words: "there are 2 assignments due on the same day and
+// on the app its overlapping and ignoring the other one"; `--shots --fresh --profile=duestack`): both due tomorrow 23:55
+// (and a third at 23:40, within the half hour): their tabs, where each stands, none on another, each opening its own
+const duestack = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), t = new Date(), plus = (n) => { const d = new Date(t); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+  const day = plus(1);
+  const data = { asg: [{ id: "a1", title: "Assignment 1: Individual Poster", sub: "", cls: "MKW1120", kind: "assignment", due: day, at: "23:55", about: "", items: [] },
+                       { id: "a2", title: "Assessment 1: Individual Reflections Essay", sub: "", cls: "MGW1010", kind: "assignment", due: day, at: "23:55", about: "", items: [] },
+                       { id: "a3", title: "Quiz 3", sub: "", cls: "ETW1001", kind: "quiz", due: day, at: "23:40", about: "", items: [] }] };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6500);
+  await c.hlDay();
+  await c.js(`document.querySelector('.hl-due')?.scrollIntoView({ block: 'center', behavior: 'instant' }); 0`); await c.sleep(1600);
+  c.log("TABS", await c.js(`(() => { const t = [...document.querySelectorAll('.hl-due')].map((b) => { const r = b.querySelector('.hl-due-tab').getBoundingClientRect(); return { id: b.dataset.due, text: b.innerText.replace(/\\s+/g, ' '), top: Math.round(r.top), bottom: Math.round(r.bottom) }; });
+    const clash = t.some((a, i) => t.some((b, j) => j > i && a.top < b.bottom - 1 && b.top < a.bottom - 1)); return JSON.stringify({ n: t.length, clash, t }); })()`));
+  for (const id of ["a2", "a3"]) {
+    c.log("PRESS " + id, await c.js(`(() => { const tab = document.querySelector('.hl-due[data-due="${id}"] .hl-due-tab'); const r = tab.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && hit.closest('.hl-due') ? hit.closest('.hl-due').dataset.due : 'nothing'; })()`));
+  }
+  if (c.shots) { const r = await c.js(`(() => { const b = [...document.querySelectorAll('.hl-due .hl-due-tab')].map((e) => e.getBoundingClientRect()); const x0 = Math.min(...b.map((q) => q.left)) - 40, y0 = Math.min(...b.map((q) => q.top)) - 30, y1 = Math.max(...b.map((q) => q.bottom)) + 40; return { x: Math.max(0, Math.floor(x0)), y: Math.max(0, Math.floor(y0)), width: 360, height: Math.ceil(y1 - y0) }; })()`); await c.shot("duestack-1", r); }
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// His spending rule as saved (6 November 2026: which months it set the limit of), read off a copy of his Local Storage in
+// --profile=look (copied in first, deleted after): the every-month rule (its family, split, start month), the months with
+// their own, and each month's typed limit and income. Nothing is pressed and nothing saved
+const rulepeek = async (c) => {
+  await c.sleep(SPLASH_MS);
+  c.log("RULE", await c.js(`(() => { const d = JSON.parse(localStorage.getItem('pnl-calendar-idr') || 'null'); if (!d) return 'no data';
+    const inc = (mk) => (d.incomes && d.incomes[mk] || []).reduce((a, x) => a + (+x.amount || 0), 0);
+    const months = [...new Set([...Object.keys(d.limits || {}), ...Object.keys(d.incomes || {}), ...Object.keys(d.ruleByMonth || {})])].sort();
+    return JSON.stringify({ rule: d.rule ? { fam: d.rule.fam, parts: (d.rule.parts || []).map((p) => p.k + ' ' + p.pct), limit: d.rule.limit, since: d.rule.since || null, amount: d.rule.amount || 0 } : null,
+      byMonth: Object.fromEntries(Object.entries(d.ruleByMonth || {}).map(([k, r]) => [k, r === false ? 'none' : (r.parts || []).map((p) => p.pct).join('/') + (r.test ? ' (test)' : '')])),
+      months: months.map((mk) => mk + ' limit ' + ((d.limits || {})[mk] || '-') + ' income ' + inc(mk)) }); })()`));
+};
+// The rule for every month from its month on (6 November 2026, his words: "september my daily limit was 150k though the spending
+// rule was applied and it messed everything up"; `--fresh --profile=rulesince`): his shape of data (a 70/30 rule for every
+// month saved with no start month, October's own 70/30, 150k typed for every month, incomes from August), each month's
+// daily limit read off the calendar: August and September his 150k, October its own rule's, November the rule's
+const rulesince = async (c) => {
+  const rule = { fam: "ss", parts: [{ k: "spend", pct: 70 }, { k: "save", pct: 30 }], limit: true };
+  const limits = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`2026-${String(i + 1).padStart(2, "0")}`, 150000]));
+  const inc = (mk, v) => [{ id: "i" + mk, amount: v, desc: "pocket money" }];
+  const fin = { spending: {}, incomes: { "2026-08": inc("08", 4302000), "2026-09": inc("09", 4450000), "2026-10": inc("10", 14650000), "2026-11": inc("11", 6000000) },
+    limits, currency: "IDR", goals: [], debts: [], plans: [], rule, ruleByMonth: { "2026-10": rule } };
+  await c.sleep(SPLASH_MS);
+  await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000);
+  await c.js(`localStorage.setItem('pnl-calendar-idr', ${JSON.stringify(JSON.stringify(fin))}); location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".dash-tools .dg-btn", 0); await c.sleep(3000);
+  for (const m of [7, 8, 9, 10]) {
+    await c.press(".ycell", m); await c.sleep(3200);
+    c.log("MONTH " + (m + 1), await c.js(`(() => { const box = document.querySelector('input.limit-input'), tag = document.querySelector('.dow-limit'); const a = [null, (box ? box.value + (box.readOnly ? ' (set by the rule)' : ' (typed)') : '') + ' · ' + (tag ? tag.innerText : '')]; const p = [...document.querySelectorAll('.rule-pill, [class*="rule-"]')].map((e) => e.innerText.replace(/\\s+/g, ' ')).filter(Boolean)[0];
+      return JSON.stringify({ limit: a ? a[1] : 'not found', rule: p || 'no rule shown' }); })()`));
+    await c.js(`document.querySelector('.month-btn')?.click(); 0`); await c.sleep(2600);
+  }
   c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
 // A tour for a design pass (4 November 2026; `--shots --fresh --profile=uitour`): test data on finance, crypto and Health, and
@@ -4934,7 +5179,7 @@ const hlkind = async (c) => {
   await c.js(`document.querySelector('[aria-label="My classes"]').click()`); await c.sleep(900);
   c.log("LIST", await list(), await c.js(`document.activeElement?.getAttribute('aria-label')`));
   if (c.shots) await c.shot("kind-1-list");
-  c.log("FIND golf", await find("golf")); await c.sleep(400); c.log("FOUND", await list());
+  c.log("FIND golf", await find("golf")); await c.sleep(400); c.log("SEARCHED", await list());      // (not "FOUND": hunt-all.sh reads a line starting so as a bug)
   if (c.shots) await c.shot("kind-2-search");
   await c.js(`document.querySelector('.hl-ca-row.ev .hl-ca-add')?.click(); 0`); await c.sleep(700);
   c.log("GOLF ADDED", await list(), await saved());
@@ -5694,6 +5939,23 @@ const uiastra = async (c) => {
 
 // The day turn (4 November 2026; `--fresh --profile=hlturn`): made-up Health data whose days differ (to-dos once on one day,
 // sleep and a session on another, steps on each), then the day before pressed three times and the day after three times.
+// Health's day title (10 November 2026, `--shots --fresh --profile=hltitle`): finance's pixel flicker on it. Stills of the
+// day page's title 120ms after it opens (letters flickering in), settled, 350ms after ‹ (the old word flickering over to
+// the new) and settled; the title's cells and words each time
+const hltitle = async (c) => {
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await c.press(".ring-unit"); await c.sleep(1400);
+  await c.press(".ring-unit"); await c.sleep(6500);
+  const read = () => c.js(`(() => { const h = document.querySelector('.hl-title'); if (!h) return 'NO TITLE'; return JSON.stringify({ cls: h.className, label: h.getAttribute('aria-label'), cells: h.querySelectorAll('.yb-cell').length, px: [...h.querySelectorAll('.yb-px')].map((e) => e.textContent).join(''), w: Math.round(h.getBoundingClientRect().width), anims: h.getAnimations({ subtree: true }).length }); })()`);
+  await c.hlDay(); await c.sleep(120); c.log("OPEN", await read()); await c.shot("title-open");
+  await c.sleep(1800); c.log("SETTLED", await read()); await c.shot("title-settled");
+  await c.press(".hl-nav .nav-arrow"); await c.sleep(350); c.log("SWAP", await read()); await c.shot("title-swap");
+  await c.sleep(2400); c.log("SWAPPED", await read()); await c.shot("title-swapped");
+  c.log("ERRORS", await c.js(`JSON.stringify(window.__perf && window.__perf.errors || [])`));
+};
+
 // Per turn, every second frame for 420ms: the to-do card's add row and the cards below it (their tops), the to-do card's
 // fold height, the ‹ arrow's place, the month's picked-day box, and how many animations run. A jump is a value that
 // changes in one frame; a turn is one that runs over some 300ms
@@ -5778,5 +6040,193 @@ const hlfolder = async (c) => {
   c.log("ASKED", await js(`JSON.stringify(window.__opened)`));
   c.log("ERRORS", await js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
 };
-module.exports = { hlfolder, dueshot, daily, bins, fewer, hlturn, uitour, hlkind, hldue, hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
+// The projection made plain, and a month that is over (7 November 2026): this month's card (headline, the line of what
+// to do, the bar of what is still to come), then the month before (how it ended against what it expected on the 15th)
+const projpast = async (c) => {
+  await c.sleep(SPLASH_MS);
+  await c.press(".wallet-unit.active"); await c.sleep(1400);
+  await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400);
+  await c.press(".big-card"); await c.sleep(6500);
+  await c.press(".ycell", await monthBox(c)); await c.sleep(3200);
+  const look = async (name) => {
+    await c.js(`document.querySelector('.proj-box').scrollIntoView({ block: 'center', behavior: 'instant' }); 0`); await c.sleep(3200);
+    c.log(name, await c.js(`(() => { const b = document.querySelector('.proj-box'); if (!b) return 'none';
+      const r = b.getBoundingClientRect(), wide = [...b.querySelectorAll('*')].filter((e) => e.getBoundingClientRect().right > r.right + 1).length;
+      return JSON.stringify({ text: b.innerText.split(/\\n+/), end: [...b.querySelectorAll('.pj-end text')].map((e) => e.textContent + ' ' + e.getAttribute('fill')), sticksOut: wide, h: Math.round(r.height) }); })()`));
+    if (c.shots) await c.shot(name, await c.js(`(() => { const r = document.querySelector('.proj-box').getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(Math.max(0, r.top)), width: Math.round(r.width), height: Math.round(Math.min(innerHeight, r.bottom) - Math.max(0, r.top)) }; })()`));
+  };
+  await look("proj-now");
+  await c.js(`window.scrollTo({ top: 0, behavior: "instant" }); document.querySelector(".month-nav .nav-arrow").click(); 0`); await c.sleep(3600);
+  await look("proj-past");
+};
+
+// Every Home widget at each of its own sizes (7 November 2026, his words: "review all of the widgets ui design … find bugs
+// or errors"): on the hunt profile's Dev account (test data on every side), finance, crypto and Health, one board per
+// size (all its Small ones, then Medium, Large, Extra large), zoomed to half, a still of each (two when it runs past the
+// window), and per board the odd text, what runs past its widget, and text that overlaps other text in one widget
+const wgall = async (c) => {
+  const IDS = {
+    finance: "ftoday:sm fmonth:sml fweek:mlx fcal:sml fcats:sml frecent:ml fgoals:sml fdebts:sm fyear:mlx fincome:sm fstreak:sm facts:sm fxch:sml fplan:sml",
+    crypto: "bal:smlx pnl:sml win:sml curve:mlx cal:sml year:mlx names:sml recent:smlx prices:sml streak:sm today:sm sides:sm acts:sm xch:sml plan:sml",
+    health: "hscore:sml hrings:sml hsteps:sml hheat:mlx hnext:sml htodo:sml hshop:sml hweight:sml hfuel:sm hbmi:sm hgym:sml hawards:sml hvision:sml hstreak:sm hacts:sm hplan:sml",
+  };
+  const SZ = { s: [2, 2], m: [4, 2], l: [4, 4], x: [8, 4] };
+  const only = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7);
+  const pack = (side, z) => {
+    const items = []; let x = 0, y = 0, rowH = 0;
+    IDS[side].split(" ").map((t) => t.split(":")).filter(([, sz]) => sz.includes(z)).forEach(([id], i) => {
+      const [w, h] = SZ[z]; if (x + w > 12) { x = 0; y += rowH; rowH = 0; }
+      items.push({ k: `w${i + 1}`, id, x, y, w, h }); x += w; rowH = Math.max(rowH, h);
+    });
+    return { snap: true, items };
+  };
+  const audit = (name) => c.js(`(() => {
+    const b = document.querySelector(".dg-board"); if (!b) return "no board";
+    const cut = [], over = [], odd = (b.innerText.match(/NaN|undefined|Infinity|\\[object|Invalid Date|\\bnull\\b/g) || []).join(",");
+    for (const w of b.querySelectorAll(".wdg")) {
+      const inn = w.querySelector(".wd-in"); if (!inn) continue; const inr = inn.getBoundingClientRect();
+      for (const el of inn.querySelectorAll("*")) {
+        const r = el.getBoundingClientRect(); if (!r.width || !r.height || getComputedStyle(el).visibility === "hidden") continue;
+        if (r.bottom > inr.bottom + 3 || r.right > inr.right + 3 || r.left < inr.left - 3) { cut.push(w.dataset.w + ":" + (typeof el.className === "string" ? el.className.split(" ")[0] : el.tagName) + " " + Math.round(r.bottom - inr.bottom) + "," + Math.round(r.right - inr.right)); break; }
+      }
+      const texts = [...inn.querySelectorAll("*")].filter((e) => [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && !e.closest("svg"))
+        .map((e) => [e, e.getBoundingClientRect()]).filter(([e, r]) => r.width && r.height && +getComputedStyle(e).opacity > 0.05);
+      for (let i = 0; i < texts.length; i++) for (let k = i + 1; k < texts.length; k++) {
+        const [a, ra] = texts[i], [bb, rb] = texts[k]; if (a.contains(bb) || bb.contains(a)) continue;
+        const ox = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left), oy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+        if (ox > 2 && oy > 2) over.push(w.dataset.w + ":" + a.innerText.slice(0, 14) + "/" + bb.innerText.slice(0, 14));
+      }
+    }
+    return "widgets " + b.querySelectorAll(".wdg").length + " · odd [" + odd + "] · cut [" + cut.join(" ; ") + "] · overlap [" + over.slice(0, 12).join(" ; ") + "]";
+  })()`).then((r) => c.log("AUDIT", name, r));
+  const enter = {
+    finance: async () => { await c.press(".wallet-unit.active"); await c.sleep(1400); await c.press(".wallet-unit.active .slot-card", 0, 0.5, 0.08); await c.sleep(1400); await c.press(".big-card"); await c.sleep(6000); },
+    crypto: async () => { await c.press(".coin-unit"); await c.sleep(1000); await c.press(".coin-unit"); await c.sleep(1600); await c.press(".coin-unit"); await c.sleep(5000); },
+    health: async () => { await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(3800); },
+  };
+  const KEY = { finance: "pnl-finance-prefs", crypto: "pnl-crypto-prefs", health: "flow-health-prefs" };
+  const DATA = { finance: "pnl-calendar-idr", crypto: "pnl-crypto-usd", health: "flow-health" };
+  await c.sleep(SPLASH_MS);
+  const pre = await c.js(`(() => { const l = JSON.parse(localStorage.getItem('flow-users') || '{}').last; return !l || l === 'main' ? '' : 'u:' + l + ':'; })()`);
+  c.log("ACCOUNT", pre || "main");
+  for (const side of ["finance", "crypto", "health"]) {
+    if (only && only !== side) continue;
+    for (const z of ["s", "m", "l", "x"]) {
+      const board = pack(side, z); if (!board.items.length) continue;
+      await c.js(`(() => { const k = ${JSON.stringify(pre + KEY[side])}, p = JSON.parse(localStorage.getItem(k) || "{}"); p.dash = ${JSON.stringify(board)}; p.home = true; localStorage.setItem(k, JSON.stringify(p)); location.reload(); })()`);
+      await c.sleep(SPLASH_MS + 900);
+      await enter[side]();
+      if (!(await c.js(`(localStorage.getItem(${JSON.stringify(pre + DATA[side])}) || '').length > 200`))) { c.log("TEST DATA", side, await c.js(`(() => { const b = document.querySelector('button[aria-label="Add test data"]'); if (!b) return 'missing'; b.click(); return 'ok'; })()`)); await c.sleep(3200); }
+      // the light under the pointer, on the first widget of finance's Medium board (at full size, before the zoom)
+      if (side === "finance" && z === "m") {
+        const b = JSON.parse(await c.js(`(() => { const r = document.querySelector(".dg-board .wdg").getBoundingClientRect(); return JSON.stringify({ x: r.left, y: r.top, w: r.width, h: r.height }); })()`));
+        c.move(b.x + b.w * 0.7, b.y + b.h * 0.35); await c.sleep(120); c.move(b.x + b.w * 0.72, b.y + b.h * 0.4); await c.sleep(900);
+        c.log("GLOW", await c.js(`(() => { const g = document.querySelector(".dg-board .wdg .wd-glow"), s = getComputedStyle(g); return s.opacity + " " + s.transform + " " + s.willChange; })()`));
+        if (c.shots) await c.shot("glow", { x: Math.round(b.x) - 4, y: Math.round(b.y) - 4, width: Math.round(b.w) + 8, height: Math.round(b.h) + 8 });
+        c.move(5, 5); await c.sleep(700);
+        c.log("GLOW OFF", await c.js(`getComputedStyle(document.querySelector(".dg-board .wdg .wd-glow")).opacity`));
+      }
+      await c.js(`(() => { document.documentElement.style.zoom = "0.5"; window.scrollTo({ top: 0, behavior: "instant" }); })()`); await c.sleep(2400);
+      await audit(`${side} ${z}`);
+      if (c.shots) for (let part = 0; part < 3; part++) {
+        await c.shot(`${side}-${z}${part ? "-" + part : ""}`);
+        const more = await c.js(`(() => { const se = document.scrollingElement; if (se.scrollTop + innerHeight >= se.scrollHeight - 4) return false; window.scrollBy({ top: innerHeight * 0.9, behavior: "instant" }); return true; })()`);
+        if (!more) break; await c.sleep(900);
+      }
+      await c.js(`document.documentElement.style.zoom = ""`);
+    }
+  }
+};
+
+// A widget answers a change in place (9 November 2026; `--shots --fresh --profile=wgmotion`): Health's Medium board with
+// made-up data (two weeks of steps, weights, two to-dos for today), a still of it (the small trend of Steps and Weight), then a to-do ticked on the To-dos widget and ticked back:
+// for 700ms after each, every frame's gap, the animations that run on the board by kind, and how the Day score's words read
+const wgmotion = async (c) => {
+  const ids = "hscore hrings hsteps hheat hnext htodo hshop hweight hfuel hbmi hgym hawards hvision hstreak hacts hplan".split(" ");
+  const items = []; let x = 0, y = 0;
+  ids.forEach((id, i) => { if (x + 4 > 12) { x = 0; y += 2; } items.push({ k: `w${i + 1}`, id, x, y, w: 4, h: 2 }); x += 4; });
+  const p2 = (n) => String(n).padStart(2, "0"), key = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, plus = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return key(d); };
+  const steps = {}, weights = {};
+  for (let i = 0; i < 20; i++) { steps[plus(-i)] = 3000 + ((i * 2731) % 9000); if (i % 3 === 0) weights[plus(-i)] = 84 + i * 0.1; }
+  const hdata = { profile: { cm: 175, kg: 84, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, steps, weights,
+    todos: [{ id: "t1", text: "Drink water", rep: "daily", dows: [], len: 0, from: plus(-5), done: {}, skip: {} }, { id: "t2", text: "Stretch", rep: "daily", dows: [], len: 0, from: plus(-5), done: {}, skip: {} }] };
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  const pre = "";
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(hdata))}); true`);
+  await c.js(`(() => { const k = ${JSON.stringify(pre)} + "flow-health-prefs", p = JSON.parse(localStorage.getItem(k) || "{}"); p.dash = ${JSON.stringify({ snap: true, items })}; p.home = true; localStorage.setItem(k, JSON.stringify(p)); location.reload(); })()`);
+  await c.sleep(SPLASH_MS + 900);
+  await c.press(".ring-unit"); await c.sleep(1300); await c.press(".ring-unit"); await c.sleep(4500);
+  c.log("BOARD", await c.js(`JSON.stringify({ widgets: document.querySelectorAll(".dg-board .wdg").length, stepsBars: document.querySelectorAll('[data-w="hsteps"] .wd-bars.cmp .wd-bar').length, weightLine: !!document.querySelector('[data-w="hweight"] .wd-chart.cmp') })`));
+  if (c.shots) await c.shot("health-m");
+  const change = (label) => c.js(`new Promise((done) => {
+    const tick = document.querySelector('[data-w="htodo"] .wd-tick'); if (!tick) return done("no tick");
+    const score = () => (document.querySelector('[data-w="hscore"] .wd-winb') || {}).innerText?.replace(/\\s+/g, " ").slice(0, 60);
+    const kinds = () => { const k = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; if (!t || !t.closest || !t.closest(".dg-board")) continue; const n = a.constructor.name; k[n] = (k[n] || 0) + 1; } return k; };
+    const out = { before: score(), gaps: [], kinds: null, mid: null };
+    let last = performance.now(); const t0 = last;
+    tick.click();
+    const step = (t) => { out.gaps.push(Math.round(t - last)); last = t;
+      if (!out.kinds && t - t0 > 40) out.kinds = kinds();
+      if (!out.mid && t - t0 > 200) out.mid = score();
+      if (t - t0 < 700) requestAnimationFrame(step); else { out.after = score(); out.max = Math.max(...out.gaps); out.first = out.gaps[0]; out.n = out.gaps.length; delete out.gaps; done(JSON.stringify(out)); } };
+    requestAnimationFrame(step);
+  })`).then((r) => c.log(label, r));
+  await change("TICK"); await c.sleep(900);
+  await change("UNTICK"); await c.sleep(900);
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+// Health's monthly wrapped (9 November 2026; `--shots --fresh --profile=hlwrap`): made-up data for this month (steps every day,
+// nights, gym sessions, to-dos ticked on some days, weights, a diet goal). Opened from the month over the Activity card's
+// rings: every tile's words, odd text, the tiles' count and the grid's rows, each list opened under the grid with its rows,
+// a still settled and one with a list open; Esc shuts it; then a month with nothing in it (the day stepped back into last
+// month) shows the empty recap; the sidebar's row and ⌘P's command are there
+const hlwrap = async (c) => {
+  const p2 = (n) => String(n).padStart(2, "0"), key = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  const t = new Date(), dd = t.getDate(), at = (n) => key(new Date(t.getFullYear(), t.getMonth(), n));
+  const steps = {}, weights = {}, sleep = {}, gym = [], done1 = {}, done2 = {};
+  for (let d = 1; d <= dd; d++) {
+    steps[at(d)] = 4000 + ((d * 3571) % 9000);
+    if (d % 3 === 1) weights[at(d)] = 86 - d * 0.12;
+    if (d > 1) sleep[at(d)] = { bed: d % 4 ? "23:15" : "01:10", wake: d % 5 ? "07:05" : "06:10", ...(d % 2 ? { feel: 4 } : {}) };
+    if (d % 2) done1[at(d)] = 1;
+    if (d % 3 === 0) done2[at(d)] = 1;
+    if ([1, 3, 5, 8].includes(d) && d <= dd) gym.push({ id: `g${d}`, day: at(d), name: d % 2 ? "Push" : "Legs", min: 50 + d, note: "", ex: [{ name: "Bench press", sets: [{ kg: 60 + d, reps: 6 }] }] });
+  }
+  const data = { profile: { cm: 175, kg: 86, age: 22, sex: "m", act: 1.375, steps: 8000, move: 500 }, steps, weights, sleep, gym,
+    goal: { target: 78, by: key(new Date(t.getFullYear(), t.getMonth() + 4, 1)), from: at(1), start: 86, way: "both" },
+    todos: [{ id: "t1", text: "Drink 2 litres of water", rep: "daily", dows: [], len: 0, from: at(1), done: done1, skip: {} },
+            { id: "t2", text: "Stretch for 10 minutes", rep: "daily", dows: [], len: 0, from: at(1), done: done2, skip: {} }] };
+  await c.sleep(SPLASH_MS);
+  const fresh = await c.js(`(() => { const el = document.querySelector('.acc-in'); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Flow'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  if (fresh) { await c.sleep(400); await c.press(".acc-go"); await c.sleep(700); await c.press(".in-skip"); await c.sleep(3000); }
+  await c.js(`localStorage.setItem('flow-health', ${JSON.stringify(JSON.stringify(data))}); true`);
+  await c.js(`location.reload(); true`); await c.sleep(SPLASH_MS + 1000);
+  await c.press(".ring-unit"); await c.sleep(1400); await c.press(".ring-unit"); await c.sleep(6000);
+  await c.hlDay();
+  c.log("WAYS IN", await c.js(`JSON.stringify({ month: document.querySelector('.hl-month-wrap')?.innerText, side: [...document.querySelectorAll('.snav-row, [class*="sd-row"]')].map((e) => e.innerText).filter((x) => /wrapped/i.test(x)).slice(0, 1) })`));
+  await c.js(`document.querySelector('.hl-month-wrap').click()`); await c.sleep(2400);
+  const read = () => c.js(`(() => { const m = document.querySelector('.wr-modal'); if (!m) return 'no wrapped';
+    const tiles = [...m.querySelectorAll('.wr-grid > .wr-tile')];
+    const rows = new Set(tiles.map((e) => Math.round(e.getBoundingClientRect().top))).size;
+    const odd = (m.innerText.match(/NaN|undefined|Infinity|\\[object|Invalid Date|\\bnull\\b/g) || []).join(',');
+    return JSON.stringify({ tiles: tiles.length, rowsTop: rows, odd, h: Math.round(m.scrollHeight), each: tiles.map((e) => e.innerText.replace(/\\s+/g, ' ').slice(0, 120)) }); })()`);
+  c.log("WRAPPED", await read());
+  if (c.shots) await c.shot("wrap-1");
+  for (const k of ["Best day", "Sleep", "Gym", "To-dos"]) {
+    await c.js(`[...document.querySelectorAll('.wr-tile.clickable')].find((e) => e.textContent.toLowerCase().includes(${JSON.stringify(k.toLowerCase())}))?.click()`); await c.sleep(900);
+    c.log("LIST " + k, await c.js(`(() => { const d = document.querySelector('.wr-detail'); return d ? d.innerText.replace(/\\s+/g, ' ').slice(0, 260) + ' · rows ' + d.querySelectorAll('.wr-li').length : 'no list'; })()`));
+    if (c.shots && k === "Sleep") await c.shot("wrap-2-list");
+  }
+  await c.key("Escape"); await c.sleep(600);
+  c.log("ESC", await c.js(`!document.querySelector('.wr-modal')`));
+  for (let i = 0; i < dd; i++) { await c.js(`document.querySelector('.hl-nav .nav-arrow').click()`); await c.sleep(60); }
+  await c.sleep(900);
+  await c.js(`document.querySelector('.hl-month-wrap').click()`); await c.sleep(1500);
+  c.log("EMPTY MONTH", await c.js(`(document.querySelector('.wr-modal')?.innerText || 'no wrapped').replace(/\\s+/g, ' ').slice(0, 200)`));
+  if (c.shots) await c.shot("wrap-3-empty");
+  c.log("ERRORS", await c.js(`(window.__perf && window.__perf.errors || []).join(' | ') || 'no page errors'`));
+};
+module.exports = { hltitle, hlwrap, asgrich, wgmotion, glasstint, wgall, projpast, rulesince, rulepeek, duestack, golf, clsprof, hlfolder, dueshot, daily, bins, fewer, hlturn, uitour, hlkind, hldue, hlbarline, hlshop, uiastra, glasspanes, hlsleep, otherpop, edgeright, richnotes, roworder, asgfields, scorepop, wkfund, finsubs, expedit, hllessons, sidetidy, snavglass, hlarrange, hlasg, hltime, hltoday, footapps, avgwrap, edgesize, kbset, doneshots, donereal, doneglow, doneframes, hlhome, donebisect, donelag, lagtoday, stagekeys, fxdoor, worthit, morphframes, jumps, hintslide, editmorph, mergesmoke, lookall, sweep, press, polish, fixes, health, hbackup, hphone, splitdots, stackpre, stacks, incsplit, dashgap, rpcaret, incmonths, calcpad, glasslook, barcheck, timeplan, optlook4, optlook3, optfolds, optlook, rulelook, motion, motionpass, newlag, galmotion, exch2, details, exch, coldscroll, setlook, dashlook, homeenter, homelag, glassfade, dashfit, glassk, dashpre, dash, rulecheck, tileaudit, parttest, light, hunt, devacc, testdata, shotx, lagnew, tlook, safety, copyday, others, look, week, logpill, proj, backdrop, heads, year, launch, stage, intro, reset, finance, cards, pull, flow, term, idxj, hero, nospend, foot, keys, backup, dragmove, plans, pick, scoreinfo, trade: trading(false), stocks: trading(true), fx: trading("fx"), seedprep, dump, corners, firsts, rested, parts, imbox, items, bill, testlv, tiles, pxink, score81, fxdie,
   "year-finance": yearpops("finance"), "year-crypto": yearpops("crypto"), "year-idx": yearpops("idx"), "year-fx": yearpops("fx") };

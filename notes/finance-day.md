@@ -1,6 +1,7 @@
 # Logging on the finance side
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/ai]] · [[notes/split-bill]] · [[notes/weekly-plans]] · [[notes/money-flow-goals]] · [[notes/year-month-panels]] · Code: [[notes/code-map#Logging on the finance side]]
 
 - **Quick log** (`QuickLog`, `parseQuick`, `quickNumber`, `.ql-*`; finance side; 7 October 2026, the review's second critical finding): ⌘N anywhere on the finance side, or the sidebar's top button. One line of text read as it is typed, with what it will add written under it; Enter adds it to today and the box stays open for the next one; Enter on the empty line or Esc shuts it.
   - A line may hold, in any order: an amount, what it was for, a `+` for income (Tab switches too), "yesterday" / "kemarin". `kopi 25` · `25rb kopi` · `1,5jt sewa` · `+5jt gaji` · `kemarin bensin 50`. In rupiah a bare number under 1000 is thousands, as everywhere in the app; rb / k and jt / juta say so outright. The first number in the line is the amount.

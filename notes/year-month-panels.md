@@ -1,6 +1,7 @@
 # The yearly and monthly panels
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/charts]] · [[notes/finance-day]] · [[notes/style]] · [[notes/money-flow-goals]] · Code: [[notes/code-map#Year and month panels, wrapped]]
 
 - **Yearly panel layout:** the year stack fills the window from the header down to the footer (`.year-viewport`, `--yv`), so the footer sits at the bottom and the month boxes grow with the window (three equal rows in `--yb`). `YEAR_PEEK` px of the neighbouring years stay visible, dimmed: the first year sits at the top with the next one showing below, the last year at the bottom with the previous one above, and a year in between is centred with half of the peek on each side. Rassam found the old fixed-size stack left the bottom of the window empty.
 - **The yearly panel's month boxes say what they hold** (13 October 2026, from a critique of the panel he asked for; he chose "all five", and for the quick-add row "keep it, make it readable"; `yc-w`, `yc-lim`, `.ycell.later`, `yearSparks`, `tools/perf` journey `year`):

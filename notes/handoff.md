@@ -1,48 +1,38 @@
-# Handoff: unfinished work
+# Handoff: what is still open
 
-## 0. READ FIRST (23 October 2026, 14:50): most of this day's work is in a git stash, not in the app
-- At 14:47 a commit was made on this Mac, `ef89d11` "Timetable read from a picture (made on the Mac)", on top of the cloud's Health commits (`1314e73`, `8812375`, `89e5e4b`). Before it, the local changes were put aside as **`stash@{0}` "my local changes before health"** (17 files, App.jsx +9,299 lines). So `src/App.jsx`, `electron/main.cjs`, `electron/preload.cjs` and `tools/perf/journeys.cjs` as they stand have Health and the timetable reader, but **not** what was built locally before that: the money exchanger and ⌘E, details under a name, the income over several months / split bar (and its redesign and the dots as typed), the caret kept in money boxes, the liquid glass range, widget stacks and the stack layouts, Shortcuts filling their box and the size caps, the declutter pass (empty states on Home, round chart axes, wording, no dots on trading tiles), "pack" as Other, the model's pruned word table loader (ai-head .bin), the exchanger's journeys. The notes in `notes/` (untracked) still describe all of it. The last DMG with it is `release/Flow-1.0.0-arm64.dmg` of 12:37.
-- **Never drop that stash.** To bring it back: `git stash show -p stash@{0}` and apply it onto the current tree by hand (App.jsx, main.cjs, preload.cjs, journeys.cjs will conflict: both sides changed them), keeping Health and the timetable reader. Ask him first whether the stash was meant to be put back.
+Back to [[HOME]] · [[notes/inbox]] · Checked against the code and git on 9 November 2026: what was done since is gone from here (the 23 October stash work merged, the timetable reader, the monthly spending rule, Electron's language packs cut). Read this first next session; take each item off when it is done, and put a new one in when a session stops half way.
 
-## 1. Timetable read off a picture (23 October 2026, his words: "an ai that i can just input an image and it will automatically assign it on the timetable"; he chose the Mac's own text reading): done, in `ef89d11`
-- `electron/main.cjs`: `ocrRead` (the picture into a temporary folder, read by `/usr/bin/osascript -l JavaScript` with Vision, `OCR_JS`, removed after), `ocrStraight` / `ocrSkew` / `ocrSkewLong` (a slanted photo read again turned straight, up to twice), IPC `health:ocr`; `preload.cjs` `flowHealth.ocr(bytes, ext)`. No request leaves the Mac.
-- `src/App.jsx`: the reader `hlReadTimetable` and its parts (`hlOcr*`, between "health: reading a timetable off a picture" and "… end"): grids (days across or down, times from words or from where a block stands), portal tables, merged day cells, day-heading lists; English, Indonesian and Malay days; rooms, teachers and codes told apart. `HlScanSheet` (check, change or leave out each class, "Add N to the week") and the Week card's "From a picture" button, a picture dropped or pasted on the week (`HlWeek`), `api.saveClsMany` (one colour per name).
-- Tested: `tools/ocr/make.cjs` draws six timetables (grid, plain grid, portal, list, turned grid, merged cells), `tools/ocr/test.mjs` reads them as the app does. Second round the same evening, after two real timetables of his found nothing (see "Timetable from a picture, second round" in [[notes/health]]): 25 of 25 straight, 25 of 25 at 60% size, 24 of 25 tilted 4°, and his two real ones 64 of 64 with rooms.
-- **Left**: the in-app check (journey `ttscan` was written but not added: `journeys.cjs` had changed under it; the harness's `flowHealth.ocr` stand-in IS in `tools/perf/preload.cjs`, uncommitted). The feature's note in the project `CLAUDE.md` Health section. A DMG.
-
-## 2. Health animations "1:1 from finance" (asked the same day): not started. Found to port
-- The title: finance's pixel flicker on opening and letter swap on a change (`monthFlick` in `PnlCalendar`, `monthTwinShift`, `.month-big .yb-cell`), in place of `.hl-title`'s fade (`HealthApp`, keyed on the day's word).
-- The hero's tiles and ring list counting (`CountNum`) as finance's tiles do; the rings easing to the new day (drop `key={day}` on `.hl-hero-rings`: `.hl-arc` has the transition already).
-- `.hl-cls:hover` uses `filter: brightness` (against the performance rules): finance's tile lift and `--lit` sheen instead. To-dos and classes folding away when removed, as finance's rows do.
-
-
-Read this first next session, then delete each item as it is done.
-
-## 0. The full app and Health: merged (23 October 2026, 18:00)
-- The main folder is on branch **`merge/full-plus-health`**: the full app (`17ecea7`, from the stash) with Health and the timetable merged in (`839efbd`), and on top, uncommitted, session flow-f7's stack button shown only on hover. What the merge chose is in [[notes/health]]. Checked with the `mergesmoke` journey: finance, crypto and Health open with no page errors.
-- Kept, never delete: branch `backup/full-app-2026-10-23`, and the stashes "my local changes before health" and "main folder just before landing the merge". `claude/task-mpmwih`, `claude/task-wr0r33`, `mac-timetable-scan` are as they were.
-- Home's Edit widgets morph: done the same evening ([[notes/dashboard]]).
-
-## 1. Monthly spending rule: done (see [[notes/money-flow-goals]]); in the test data since 18 October 2026 ([[notes/dev-test-data]]). Left to check: the light look, MYR, a backup round trip in the app.
-## 2. App size: what was measured (22 October 2026: the word table was cut instead, losslessly, see [[notes/ai]]; what follows is about cutting bits, still not done)
-- `package.json` `build.electronLanguages: ["en"]`: drops 48 MB of Electron language packs (not yet built into a DMG).
-- The model (`models/flow-ai.gguf`, unsloth EmbeddingGemma 300M Q8_0, 329 MB) stays: 201M of its 303M numbers are the word table (8-bit, ~214 MB). Every smaller build tried scored worse on the held-out notes (each with its own retrained head, `OUT=` in `tools/ai/train.mjs`):
-  | build | MB | expenses | goals | symbols | none | probe |
-  |---|---|---|---|---|---|---|
-  | Q8_0 (shipped) | 329 | 217/227 | 38/40 | 93/129 | 15/16 | 220/221 |
-  | Q6_K | 260 | 215 | 38 | 90 | 14 | 220 |
-  | Q5_K_M | 247 | 215 | 38 | 90 | 14 | 220 |
-  | Q4_K_M | 236 | 213 | 38 | 86 | - | 220 |
-- Not tried, the likely loss-free saving: only the word table to 6 bits, the layers kept at 8 (about -50 MB). Needs `llama-quantize` (no build found on this Mac; GitHub's API was rate-limited) or a gguf-py script. Measure it the same way before shipping.
-
-## Done on a full Home board (found 23 October 2026, not fixed)
-`homelag --trace` on the usual profile (its crypto board holds 30 widgets in 15 boxes, the most there can be): the first Done kept the page busy 110 + 141ms traced, mostly styles (43 + 73ms) when `.dg-board` loses `leaving` then `edit`; 60ms the second time. Suspects: `.dg-board.edit .wd-in { pointer-events: none }` and `.dg-board.edit .dg-cell { cursor: grab }` are inherited, so every widget's whole inside is restyled; an overlay per box (`::after` above the widget, below `.dg-rm` / `.dg-rz` / `.dg-sk`) would take both. Measure with `homelag --trace` before and after, not while he uses the app. The widgets themselves don't redraw (memo).
+## Release
+- **1.2.1 is built but not on GitHub** (`release/Flow-1.2.1-arm64.dmg` and `Flow-Setup-1.2.1.exe`, 6 November 2026; the last commit is `a0ba633` "Flow 1.2.0"). Since then, uncommitted: the projection made plain, the widgets' review, the glass's tint, this vault pass. His "release to github" runs the `release-github` skill, which makes a new version anyway. See [[notes/installer]].
 
 ## Fewer buttons: passes left (4 November 2026)
-He chose "whole app, in passes", keep the look ([[notes/navigation-settings]] "Fewer buttons"). Done: the command bar, the right-click menu, Home (every side), Health's week / to-dos / assignments, finance and trading day rows, the journal's trades. Left, in this order, each to be checked with a journey before the next:
-1. Finance goals and debts rows (+, pencil, bin): a menu; the bin stays in sight (never hide a bin, [[notes/navigation-settings]]). Weekly plans' rows, subscriptions.
+He chose "whole app, in passes", keep the look ([[notes/navigation-settings]] "Fewer buttons"). Done: the command bar, the right-click menu, Home (every side), Health's week / to-dos / assignments, finance and trading day rows, the journal's trades. Left, in this order, each checked with a journey before the next:
+1. Finance goals and debts rows (+, pencil, bin): a menu; the bin waits for the pointer and never leaves a hole ([[notes/navigation-settings]] "Bins"). Weekly plans' rows, subscriptions. **Ask him first**: [[notes/navigation-settings]] "Bins" says goals, debts, subscriptions and plans keep their bins in sight at his request of 30 October (left alone on 10 November 2026 for that reason).
 2. Health: gym sessions, shopping lists and items, the vision board's Note / Picture, class notes' and lessons' items.
 3. Trading: the month header and the calculator (gear, test levels), deposits rows, PnL analysis chips.
 4. The finance month header and footer (Log, ⇄, currency, chart, wrapped): what ⌘P now covers.
 5. Commands from more screens (`useCmds`): finance month (chart, wrapped, export / import), trading (calculator, deposits), Health cards (log steps on a day, sleep, gym).
 Never cut what he designed by hand without asking: Home's toolbar and its morph, the Shortcuts widget, the stage, the pixel titles.
+
+## Health animations "1:1 from finance" (asked 23 October 2026): partly done
+- Done since: `.hl-cls:hover` no longer uses `filter: brightness`; the hero's rings are no longer remounted on a new day.
+- Done 10 November 2026: the title has finance's pixel flicker on opening and the letter swap on another day (`titleFlick`, `.hl-title.month-big`).
+- Left: the hero's tiles counting (`CountNum`); to-dos and classes folding away when removed, as finance's rows do. See [[notes/health]].
+
+## Monthly spending rule: left to check
+Done ([[notes/money-flow-goals]]), in the test data ([[notes/dev-test-data]]). Not yet seen: the light look, MYR, a backup round trip in the app.
+
+## App size: the model (22 October 2026)
+The word table was cut losslessly ([[notes/ai]]). Cutting bits is not done: every smaller build tried scored worse on the held-out notes (each with its own retrained head, `OUT=` in `tools/ai/train.mjs`):
+
+| build | MB | expenses | goals | symbols | none | probe |
+|---|---|---|---|---|---|---|
+| Q8_0 (shipped) | 329 | 217/227 | 38/40 | 93/129 | 15/16 | 220/221 |
+| Q6_K | 260 | 215 | 38 | 90 | 14 | 220 |
+| Q5_K_M | 247 | 215 | 38 | 90 | 14 | 220 |
+| Q4_K_M | 236 | 213 | 38 | 86 | - | 220 |
+
+Not tried, the likely loss-free saving: only the word table to 6 bits, the layers kept at 8 (about -50 MB). Needs `llama-quantize` (no build found on this Mac) or a gguf-py script. Measure it the same way before shipping.
+
+## Kept, never delete
+- Branch `backup/full-app-2026-10-23`; the stashes "my local changes before health" and "main folder just before landing the merge" (both merged into `merge/full-plus-health` on 23 October 2026; kept as the record). `claude/task-mpmwih`, `claude/task-wr0r33`, `mac-timetable-scan` as they were. See [[notes/claude-memory/full-app-health-split]].

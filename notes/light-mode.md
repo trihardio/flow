@@ -1,6 +1,7 @@
 # Light mode
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/style]] · [[notes/style-passes]] · [[notes/navigation-settings]] · [[notes/dashboard]]
 
 - **Light mode** (13 October 2026: "make light mode version, can be toggled on and off in settings"). The apps (finance and the three trading sides, with their pop-ups and the sidebar) have a light look. **The panels before an app stay dark** (the opening screen, the login, the selections, wallets and trading panels): my choice, not his words; the liquid-glass pass left them alone for the same reason, they are a lit scene with a backdrop of their own. The look is the app's, not an account's (`THEME_KEY` = `flow-theme` in `localStorage`, nobody's data, in no backup), and it changes at once, in place: the page is never loaded again.
 - **How it works** (the block "Light mode" near the top of `src/App.jsx`). The dark look is the one written down; the light one follows from it.

@@ -1,6 +1,9 @@
 # Trading tracker
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`. The calculators are in [[notes/calculators]], forex in [[notes/forex]]: both are parts of this tracker.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/calculators]] · [[notes/forex]] · [[notes/dashboard]] · [[notes/charts]] · [[notes/data-export-undo]] · Code: [[notes/code-map#Trading]]
+
+The calculators are in [[notes/calculators]], forex in [[notes/forex]]: both are parts of this tracker.
 
 - **Trading tracker** (`TradeTracker`, a module-level component above `PnlCalendar`; `market` is `"crypto"`, `"idx"` or `"fx"`): Rassam asked for everything to be the same as the finance side (yearly panel, monthly panel, all the GUIs) but crypto-PnL styled, after Bybit, Binance and Axiom, and then for the IDX/IHSG panel to be "the same thing" as the crypto one.
   - It is a component of its own on purpose: it reuses the finance side's styles, classes and animations (`S`, `.ycell`, `.cell`, `.flow-card`, the chart classes, the title flicker, the wrapped), but none of its state, so work on it can't break the finance panels. When a finance GUI changes, mirror the change here.

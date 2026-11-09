@@ -11,6 +11,8 @@ out=$(npx vite build --outDir "${TMPDIR:-/tmp}/flow-check" --emptyOutDir 2>&1)
 if [ $? -ne 0 ]; then
   echo "BUILD FAILED"; echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E "Error|error|\.jsx?:[0-9]|│" | head -14; exit 1
 fi
+# the code map (notes/code-map.md): every component's line, for the next session to read instead of searching
+node tools/vault/codemap.mjs >/dev/null 2>&1
 lint=$(sh tools/lint/run.sh 2>&1)
 # names used but declared nowhere (a hook not imported once built fine and crashed the card at run time)
 if echo "$lint" | grep -qE "^[1-9][0-9]* names not found"; then

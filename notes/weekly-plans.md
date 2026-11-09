@@ -1,6 +1,7 @@
 # The Weekly expenses card: planned expenses, other weeks, a day's note
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/finance-day]] · [[notes/charts]] · [[notes/money-flow-goals]] · Code: [[notes/code-map#Weekly expenses]]
 
 - **Planned expenses, in the Weekly expenses card** (`WeekPlans`, `cleanPlans`, `planDays`, `planApi`, `plans`, `.wp-*`; 11 October 2026: "project expenses on this week … i want to get haircut this week and i wanna eat at a restaurant", "it will also be calculated on the weekly expense chart, make sure its the future and not the past, can be the present. have options for choosing dates. if its end of week then have it be input next week i guess").
   - Under the chart: an amount, what for, a + button, and the day as one quiet field of choices: Today, then each day to the end of this week (Monday first). **On the week's last day the choices are Today and all seven days of next week.** The first day after today is chosen to begin with. No day in the past can be chosen, and none is offered.

@@ -1,6 +1,7 @@
 # Style: the passes of 12 and 13 October 2026
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/style]] · [[notes/light-mode]] · [[notes/design-backlog]] · [[notes/trading]]
 
 - **Audit fixes** (13 October 2026, `/impeccable audit`, then harden, animate, typeset, extract, polish; he asked for all of them in that order). Nothing he sees with his Mac's settings as they are was meant to change, except the three marked.
   - **Colour tokens** (`--c-*` on `:root`): the stylesheet's 18 most used colours (text from `--c-ink-hi` to `--c-mute-2`, `--c-line`, the greens, the reds, `--c-gold`, `--c-orange`), 394 places, the same values as before. **Stylesheet only**: the `S` table, SVG attributes, the canvas and anything script reads still hold plain values, and so does anything inside a `${…}` or an `@property`. A new rule in the stylesheet uses the token.

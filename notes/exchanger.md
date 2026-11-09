@@ -1,5 +1,7 @@
 # The money exchanger
 
+Back to [[HOME]] · Related: [[notes/calculators]] · [[notes/dashboard]] · [[notes/shell]] · [[notes/navigation-settings]] · Code: [[notes/code-map#Money exchanger]]
+
 Asked for on 20 October 2026: "when double clicking the switching currency button, i want to add a money exchanger ui. make sure the prices are accurate. choosing the currency: 3 currencies that are recently used and other currencies that are listed as A-Z. make it so i can search. live prices updated from the internet. make me be able to input from one currency and the other one, not just 1"; then "I want all the text and inputs to have an animation when switching between currencies, and have an option to add other currencies", "Make sure the switch currency animation has no lag and runs smoothly", and "make a shortcut for the money exchanger".
 
 ## Ways in

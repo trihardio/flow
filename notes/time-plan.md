@@ -1,6 +1,7 @@
 # The time plan
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/dashboard]] · [[notes/worth-it]] · [[notes/navigation-settings]] · Code: [[notes/code-map#Time plan]]
 
 Asked for on 22 October 2026: "i also want to make a time prediction, so for example right now is 15.23, i watch one eps of south park for 20 mins then shower for 10 mins then walk 15 mins, then i arrive at campus at _ time". Asked before it was built, he chose **a pop-up with a shortcut plus a Home widget** (as the money exchanger has) and **the plan typed as one line** (not rows). Save point from before it: `savepoints/before_time_plan.jsx`.
 

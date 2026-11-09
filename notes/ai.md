@@ -1,6 +1,7 @@
 # AI helpers and the symbols of Other
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/finance-day]] · [[notes/money-flow-goals]] · [[notes/worth-it]] · [[notes/health]]
 
 - **AI helpers** (auto-categorise, goal icons) run only in the Mac app: `AI_OK = !!window.flowAI`. In a plain browser the keyword rules work alone.
   - They are a fallback for names the keyword rules (`CAT_RULES`, `GOAL_ICON_RULES`) can't place.

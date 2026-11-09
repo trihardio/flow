@@ -1,6 +1,7 @@
 # Split bill
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/finance-day]] · [[notes/money-flow-goals]] · Code: [[notes/code-map#Split bill]]
 
 - **Split bill** (`BillSplit`, `splitBill`, `billApi`, `.sb-*`; finance side; 11 October 2026: "a calculator for calculating split bill with people", then "an option for my bill to be input for expenses (also add option for changing Rp and desc and category)"):
   - Opened by the people button on a day's Expenses row (beside the receipt) or by "Split bill" on top of the finance sidebar, under Quick add. It is the settings' pop-up, wider.

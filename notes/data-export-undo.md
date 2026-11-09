@@ -1,6 +1,7 @@
 # Export, Import, Undo, a copy a day
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/accounts]] · [[notes/trading]] · [[notes/shell]] · [[notes/dev-test-data]] · Code: [[notes/code-map#Undo]]
 
 - **Export** (all three sides; 4 October 2026, at his request):
   - In the Mac app the file goes straight into `~/Documents/misc/react app/Financial Tracker/exports`, in a folder per side, with no save box (`EXPORT_DIR`, `EXPORT_SIDES` and the `will-download` handler in `electron/main.cjs`, which picks the folder from how the file's name starts): `financial exports/rassam-pnl-export-DD-MM-YYYY.json`, `crypto exports/rassam-crypto-export-…`, `idx exports/rassam-idx-export-…` (his folder and file names), and `forex exports/rassam-fx-export-…` after them. **Every file's name begins with the account's first name** (11 October 2026, his example: "rassam-...-export-11-10-2026"; `userFilePre`: small letters and digits only, the account's id when nothing is left of the name). The shell finds the side after that name (`exportSide`), and a file named the old way, side first, still finds its folder. Files exported before that day keep their old names. **Exporting again never replaces a file** (11 October 2026: "it should have a (1) or (2) at the end so it doesnt replace the previous one but stack on top"; `freeName` in `electron/main.cjs`): the first of a day keeps the plain name, the next are `… (1).json`, `… (2).json`. Until then a second export on one day replaced the first. In a plain browser it is an ordinary download.

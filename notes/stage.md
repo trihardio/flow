@@ -1,6 +1,7 @@
 # The panels before an app: opening, selections, trading panel, wallets
 
-One area of Flow. What applies everywhere, and the list of the other areas, is in the project's `CLAUDE.md`.
+One area of Flow. What applies everywhere, and the list of the other areas: [[CLAUDE]].
+Back to [[HOME]] · Related: [[notes/warmup-first-launch]] · [[notes/accounts]] · [[notes/trading]] · [[notes/health]] · [[notes/forex]] · Code: [[notes/code-map#Panels before an app]]
 
 - **Opening screen ("open app panel"):**
   - Logo and a pixel-font "FLOW" (`APP_WORD`; one falling piece per letter) on a grey centre gradient, about 1.5s (`OPEN_HOLD_MS`; 1.7s felt a bit long in the still middle).
